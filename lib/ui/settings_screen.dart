@@ -7,6 +7,7 @@ import '../core/models.dart';
 import '../core/providers.dart';
 import '../core/seerr.dart';
 import 'add_server_screen.dart';
+import 'libraries_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -52,7 +53,7 @@ class SettingsScreen extends ConsumerWidget {
                     style: Theme.of(context).textTheme.headlineMedium),
                 const _Heading('Servers'),
                 _Card(children: [
-                  for (final s in servers)
+                  for (final s in servers) ...[
                     ListTile(
                       leading: s.kind == ServerKind.plex &&
                               (s.userName != null || s.userThumb != null)
@@ -97,6 +98,9 @@ class SettingsScreen extends ConsumerWidget {
                         ],
                       ),
                     ),
+                    _ServerLibraries(server: s),
+                    const Divider(height: 1),
+                  ],
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Wrap(
@@ -506,6 +510,158 @@ class _SeerrDialogState extends ConsumerState<_SeerrDialog> {
           onPressed: _busy ? null : _connect,
           child: Text(_busy ? 'Connecting…' : 'Connect'),
         ),
+      ],
+    );
+  }
+}
+
+/// The libraries on one server: show or hide each across the app, and ask
+/// the server to scan for new files.
+class _ServerLibraries extends ConsumerStatefulWidget {
+  const _ServerLibraries({required this.server});
+  final ServerConfig server;
+
+  @override
+  ConsumerState<_ServerLibraries> createState() => _ServerLibrariesState();
+}
+
+class _ServerLibrariesState extends ConsumerState<_ServerLibraries> {
+  /// Library ids with a scan request in flight; '*' is "scan all".
+  final _scanning = <String>{};
+
+  String get _serverId => widget.server.id;
+
+  Future<void> _scan(Library? library) async {
+    final key = library?.id ?? '*';
+    setState(() => _scanning.add(key));
+    final messenger = ScaffoldMessenger.of(context);
+    final what = library?.title ?? 'all libraries';
+    try {
+      await scanLibrary(
+          ProviderScope.containerOf(context, listen: false), _serverId, library);
+      messenger.showSnackBar(SnackBar(
+        content: Text('Scanning $what on ${widget.server.name}. New items '
+            'appear once the server finishes.'),
+      ));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(friendlyError(e))));
+    } finally {
+      if (mounted) setState(() => _scanning.remove(key));
+    }
+  }
+
+  Widget _scanButton(Library library) {
+    final busy = _scanning.contains(library.id);
+    return IconButton(
+      tooltip: 'Scan ${library.title}',
+      onPressed: busy ? null : () => _scan(library),
+      icon: busy
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Icon(Icons.sync_rounded),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final libs = ref.watch(allLibrariesProvider(_serverId));
+    final hidden =
+        ref.watch(settingsProvider.select((s) => s.hiddenOn(_serverId)));
+    final canScan =
+        ref.watch(backendsProvider)[_serverId]?.canScanLibraries ?? false;
+    final list = libs.value;
+
+    final subtitle = switch (libs) {
+      AsyncData(:final value) => value.isEmpty
+          ? 'No libraries'
+          : '${value.where((l) => !hidden.contains(l.id)).length} of '
+              '${value.length} shown',
+      AsyncError() => 'Couldn\'t load libraries',
+      _ => 'Loading…',
+    };
+
+    return ExpansionTile(
+      // Keyed per server so expansion state doesn't jump between servers
+      // when one is removed.
+      key: PageStorageKey('libraries-$_serverId'),
+      tilePadding: const EdgeInsets.only(left: 16, right: 12),
+      childrenPadding: const EdgeInsets.only(bottom: 8),
+      shape: const Border(),
+      collapsedShape: const Border(),
+      leading: const Icon(Icons.video_library_outlined, color: Palette.muted),
+      title: const Text('Libraries'),
+      subtitle: Text(subtitle),
+      children: [
+        if (libs case AsyncError(:final error))
+          ListTile(
+            title: Text(friendlyError(error)),
+            trailing: TextButton(
+              onPressed: () => ref.invalidate(allLibrariesProvider(_serverId)),
+              child: const Text('Retry'),
+            ),
+          )
+        else if (list == null)
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Center(
+              child: SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          )
+        else ...[
+          for (final lib in list)
+            Builder(builder: (context) {
+              final shown = !hidden.contains(lib.id);
+              void toggle() => ref
+                  .read(settingsProvider.notifier)
+                  .setLibraryHidden(_serverId, lib.id, shown);
+              return ListTile(
+                contentPadding: const EdgeInsets.only(left: 32, right: 12),
+                leading: Icon(libraryIcon(lib.kind),
+                    color: shown ? Palette.text : Palette.muted),
+                title: Text(
+                  lib.title,
+                  style: TextStyle(color: shown ? null : Palette.muted),
+                ),
+                subtitle: shown ? null : const Text('Hidden'),
+                onTap: toggle,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (canScan) _scanButton(lib),
+                    Switch(
+                      value: shown,
+                      onChanged: (_) => toggle(),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          if (canScan && list.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(left: 24, top: 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _scanning.contains('*') ? null : () => _scan(null),
+                  icon: _scanning.contains('*')
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.sync_rounded, size: 18),
+                  label: const Text('Scan all libraries'),
+                ),
+              ),
+            ),
+        ],
       ],
     );
   }

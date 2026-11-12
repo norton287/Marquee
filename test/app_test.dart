@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -310,6 +311,131 @@ void main() {
     expect(kid.thumb, isNull);
     expect(kid.subtitle, 'Managed profile');
     expect(PlexHomeUser.parse(const {}).name, 'Plex user');
+  });
+
+  test('hidden libraries round-trip and empty servers are dropped', () async {
+    final store = MemoryStore();
+    final a = AppStorage(store);
+    await a.load();
+    var settings = const AppSettings()
+        .withLibraryHidden('srv', '1', true)
+        .withLibraryHidden('srv', '2', true)
+        .withLibraryHidden('other', '9', true)
+        .withLibraryHidden('other', '9', false);
+    expect(settings.hiddenLibraries, {'srv': {'1', '2'}});
+    await a.saveSettings(settings);
+    final b = AppStorage(store);
+    await b.load();
+    settings = b.settings;
+    expect(settings.isHidden('srv', '1'), isTrue);
+    expect(settings.isHidden('srv', '3'), isFalse);
+    expect(settings.hiddenOn('other'), isEmpty);
+  });
+
+  test('Plex items know their library', () {
+    final backend = PlexBackend(const ServerConfig(
+        id: 'p', kind: ServerKind.plex, name: 'P', baseUrl: 'http://h',
+        token: 't'))
+      ..hiddenLibraries = {'2'};
+    final a = backend.parse(
+        {'ratingKey': '1', 'type': 'movie', 'title': 'A', 'librarySectionID': 1});
+    final b = backend.parse(
+        {'ratingKey': '2', 'type': 'movie', 'title': 'B', 'librarySectionID': 2});
+    final c = backend.parse({'ratingKey': '3', 'type': 'movie', 'title': 'C'});
+    expect(a.libraryId, '1');
+    expect(backend.visible([a, b, c]).map((i) => i.title), ['A', 'C']);
+  });
+
+  test('a hidden library disappears from libraries, shelves and search',
+      () async {
+    final container = ProviderContainer(overrides: [
+      storageProvider.overrideWithValue(await _storage()),
+    ]);
+    addTearDown(container.dispose);
+    const demo = DemoBackend.demoId;
+
+    container.read(settingsProvider.notifier)
+        .setLibraryHidden(demo, 'movies', true);
+
+    final libs = await container.read(librariesProvider(demo).future);
+    expect(libs.map((l) => l.id), ['shows', 'music']);
+    final all = await container.read(allLibrariesProvider(demo).future);
+    expect(all, hasLength(3));
+
+    final sub = container.listen(searchProvider('the long tide'), (_, _) {});
+    final found = await container.read(searchProvider('the long tide').future);
+    expect(found, isEmpty);
+    sub.close();
+
+    final discover = await container.read(discoverProvider.future);
+    expect(discover.expand((s) => s.items).where((i) => i.kind == MediaKind.movie),
+        isEmpty);
+
+    container.read(settingsProvider.notifier)
+        .setLibraryHidden(demo, 'movies', false);
+    expect(await container.read(librariesProvider(demo).future), hasLength(3));
+  });
+
+  testWidgets('settings lists libraries and hides one across the app',
+      (tester) async {
+    await _pump(tester, const Size(1440, 900));
+    await tester.tap(find.text('Settings').last);
+    await tester.pumpAndSettle();
+    expect(find.text('3 of 3 shown'), findsOneWidget);
+    await tester.tap(find.text('Libraries').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('TV Shows'));
+    await tester.pumpAndSettle();
+    expect(find.text('2 of 3 shown'), findsOneWidget);
+    expect(find.text('Hidden'), findsOneWidget);
+
+    await tester.tap(find.text('Libraries').first); // the nav tab
+    await tester.pumpAndSettle();
+    expect(find.text('Movies'), findsWidgets);
+    expect(find.text('TV Shows'), findsNothing);
+  });
+
+  test('Jellyfin scopes queries to visible libraries when some are hidden',
+      () async {
+    final calls = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add('${o.path}?parentId=${o.queryParameters['parentId']}');
+        final data = switch (o.path) {
+          '/UserViews' => {
+              'Items': [
+                {'Id': 'movies', 'Name': 'Movies', 'CollectionType': 'movies'},
+                {'Id': 'kids', 'Name': 'Kids', 'CollectionType': 'movies'},
+                {'Id': 'tunes', 'Name': 'Music', 'CollectionType': 'music'},
+              ]
+            },
+          _ => {
+              'Items': [
+                {'Id': 'x-${o.queryParameters['parentId']}', 'Type': 'Movie',
+                 'Name': 'X'},
+              ]
+            },
+        };
+        h.resolve(Response(requestOptions: o, data: data, statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+
+    await jf.continueWatching();
+    expect(calls, ['/UserItems/Resume?parentId=null']);
+
+    calls.clear();
+    jf.hiddenLibraries = {'kids'};
+    final resume = await jf.continueWatching();
+    // Music is skipped for video-only queries; Kids is hidden.
+    expect(calls, ['/UserViews?parentId=null', '/UserItems/Resume?parentId=movies']);
+    expect(resume.map((i) => i.id), ['x-movies']);
+
+    calls.clear();
+    await jf.search('x');
+    expect(calls, ['/Items?parentId=movies', '/Items?parentId=tunes']);
   });
 
   test('backend errors reach the user verbatim', () {

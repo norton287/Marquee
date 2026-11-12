@@ -27,7 +27,7 @@ class LibrariesScreen extends ConsumerWidget {
         bottom: false,
         child: RefreshIndicator(
           onRefresh: () async {
-            ref.invalidate(librariesProvider);
+            ref.invalidate(allLibrariesProvider);
             ref.invalidate(collectionsProvider);
             ref.invalidate(playlistsProvider);
           },
@@ -89,7 +89,7 @@ class _ServerSection extends ConsumerWidget {
                 ),
                 OutlinedButton(
                   onPressed: () =>
-                      ref.invalidate(librariesProvider(server.id)),
+                      ref.invalidate(allLibrariesProvider(server.id)),
                   child: const Text('Retry'),
                 ),
               ],

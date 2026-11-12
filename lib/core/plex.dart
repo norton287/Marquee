@@ -396,6 +396,7 @@ class PlexBackend extends MediaBackend {
             ),
       ],
       externalIds: ids,
+      libraryId: m['librarySectionID']?.toString(),
     );
   }
 
@@ -780,6 +781,26 @@ class PlexBackend extends MediaBackend {
             'identifier': 'com.plexapp.plugins.library',
             'key': item.id,
           });
+
+  // -- library scans --------------------------------------------------------
+
+  @override
+  bool get canScanLibraries => true;
+
+  @override
+  Future<void> scanLibrary(Library? library) async {
+    try {
+      await _dio.get<dynamic>(
+          '/library/sections/${library?.id ?? 'all'}/refresh');
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Only the server owner can scan libraries on this Plex server.');
+      }
+      rethrow;
+    }
+  }
 
   // -- watchlist (lives on plex.tv, not on the server) ------------------------
 

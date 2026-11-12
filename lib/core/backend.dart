@@ -43,6 +43,29 @@ abstract class MediaBackend {
   ServerConfig get config;
   String get serverId => config.id;
 
+  /// Libraries the user hid in Settings. Set once when the backend is created;
+  /// toggling a library creates fresh backends, so this never changes under
+  /// a running query.
+  Set<String> hiddenLibraries = const {};
+
+  /// Drops items that belong to a hidden library. Items whose library isn't
+  /// known pass through; backends that can't tag items scope their queries
+  /// instead (Jellyfin).
+  List<MediaItem> visible(List<MediaItem> items) => hiddenLibraries.isEmpty
+      ? items
+      : items
+          .where((i) =>
+              i.libraryId == null || !hiddenLibraries.contains(i.libraryId))
+          .toList();
+
+  /// Whether [scanLibrary] does anything on this server.
+  bool get canScanLibraries => false;
+
+  /// Asks the server to rescan [library] (or every library when null) for
+  /// new and changed files. Returns once the scan has been started; the
+  /// server finishes it in the background.
+  Future<void> scanLibrary(Library? library) async {}
+
   Future<List<Library>> libraries();
   Future<List<MediaItem>> continueWatching();
 

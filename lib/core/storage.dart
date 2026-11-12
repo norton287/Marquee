@@ -20,6 +20,7 @@ class AppSettings {
     this.seerrUrl,
     this.seerrApiKey,
     this.seerrCookie,
+    this.hiddenLibraries = const {},
   });
 
   /// null = original quality.
@@ -40,6 +41,25 @@ class AppSettings {
   final String? seerrApiKey;
   final String? seerrCookie;
 
+  /// Library ids the user hid, per server id.
+  final Map<String, Set<String>> hiddenLibraries;
+
+  Set<String> hiddenOn(String serverId) =>
+      hiddenLibraries[serverId] ?? const {};
+
+  bool isHidden(String serverId, String libraryId) =>
+      hiddenOn(serverId).contains(libraryId);
+
+  AppSettings withLibraryHidden(
+      String serverId, String libraryId, bool hidden) {
+    final ids = {...hiddenOn(serverId)};
+    hidden ? ids.add(libraryId) : ids.remove(libraryId);
+    return copyWith(hiddenLibraries: {
+      ...hiddenLibraries,
+      serverId: ids,
+    }..removeWhere((_, v) => v.isEmpty));
+  }
+
   bool get hasSeerr =>
       (seerrUrl ?? '').isNotEmpty &&
       ((seerrApiKey ?? '').isNotEmpty || (seerrCookie ?? '').isNotEmpty);
@@ -57,6 +77,7 @@ class AppSettings {
     Object? seerrUrl = _keep,
     Object? seerrApiKey = _keep,
     Object? seerrCookie = _keep,
+    Map<String, Set<String>>? hiddenLibraries,
   }) =>
       AppSettings(
         maxBitrateKbps: maxBitrateKbps == _keep
@@ -77,6 +98,7 @@ class AppSettings {
             seerrApiKey == _keep ? this.seerrApiKey : seerrApiKey as String?,
         seerrCookie:
             seerrCookie == _keep ? this.seerrCookie : seerrCookie as String?,
+        hiddenLibraries: hiddenLibraries ?? this.hiddenLibraries,
       );
 
   Map<String, dynamic> toJson() => {
@@ -88,6 +110,9 @@ class AppSettings {
         'tvMode': tvMode,
         'trueBlack': trueBlack,
         'seerrUrl': seerrUrl,
+        'hiddenLibraries': {
+          for (final e in hiddenLibraries.entries) e.key: e.value.toList(),
+        },
       };
 
   Map<String, dynamic> secrets() =>
@@ -106,6 +131,10 @@ class AppSettings {
         seerrUrl: j['seerrUrl'] as String?,
         seerrApiKey: secrets['seerrApiKey'] as String?,
         seerrCookie: secrets['seerrCookie'] as String?,
+        hiddenLibraries: {
+          for (final e in ((j['hiddenLibraries'] as Map?) ?? const {}).entries)
+            '${e.key}': {...((e.value as List?) ?? const []).map((v) => '$v')},
+        },
       );
 }
 

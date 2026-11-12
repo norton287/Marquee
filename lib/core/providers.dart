@@ -29,6 +29,9 @@ class SettingsNotifier extends Notifier<AppSettings> {
     state = f(state);
     unawaited(ref.read(storageProvider).saveSettings(state));
   }
+
+  void setLibraryHidden(String serverId, String libraryId, bool hidden) =>
+      change((s) => s.withLibraryHidden(serverId, libraryId, hidden));
 }
 
 final settingsProvider =
@@ -64,8 +67,15 @@ class ServersNotifier extends Notifier<List<ServerConfig>> {
         server,
       ]);
 
-  Future<void> remove(String id) =>
-      _save(state.where((s) => s.id != id).toList());
+  Future<void> remove(String id) async {
+    await _save(state.where((s) => s.id != id).toList());
+    // Forget its hidden libraries so a re-added server starts clean.
+    final settings = ref.read(settingsProvider.notifier);
+    if (ref.read(settingsProvider).hiddenLibraries.containsKey(id)) {
+      settings.change((s) => s.copyWith(
+          hiddenLibraries: {...s.hiddenLibraries}..remove(id)));
+    }
+  }
 
   /// Switches all Plex servers belonging to [homeToken] to [user].
   Future<void> switchPlexProfile({
@@ -124,8 +134,12 @@ MediaBackend createBackend(ServerConfig s) => switch (s.kind) {
     };
 
 final backendsProvider = Provider<Map<String, MediaBackend>>((ref) {
+  // Only rebuilds when the hidden set itself changes (copyWith keeps the
+  // same map otherwise), and every shelf then refetches without it.
+  final hidden = ref.watch(settingsProvider.select((s) => s.hiddenLibraries));
   final map = {
-    for (final s in ref.watch(serversProvider)) s.id: createBackend(s),
+    for (final s in ref.watch(serversProvider))
+      s.id: createBackend(s)..hiddenLibraries = hidden[s.id] ?? const {},
   };
   ref.onDispose(() {
     for (final b in map.values) {
@@ -152,14 +166,19 @@ Future<List<T>> _orEmpty<T>(Future<List<T>> f) async {
   }
 }
 
+/// [_orEmpty], minus anything from a library the user hid.
+Future<List<MediaItem>> _visible(
+        MediaBackend b, Future<List<MediaItem>> f) async =>
+    b.visible(await _orEmpty(f));
+
 // ---------------------------------------------------------------------------
 // Home
 // ---------------------------------------------------------------------------
 
 final continueWatchingProvider = FutureProvider<List<MediaItem>>((ref) async {
   final backends = ref.watch(backendsProvider).values.toList();
-  final lists =
-      await Future.wait(backends.map((b) => _orEmpty(b.continueWatching())));
+  final lists = await Future.wait(
+      backends.map((b) => _visible(b, b.continueWatching())));
   final all = lists.expand((l) => l).toList();
   if (backends.length > 1) {
     final epoch = DateTime(0);
@@ -171,20 +190,32 @@ final continueWatchingProvider = FutureProvider<List<MediaItem>>((ref) async {
 
 final nextUpProvider = FutureProvider<List<MediaItem>>((ref) async {
   final backends = ref.watch(backendsProvider).values;
-  final lists = await Future.wait(backends.map((b) => _orEmpty(b.nextUp())));
+  final lists =
+      await Future.wait(backends.map((b) => _visible(b, b.nextUp())));
   return lists.expand((l) => l).toList();
 });
 
-final librariesProvider =
+/// Every library on the server, hidden or not (Settings lists these).
+final allLibrariesProvider =
     FutureProvider.family<List<Library>, String>((ref, serverId) {
   return ref.backend(serverId).libraries();
+});
+
+/// The libraries the user hasn't hidden: what the rest of the app shows.
+final librariesProvider =
+    FutureProvider.family<List<Library>, String>((ref, serverId) async {
+  final hidden =
+      ref.watch(settingsProvider.select((s) => s.hiddenOn(serverId)));
+  final all = await ref.watch(allLibrariesProvider(serverId).future);
+  return all.where((l) => !hidden.contains(l.id)).toList();
 });
 
 typedef LibraryRef = ({String serverId, String libraryId});
 
 final libraryProvider =
     FutureProvider.family<Library, LibraryRef>((ref, key) async {
-  final libs = await ref.watch(librariesProvider(key.serverId).future);
+  // From the full list, so an open page survives its library being hidden.
+  final libs = await ref.watch(allLibrariesProvider(key.serverId).future);
   return libs.firstWhere((l) => l.id == key.libraryId);
 });
 
@@ -195,8 +226,9 @@ final recentlyAddedProvider =
 });
 
 final collectionsProvider =
-    FutureProvider.family<List<MediaItem>, String>((ref, serverId) {
-  return ref.backend(serverId).collections(null);
+    FutureProvider.family<List<MediaItem>, String>((ref, serverId) async {
+  final b = ref.backend(serverId);
+  return b.visible(await b.collections(null));
 });
 
 final libraryCollectionsProvider =
@@ -233,7 +265,8 @@ final childrenProvider =
 final similarProvider =
     FutureProvider.family<List<MediaItem>, ItemRef>((ref, key) async {
   final item = await ref.watch(itemProvider(key).future);
-  return ref.backend(key.serverId).similar(item);
+  final b = ref.backend(key.serverId);
+  return b.visible(await b.similar(item));
 });
 
 final watchlistedProvider =
@@ -243,6 +276,29 @@ final watchlistedProvider =
   final item = await ref.watch(itemProvider(key).future);
   return backend.isWatchlisted(item);
 });
+
+/// Asks [serverId] to rescan [library] (all libraries when null), then
+/// reloads what's on screen. The scan itself runs on the server, so a second
+/// reload follows once it has had time to find new files.
+Future<void> scanLibrary(
+    ProviderContainer container, String serverId, Library? library) async {
+  final backend = container.read(backendsProvider)[serverId];
+  if (backend == null) return;
+  await backend.scanLibrary(library);
+  void reload() {
+    container
+      ..invalidate(allLibrariesProvider(serverId))
+      ..invalidate(recentlyAddedProvider)
+      ..invalidate(continueWatchingProvider)
+      ..invalidate(nextUpProvider)
+      ..invalidate(collectionsProvider(serverId))
+      ..invalidate(libraryCollectionsProvider)
+      ..invalidate(discoverProvider);
+  }
+
+  reload();
+  Timer(const Duration(seconds: 20), reload);
+}
 
 /// Call after anything that changes watch state.
 void refreshWatchState(WidgetRef ref, [MediaItem? item]) {
@@ -267,8 +323,8 @@ final searchProvider = FutureProvider.autoDispose
   await Future<void>.delayed(const Duration(milliseconds: 280));
   if (cancelled) return const [];
   final backends = ref.watch(backendsProvider).values;
-  final lists =
-      await Future.wait(backends.map((b) => _orEmpty(b.search(query.trim()))));
+  final lists = await Future.wait(
+      backends.map((b) => _visible(b, b.search(query.trim()))));
   return lists.expand((l) => l).toList();
 });
 
@@ -278,9 +334,15 @@ final discoverProvider = FutureProvider<List<Shelf>>((ref) async {
   final out = <Shelf>[];
   for (var i = 0; i < backends.length; i++) {
     for (final s in lists[i]) {
-      out.add(backends.length > 1
-          ? Shelf('${s.title} · ${backends[i].config.name}', s.items)
-          : s);
+      final items = backends[i].visible(s.items);
+      if (items.isEmpty) continue;
+      out.add(Shelf(
+        backends.length > 1
+            ? '${s.title} · ${backends[i].config.name}'
+            : s.title,
+        items,
+        landscape: s.landscape,
+      ));
     }
   }
   return out;
@@ -293,7 +355,7 @@ final watchlistProvider = FutureProvider<List<Shelf>>((ref) async {
       .where((b) => b.supportsWatchlist)
       .toList();
   final lists =
-      await Future.wait(backends.map((b) => _orEmpty(b.watchlist())));
+      await Future.wait(backends.map((b) => _visible(b, b.watchlist())));
   return [
     for (var i = 0; i < backends.length; i++)
       if (lists[i].isNotEmpty)

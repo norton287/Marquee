@@ -22,7 +22,7 @@ class HomeScreen extends ConsumerWidget {
     Future<void> refresh() async {
       ref.invalidate(continueWatchingProvider);
       ref.invalidate(nextUpProvider);
-      ref.invalidate(librariesProvider);
+      ref.invalidate(allLibrariesProvider);
       ref.invalidate(recentlyAddedProvider);
       try {
         await ref.read(continueWatchingProvider.future);
@@ -105,7 +105,7 @@ class _ServerRecents extends ConsumerWidget {
               ),
               const SizedBox(width: 8),
               OutlinedButton(
-                onPressed: () => ref.invalidate(librariesProvider(server.id)),
+                onPressed: () => ref.invalidate(allLibrariesProvider(server.id)),
                 child: const Text('Retry'),
               ),
             ],

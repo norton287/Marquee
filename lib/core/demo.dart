@@ -251,6 +251,12 @@ class DemoBackend extends MediaBackend {
       chapters: i.chapters,
       markers: i.markers,
       isFavorite: _favorites.contains(i.id),
+      libraryId: switch (i.kind) {
+        MediaKind.movie => 'movies',
+        MediaKind.show || MediaKind.season || MediaKind.episode => 'shows',
+        MediaKind.artist || MediaKind.album || MediaKind.track => 'music',
+        _ => null,
+      },
     );
   }
 

@@ -339,6 +339,7 @@ class MediaItem {
     this.isFavorite = false,
     this.externalIds = const {},
     this.external = false,
+    this.libraryId,
   });
 
   final String serverId;
@@ -389,6 +390,10 @@ class MediaItem {
 
   /// True for items that are not on the server (e.g. Plex watchlist entries).
   final bool external;
+
+  /// The library the item lives in, where the server says so (Plex). Used to
+  /// keep hidden libraries out of merged shelves and search.
+  final String? libraryId;
 
   ItemRef get ref => (serverId: serverId, id: id, kind: kind);
 
@@ -470,6 +475,7 @@ class MediaItem {
         isFavorite: isFavorite ?? this.isFavorite,
         externalIds: externalIds,
         external: external,
+        libraryId: libraryId,
       );
 }
 

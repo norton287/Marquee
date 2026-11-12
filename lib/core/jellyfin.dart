@@ -467,13 +467,53 @@ class JellyfinBackend extends MediaBackend {
     return out;
   }
 
-  @override
-  Future<List<MediaItem>> continueWatching() => _list('/UserItems/Resume',
-      {'mediaTypes': 'Video', 'limit': 24, 'enableUserData': true});
+  Future<List<Library>>? _libraries;
+
+  /// Jellyfin items don't say which library they came from, so when the user
+  /// hides any, a query runs once per visible library ([where] narrows which)
+  /// with `parentId` set. With nothing hidden it runs once, unscoped.
+  Future<List<MediaItem>> _scoped(
+    Future<List<MediaItem>> Function(String? parentId) fetch, {
+    bool Function(Library l)? where,
+  }) async {
+    if (hiddenLibraries.isEmpty) return fetch(null);
+    final libs = (await (_libraries ??= libraries()))
+        .where((l) => !hiddenLibraries.contains(l.id) && (where?.call(l) ?? true));
+    final lists = await Future.wait(libs.map((l) => fetch(l.id)));
+    return lists.expand((l) => l).toList();
+  }
+
+  static bool _hasVideo(Library l) => l.kind != LibraryKind.music;
+  static bool _hasShows(Library l) =>
+      l.kind == LibraryKind.shows || l.kind == LibraryKind.other;
 
   @override
-  Future<List<MediaItem>> nextUp() => _list('/Shows/NextUp',
-      {'limit': 24, 'enableResumable': false, 'enableRewatching': false});
+  Future<List<MediaItem>> continueWatching() async {
+    final items = await _scoped(
+        (parent) => _list('/UserItems/Resume', {
+              'mediaTypes': 'Video',
+              'limit': 24,
+              'enableUserData': true,
+              'parentId': ?parent,
+            }),
+        where: _hasVideo);
+    if (hiddenLibraries.isNotEmpty) {
+      final epoch = DateTime(0);
+      items.sort((a, b) =>
+          (b.lastViewedAt ?? epoch).compareTo(a.lastViewedAt ?? epoch));
+    }
+    return items.take(24).toList();
+  }
+
+  @override
+  Future<List<MediaItem>> nextUp() => _scoped(
+      (parent) => _list('/Shows/NextUp', {
+            'limit': 24,
+            'enableResumable': false,
+            'enableRewatching': false,
+            'parentId': ?parent,
+          }),
+      where: _hasShows);
 
   @override
   Future<List<MediaItem>> recentlyAdded(Library library, {int limit = 20}) =>
@@ -584,14 +624,24 @@ class JellyfinBackend extends MediaBackend {
   Future<List<Shelf>> discover() async {
     final out = <Shelf>[];
     try {
-      final r = await _dio.get<List<dynamic>>('/Movies/Recommendations',
-          queryParameters: {
+      final all = await (_libraries ??= libraries());
+      final movieLibs = all.where((l) => l.kind == LibraryKind.movies);
+      final visibleMovieLibs =
+          movieLibs.where((l) => !hiddenLibraries.contains(l.id)).toList();
+      // Unscoped when nothing relevant is hidden; otherwise one call per
+      // visible movie library.
+      final parents = visibleMovieLibs.length == movieLibs.length
+          ? <String?>[null]
+          : [for (final l in visibleMovieLibs) l.id];
+      final responses = await Future.wait(parents.map((p) =>
+          _dio.get<List<dynamic>>('/Movies/Recommendations', queryParameters: {
             'userId': _uid,
             'categoryLimit': 6,
             'itemLimit': 16,
             'fields': _listFields,
-          });
-      for (final raw in r.data ?? const []) {
+            'parentId': ?p,
+          })));
+      for (final raw in responses.expand((r) => r.data ?? const [])) {
         final c = raw as Map<String, dynamic>;
         final items = _parseList(c['Items']);
         if (items.isEmpty) continue;
@@ -612,24 +662,33 @@ class JellyfinBackend extends MediaBackend {
     } on DioException {
       // Recommendations are optional.
     }
-    try {
-      final shows = await _list('/Items/Suggestions',
-          {'type': 'Series', 'mediaType': 'Video', 'limit': 16});
-      if (shows.isNotEmpty) out.add(Shelf('Shows you might like', shows));
-    } on DioException {
-      // Optional too.
+    // Suggestions can't be scoped to a library, so they're left out while a
+    // shows library is hidden.
+    final hidesShows = hiddenLibraries.isNotEmpty &&
+        (await (_libraries ??= libraries()))
+            .any((l) => _hasShows(l) && hiddenLibraries.contains(l.id));
+    if (!hidesShows) {
+      try {
+        final shows = await _list('/Items/Suggestions',
+            {'type': 'Series', 'mediaType': 'Video', 'limit': 16});
+        if (shows.isNotEmpty) out.add(Shelf('Shows you might like', shows));
+      } on DioException {
+        // Optional too.
+      }
     }
     return out;
   }
 
   @override
-  Future<List<MediaItem>> search(String query) => _list('/Items', {
+  Future<List<MediaItem>> search(String query) => _scoped((parent) =>
+      _list('/Items', {
         'searchTerm': query,
         'recursive': true,
         'limit': 60,
         'includeItemTypes':
             'Movie,Series,Episode,MusicArtist,MusicAlbum,Audio,BoxSet,Playlist',
-      });
+        'parentId': ?parent,
+      }));
 
   @override
   Future<MediaItem?> nextEpisode(MediaItem episode) async {
@@ -823,14 +882,45 @@ class JellyfinBackend extends MediaBackend {
   String get watchlistName => 'Favorites';
 
   @override
-  Future<List<MediaItem>> watchlist() => _list('/Items', {
+  Future<List<MediaItem>> watchlist() => _scoped((parent) => _list('/Items', {
         'filters': 'IsFavorite',
         'recursive': true,
         'includeItemTypes': 'Movie,Series,Episode,MusicAlbum',
         'sortBy': 'DateCreated',
         'sortOrder': 'Descending',
         'limit': 200,
-      });
+        'parentId': ?parent,
+      }));
+
+  // -- library scans --------------------------------------------------------
+
+  @override
+  bool get canScanLibraries => true;
+
+  @override
+  Future<void> scanLibrary(Library? library) async {
+    try {
+      if (library == null) {
+        await _dio.post<dynamic>('/Library/Refresh');
+      } else {
+        await _dio.post<dynamic>('/Items/${library.id}/Refresh',
+            queryParameters: {
+              'recursive': true,
+              'metadataRefreshMode': 'Default',
+              'imageRefreshMode': 'Default',
+              'replaceAllMetadata': false,
+              'replaceAllImages': false,
+            });
+      }
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Only a Jellyfin administrator can scan libraries.');
+      }
+      rethrow;
+    }
+  }
 
   @override
   Future<bool> isWatchlisted(MediaItem item) async => item.isFavorite;
