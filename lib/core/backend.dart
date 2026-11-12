@@ -28,6 +28,15 @@ class ClientInfo {
   }
 }
 
+/// A failure whose [message] is already worded for the user.
+class BackendException implements Exception {
+  const BackendException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// Everything the UI needs from a media server. Plex and Jellyfin each
 /// implement this, so no screen ever knows which one it is talking to.
 abstract class MediaBackend {

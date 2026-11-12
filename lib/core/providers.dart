@@ -67,6 +67,40 @@ class ServersNotifier extends Notifier<List<ServerConfig>> {
   Future<void> remove(String id) =>
       _save(state.where((s) => s.id != id).toList());
 
+  /// Switches all Plex servers belonging to [homeToken] to [user].
+  Future<void> switchPlexProfile({
+    required String homeToken,
+    required PlexHomeUser user,
+    String? pin,
+  }) async {
+    final userToken =
+        await PlexAccount.switchHomeUser(homeToken, user.uuid, pin: pin);
+    final resources = await PlexAccount.servers(userToken);
+    final byMachine = {for (final r in resources) r.machineId: r};
+    final next = <ServerConfig>[];
+    for (final s in state) {
+      final serverHomeToken = s.homeToken ?? s.accountToken;
+      if (s.kind == ServerKind.plex && serverHomeToken == homeToken) {
+        final r = byMachine[s.machineId];
+        next.add(s.copyWith(
+          token: r?.accessToken ?? userToken,
+          accountToken: userToken,
+          homeToken: homeToken,
+          userId: user.uuid,
+          userName: user.name,
+          userThumb: user.thumb,
+          connections: (r != null && r.connections.isNotEmpty)
+              ? r.connections
+              : s.connections,
+        ));
+      } else {
+        next.add(s);
+      }
+    }
+    await _save(next);
+    unawaited(_revalidate());
+  }
+
   Future<void> _revalidate() async {
     for (final s in state) {
       if (s.kind != ServerKind.plex || s.connections.length < 2) continue;

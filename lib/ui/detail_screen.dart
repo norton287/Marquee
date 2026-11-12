@@ -22,6 +22,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
   String? _versionId;
   String? _seasonId;
   bool _busy = false;
+  bool _shuffling = false;
 
   void _toast(Object e) {
     if (!mounted) return;
@@ -30,40 +31,61 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
   }
 
   /// Play on a show, season, album, playlist or collection: find the right
-  /// thing to start with.
-  Future<void> _playContainer(MediaItem item) async {
-    setState(() => _busy = true);
+  /// thing to start with, or shuffle all playable items when [shuffle] is true.
+  Future<void> _playContainer(MediaItem item, {bool shuffle = false}) async {
+    setState(() {
+      _busy = true;
+      _shuffling = shuffle;
+    });
     try {
       final backend = ref.read(backendsProvider)[item.serverId]!;
       var leaves = <MediaItem>[];
       if (item.kind == MediaKind.show) {
         final seasons = await backend.children(item);
         // Regular seasons first; specials (season 0) only as a last resort.
+        final regular = seasons.where((s) => (s.index ?? 1) > 0).toList();
         final ordered = [
-          ...seasons.where((s) => (s.index ?? 1) > 0),
+          ...regular,
           ...seasons.where((s) => (s.index ?? 1) <= 0),
         ];
-        for (final s in ordered) {
-          if (s.played) continue;
-          leaves = await backend.children(s);
-          if (leaves.any((e) => !e.played)) break;
-        }
-        if (leaves.isEmpty && ordered.isNotEmpty) {
-          leaves = await backend.children(ordered.first);
+        if (shuffle) {
+          final sourceSeasons = regular.isNotEmpty ? regular : ordered;
+          final lists = await Future.wait(sourceSeasons.map(backend.children));
+          leaves = lists.expand((l) => l).toList();
+        } else {
+          for (final s in ordered) {
+            if (s.played) continue;
+            leaves = await backend.children(s);
+            if (leaves.any((e) => !e.played)) break;
+          }
+          if (leaves.isEmpty && ordered.isNotEmpty) {
+            leaves = await backend.children(ordered.first);
+          }
         }
       } else {
         leaves = await backend.children(item);
       }
       leaves = leaves.where((e) => e.kind.isPlayable).toList();
       if (leaves.isEmpty) throw StateError('Nothing to play here yet');
-      final target = leaves.first.kind.isAudio
-          ? leaves.first
-          : leaves.firstWhere((e) => !e.played, orElse: () => leaves.first);
+      final MediaItem target;
+      if (shuffle) {
+        leaves = [...leaves]..shuffle();
+        target = leaves.first;
+      } else {
+        target = leaves.first.kind.isAudio
+            ? leaves.first
+            : leaves.firstWhere((e) => !e.played, orElse: () => leaves.first);
+      }
       if (mounted) playItem(context, target, queue: leaves);
     } catch (e) {
       _toast(e);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _shuffling = false;
+        });
+      }
     }
   }
 
@@ -380,11 +402,11 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                 ? 'Resume · ${formatDuration(remaining)} left'
                 : 'Play'),
           )
-        else if (playableContainer)
+        else if (playableContainer) ...[
           FilledButton.icon(
             autofocus: l.tv,
             onPressed: _busy ? null : () => _playContainer(item),
-            icon: _busy
+            icon: _busy && !_shuffling
                 ? const SizedBox(
                     width: 18,
                     height: 18,
@@ -392,6 +414,18 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                 : const Icon(Icons.play_arrow_rounded),
             label: const Text('Play'),
           ),
+          OutlinedButton.icon(
+            onPressed:
+                _busy ? null : () => _playContainer(item, shuffle: true),
+            icon: _busy && _shuffling
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2.5))
+                : const Icon(Icons.shuffle_rounded, size: 18),
+            label: const Text('Shuffle'),
+          ),
+        ],
         if (kind.isVideo && item.inProgress)
           IconButton.outlined(
             tooltip: 'Start from the beginning',
@@ -614,7 +648,7 @@ class _LeafList extends ConsumerWidget {
             for (final c in list)
               c.kind == MediaKind.track
                   ? _TrackTile(track: c, queue: list)
-                  : _EpisodeTile(episode: c),
+                  : _EpisodeTile(episode: c, queue: list),
           ],
         ),
       ),
@@ -623,15 +657,16 @@ class _LeafList extends ConsumerWidget {
 }
 
 class _EpisodeTile extends StatelessWidget {
-  const _EpisodeTile({required this.episode});
+  const _EpisodeTile({required this.episode, this.queue});
   final MediaItem episode;
+  final List<MediaItem>? queue;
 
   @override
   Widget build(BuildContext context) {
     final l = AppLayout.of(context);
     final thumbWidth = l.phone ? 132.0 : (l.tv ? 240.0 : 200.0);
     return Pressable(
-      onTap: () => playItem(context, episode),
+      onTap: () => playItem(context, episode, queue: queue),
       onLongPress: () => openItem(context, episode),
       grow: 1,
       builder: (context, focused, hovered) => AnimatedContainer(

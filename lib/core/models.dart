@@ -66,7 +66,9 @@ class ServerConfig {
     this.token = '',
     this.userId,
     this.userName,
+    this.userThumb,
     this.accountToken,
+    this.homeToken,
     this.machineId,
     this.connections = const [],
   });
@@ -78,25 +80,46 @@ class ServerConfig {
   final String token;
   final String? userId;
   final String? userName;
+  final String? userThumb;
 
-  /// Plex only: the plex.tv account token (watchlist lives on plex.tv).
+  /// Plex only: the active profile's plex.tv token (watchlist lives on plex.tv).
   final String? accountToken;
+
+  /// Plex only: the primary plex.tv account token from sign-in, used to list
+  /// and switch Plex Home profiles even when a managed user is active.
+  final String? homeToken;
   final String? machineId;
 
   /// Plex only: every address the server advertises, best first.
   final List<String> connections;
 
-  ServerConfig copyWith({String? baseUrl, String? name}) => ServerConfig(
+  static const _keep = Object();
+
+  ServerConfig copyWith({
+    String? baseUrl,
+    String? name,
+    String? token,
+    String? userId,
+    String? userName,
+    Object? userThumb = _keep,
+    String? accountToken,
+    String? homeToken,
+    List<String>? connections,
+  }) =>
+      ServerConfig(
         id: id,
         kind: kind,
         name: name ?? this.name,
         baseUrl: baseUrl ?? this.baseUrl,
-        token: token,
-        userId: userId,
-        userName: userName,
-        accountToken: accountToken,
+        token: token ?? this.token,
+        userId: userId ?? this.userId,
+        userName: userName ?? this.userName,
+        userThumb:
+            userThumb == _keep ? this.userThumb : userThumb as String?,
+        accountToken: accountToken ?? this.accountToken,
+        homeToken: homeToken ?? this.homeToken,
         machineId: machineId,
-        connections: connections,
+        connections: connections ?? this.connections,
       );
 
   /// Public part, safe for plain preferences.
@@ -107,12 +130,16 @@ class ServerConfig {
         'baseUrl': baseUrl,
         'userId': userId,
         'userName': userName,
+        'userThumb': userThumb,
         'machineId': machineId,
         'connections': connections,
       };
 
-  Map<String, dynamic> secrets() =>
-      {'token': token, 'accountToken': accountToken};
+  Map<String, dynamic> secrets() => {
+        'token': token,
+        'accountToken': accountToken,
+        'homeToken': homeToken,
+      };
 
   factory ServerConfig.fromJson(
           Map<String, dynamic> j, Map<String, dynamic> secrets) =>
@@ -123,8 +150,10 @@ class ServerConfig {
         baseUrl: j['baseUrl'] as String? ?? '',
         token: secrets['token'] as String? ?? '',
         accountToken: secrets['accountToken'] as String?,
+        homeToken: (secrets['homeToken'] ?? secrets['accountToken']) as String?,
         userId: j['userId'] as String?,
         userName: j['userName'] as String?,
+        userThumb: j['userThumb'] as String?,
         machineId: j['machineId'] as String?,
         connections:
             (j['connections'] as List?)?.cast<String>() ?? const <String>[],

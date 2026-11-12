@@ -17,10 +17,16 @@ import 'settings_screen.dart';
 import 'shell.dart';
 
 class PlayerArgs {
-  const PlayerArgs(this.item, {this.startOver = false, this.versionId});
+  const PlayerArgs(
+    this.item, {
+    this.startOver = false,
+    this.versionId,
+    this.queue = const [],
+  });
   final MediaItem item;
   final bool startOver;
   final String? versionId;
+  final List<MediaItem> queue;
 }
 
 const _tabs = ['home', 'libraries', 'search', 'explore', 'settings'];
@@ -55,7 +61,7 @@ void openLibrary(BuildContext context, Library library) {
 }
 
 /// Plays a video full screen, or hands a track to the music player.
-/// [queue] is the list the track came from (album, playlist).
+/// [queue] is the list the item came from (album, playlist, season).
 void playItem(
   BuildContext context,
   MediaItem item, {
@@ -72,8 +78,17 @@ void playItem(
         .playQueue(tracks, index < 0 ? 0 : index);
     return;
   }
-  context.push('/player',
-      extra: PlayerArgs(item, startOver: startOver, versionId: versionId));
+  final videos =
+      (queue ?? const <MediaItem>[]).where((v) => v.kind.isVideo).toList();
+  context.push(
+    '/player',
+    extra: PlayerArgs(
+      item,
+      startOver: startOver,
+      versionId: versionId,
+      queue: videos,
+    ),
+  );
 }
 
 final _rootKey = GlobalKey<NavigatorState>(debugLabel: 'root');

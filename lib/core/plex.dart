@@ -40,6 +40,50 @@ class PlexResource {
   final List<String> connections;
 }
 
+class PlexHomeUser {
+  const PlexHomeUser({
+    required this.uuid,
+    required this.name,
+    this.thumb,
+    this.admin = false,
+    this.restricted = false,
+    this.guest = false,
+    this.protected = false,
+  });
+
+  final String uuid;
+  final String name;
+  final String? thumb;
+  final bool admin;
+  final bool restricted;
+  final bool guest;
+  final bool protected;
+
+  String get subtitle {
+    if (admin) return 'Admin';
+    if (guest) return 'Guest';
+    if (restricted) return 'Managed profile';
+    return 'Home user';
+  }
+
+  static PlexHomeUser parse(Map<String, dynamic> m) {
+    final name = [m['title'], m['friendlyName'], m['username']]
+        .whereType<String>()
+        .map((s) => s.trim())
+        .firstWhere((s) => s.isNotEmpty, orElse: () => 'Plex user');
+    final thumb = m['thumb'] as String?;
+    return PlexHomeUser(
+      uuid: '${m['uuid'] ?? m['id'] ?? ''}',
+      name: name,
+      thumb: (thumb == null || thumb.isEmpty) ? null : thumb,
+      admin: asBool(m['admin']),
+      restricted: asBool(m['restricted']),
+      guest: asBool(m['guest']),
+      protected: asBool(m['protected']),
+    );
+  }
+}
+
 class PlexAccount {
   static Dio _tv([String? token]) => Dio(BaseOptions(
         baseUrl: 'https://plex.tv/api/v2',
@@ -67,10 +111,61 @@ class PlexAccount {
     return (t == null || t.isEmpty) ? null : t;
   }
 
-  static Future<String> userName(String token) async {
+  static Future<PlexHomeUser> currentUser(String token) async {
     final r = await _tv(token).get<Map<String, dynamic>>('/user');
-    return (r.data?['friendlyName'] ?? r.data?['username'] ?? 'Plex user')
-        as String;
+    return PlexHomeUser.parse(r.data ?? const {});
+  }
+
+  static Future<String> userName(String token) async =>
+      (await currentUser(token)).name;
+
+  /// Lists all users in the Plex Home. Falls back to the signed-in account
+  /// if the account is not in a Plex Home.
+  static Future<List<PlexHomeUser>> homeUsers(String token) async {
+    try {
+      final r = await _tv(token).get<Map<String, dynamic>>('/home/users');
+      final raw = (r.data?['users'] as List?) ?? const [];
+      final users = [
+        for (final u in raw.whereType<Map<String, dynamic>>())
+          PlexHomeUser.parse(u),
+      ];
+      if (users.isNotEmpty) return users;
+    } catch (_) {
+      // Fall back to /user below if /home/users is unavailable.
+    }
+    return [await currentUser(token)];
+  }
+
+  /// Exchanges a Plex Home account token for a specific Home user's token.
+  static Future<String> switchHomeUser(
+    String homeToken,
+    String uuid, {
+    String? pin,
+  }) async {
+    try {
+      final r = await _tv(homeToken).post<Map<String, dynamic>>(
+        '/home/users/$uuid/switch',
+        queryParameters: {
+          if (pin != null && pin.isNotEmpty) 'pin': pin,
+        },
+      );
+      final token = r.data?['authToken'] as String?;
+      if (token == null || token.isEmpty) {
+        throw const BackendException('Plex did not return a profile token.');
+      }
+      return token;
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403 || code == 422) {
+        // Only blame the PIN when one was sent; otherwise the account token
+        // itself was refused (revoked or expired).
+        throw BackendException(pin != null && pin.isNotEmpty
+            ? 'That PIN wasn\'t right.'
+            : 'Plex refused this sign-in. Remove the server in Settings and '
+                'sign in again.');
+      }
+      rethrow;
+    }
   }
 
   static Future<List<PlexResource>> servers(String token) async {

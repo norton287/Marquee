@@ -123,6 +123,12 @@ class MusicController extends Notifier<MusicState> {
     _player?.seek(to);
   }
 
+  Future<void> shuffleQueue() async {
+    if (state.queue.length < 2) return;
+    final shuffled = [...state.queue]..shuffle();
+    await playQueue(shuffled, 0);
+  }
+
   Future<void> stop() async {
     await _player?.stop();
     state = const MusicState();
@@ -299,6 +305,14 @@ class NowPlayingPanel extends ConsumerWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            if (s.queue.length > 1) ...[
+              IconButton(
+                tooltip: 'Shuffle',
+                onPressed: ctl.shuffleQueue,
+                icon: const Icon(Icons.shuffle_rounded),
+              ),
+              const SizedBox(width: 8),
+            ],
             IconButton(
               tooltip: 'Previous',
               iconSize: 36,
@@ -321,6 +335,7 @@ class NowPlayingPanel extends ConsumerWidget {
               onPressed: s.hasNext ? ctl.next : null,
               icon: const Icon(Icons.skip_next_rounded),
             ),
+            if (s.queue.length > 1) const SizedBox(width: 48),
           ],
         ),
         const SizedBox(height: 16),

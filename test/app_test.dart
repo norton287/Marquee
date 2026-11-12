@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marquee/app.dart';
+import 'package:marquee/core/backend.dart';
 import 'package:marquee/core/demo.dart';
 import 'package:marquee/core/jellyfin.dart';
 import 'package:marquee/core/models.dart';
@@ -84,6 +85,17 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Season 1'), findsOneWidget);
     expect(find.text('3. Episode 3'), findsOneWidget);
+    expect(find.text('Shuffle'), findsOneWidget);
+  });
+
+  testWidgets('playlist page offers Play and Shuffle', (tester) async {
+    await _pump(tester, const Size(1440, 900));
+    await tester.tap(find.text('Libraries').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Friday Night'));
+    await tester.pumpAndSettle();
+    expect(find.text('Play'), findsOneWidget);
+    expect(find.text('Shuffle'), findsOneWidget);
   });
 
   testWidgets('search finds demo titles across kinds', (tester) async {
@@ -232,5 +244,76 @@ void main() {
     // Tokens never land in the plain server list.
     expect(await store.read('servers'), isNot(contains('secret')));
     expect(DemoBackend.demoId, 'demo');
+  });
+
+  test('Plex Home profile survives storage and keeps tokens secret', () async {
+    final store = MemoryStore();
+    final a = AppStorage(store);
+    await a.load();
+    await a.saveServers(const [
+      ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+          baseUrl: 'http://p', token: 'srv', accountToken: 'kid-token',
+          homeToken: 'home-token', userId: 'u2', userName: 'Kid',
+          userThumb: 'https://plex.tv/kid.png'),
+    ]);
+    final b = AppStorage(store);
+    await b.load();
+    final s = b.servers.single;
+    expect(s.accountToken, 'kid-token');
+    expect(s.homeToken, 'home-token');
+    expect(s.userId, 'u2');
+    expect(s.userName, 'Kid');
+    expect(s.userThumb, 'https://plex.tv/kid.png');
+    final plain = await store.read('servers');
+    expect(plain, isNot(contains('home-token')));
+    expect(plain, isNot(contains('kid-token')));
+  });
+
+  test('servers saved before profiles existed treat the account as home', () {
+    final s = ServerConfig.fromJson(
+      {'id': 'p', 'kind': 'plex', 'name': 'P', 'baseUrl': 'http://p'},
+      {'token': 't', 'accountToken': 'acct'},
+    );
+    expect(s.homeToken, 'acct');
+  });
+
+  test('ServerConfig.copyWith keeps unspecified fields', () {
+    const s = ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+        baseUrl: 'http://p', token: 't', homeToken: 'h',
+        userThumb: 'thumb', connections: ['http://a', 'http://b']);
+    final moved = s.copyWith(baseUrl: 'http://b');
+    expect(moved.baseUrl, 'http://b');
+    expect(moved.token, 't');
+    expect(moved.homeToken, 'h');
+    expect(moved.userThumb, 'thumb');
+    expect(moved.connections, ['http://a', 'http://b']);
+    // A profile without a picture clears the previous one.
+    expect(s.copyWith(userThumb: null).userThumb, isNull);
+  });
+
+  test('Plex Home users parse from plex.tv', () {
+    final admin = PlexHomeUser.parse({
+      'uuid': 'a1', 'title': 'Alex', 'username': 'alex42',
+      'thumb': 'https://plex.tv/a.png', 'admin': true, 'protected': true,
+    });
+    expect(admin.uuid, 'a1');
+    expect(admin.name, 'Alex');
+    expect(admin.subtitle, 'Admin');
+    expect(admin.protected, isTrue);
+
+    final kid = PlexHomeUser.parse({
+      'id': 7, 'title': '  ', 'friendlyName': 'Kiddo', 'thumb': '',
+      'restricted': 1,
+    });
+    expect(kid.uuid, '7');
+    expect(kid.name, 'Kiddo');
+    expect(kid.thumb, isNull);
+    expect(kid.subtitle, 'Managed profile');
+    expect(PlexHomeUser.parse(const {}).name, 'Plex user');
+  });
+
+  test('backend errors reach the user verbatim', () {
+    expect(friendlyError(const BackendException('That PIN wasn\'t right.')),
+        'That PIN wasn\'t right.');
   });
 }

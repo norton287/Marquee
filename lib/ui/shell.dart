@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../core/models.dart';
+import '../core/providers.dart';
+import 'add_server_screen.dart';
 import 'music.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -75,7 +79,7 @@ class AppShell extends StatelessWidget {
   }
 }
 
-class _SideNav extends StatelessWidget {
+class _SideNav extends ConsumerWidget {
   const _SideNav({
     required this.index,
     required this.expanded,
@@ -88,7 +92,13 @@ class _SideNav extends StatelessWidget {
   final ValueChanged<int> onSelect;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final plexServer = ref
+        .watch(serversProvider)
+        .where((s) =>
+            s.kind == ServerKind.plex &&
+            (s.homeToken ?? s.accountToken) != null)
+        .firstOrNull;
     return Container(
       width: expanded ? 216 : (tv ? 104 : 84),
       decoration: const BoxDecoration(
@@ -107,7 +117,18 @@ class _SideNav extends StatelessWidget {
           ),
           const SizedBox(height: 26),
           for (var i = 0; i < _destinations.length; i++) ...[
-            if (i == _destinations.length - 1) const Spacer(),
+            if (i == _destinations.length - 1) ...[
+              const Spacer(),
+              if (plexServer != null) ...[
+                _SideProfileItem(
+                  server: plexServer,
+                  expanded: expanded,
+                  onTap: () =>
+                      showPlexProfileDialog(context, ref, server: plexServer),
+                ),
+                const SizedBox(height: 6),
+              ],
+            ],
             _SideItem(
               dest: _destinations[i],
               selected: i == index,
@@ -118,6 +139,71 @@ class _SideNav extends StatelessWidget {
           ],
           const SizedBox(height: 12),
         ],
+      ),
+    );
+  }
+}
+
+class _SideProfileItem extends StatelessWidget {
+  const _SideProfileItem({
+    required this.server,
+    required this.expanded,
+    required this.onTap,
+  });
+  final ServerConfig server;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = server.userName ?? 'Profile';
+    return Semantics(
+      button: true,
+      label: 'Switch Plex profile ($name)',
+      child: Pressable(
+        onTap: onTap,
+        grow: 1,
+        builder: (context, focused, hovered) {
+          final color = focused ? Palette.text : Palette.muted;
+          final avatar =
+              PlexAvatar(name: name, thumb: server.userThumb, size: 24);
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
+            padding: EdgeInsets.symmetric(
+                vertical: expanded ? 11 : 9, horizontal: expanded ? 12 : 2),
+            decoration: BoxDecoration(
+              color: focused
+                  ? Palette.surfaceHigh
+                  : (hovered ? Palette.surface : null),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: focused ? Colors.white : Colors.transparent, width: 2),
+            ),
+            child: expanded
+                ? Row(children: [
+                    avatar,
+                    const SizedBox(width: 14),
+                    Flexible(
+                      child: Text(name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: color, fontWeight: FontWeight.w600)),
+                    ),
+                  ])
+                : Column(children: [
+                    avatar,
+                    const SizedBox(height: 3),
+                    Text(name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: color,
+                            fontWeight: FontWeight.w600)),
+                  ]),
+          );
+        },
       ),
     );
   }

@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/backend.dart';
 import '../core/models.dart';
 import '../core/providers.dart';
 import 'nav.dart';
@@ -719,6 +720,7 @@ class MediaSliverGrid extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 String friendlyError(Object error) {
+  if (error is BackendException) return error.message;
   if (error is DioException) {
     final code = error.response?.statusCode;
     if (code == 401 || code == 403) {

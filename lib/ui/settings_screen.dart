@@ -54,13 +54,20 @@ class SettingsScreen extends ConsumerWidget {
                 _Card(children: [
                   for (final s in servers)
                     ListTile(
-                      leading: CircleAvatar(
-                        radius: 16,
-                        backgroundColor:
-                            serverColor(s.kind).withValues(alpha: 0.2),
-                        child: Icon(Icons.dns_rounded,
-                            size: 16, color: serverColor(s.kind)),
-                      ),
+                      leading: s.kind == ServerKind.plex &&
+                              (s.userName != null || s.userThumb != null)
+                          ? PlexAvatar(
+                              name: s.userName ?? s.name,
+                              thumb: s.userThumb,
+                              size: 32,
+                            )
+                          : CircleAvatar(
+                              radius: 16,
+                              backgroundColor:
+                                  serverColor(s.kind).withValues(alpha: 0.2),
+                              child: Icon(Icons.dns_rounded,
+                                  size: 16, color: serverColor(s.kind)),
+                            ),
                       title: Text(s.name),
                       subtitle: Text([
                         switch (s.kind) {
@@ -71,10 +78,23 @@ class SettingsScreen extends ConsumerWidget {
                         ?s.userName,
                         if (s.kind != ServerKind.demo) Uri.tryParse(s.baseUrl)?.host,
                       ].nonNulls.join(' · ')),
-                      trailing: IconButton(
-                        tooltip: 'Remove ${s.name}',
-                        icon: const Icon(Icons.delete_outline_rounded),
-                        onPressed: () => _confirmRemove(context, ref, s),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (s.kind == ServerKind.plex &&
+                              (s.homeToken ?? s.accountToken) != null)
+                            IconButton(
+                              tooltip: 'Switch Plex profile',
+                              icon: const Icon(Icons.switch_account_rounded),
+                              onPressed: () =>
+                                  showPlexProfileDialog(context, ref, server: s),
+                            ),
+                          IconButton(
+                            tooltip: 'Remove ${s.name}',
+                            icon: const Icon(Icons.delete_outline_rounded),
+                            onPressed: () => _confirmRemove(context, ref, s),
+                          ),
+                        ],
                       ),
                     ),
                   Padding(

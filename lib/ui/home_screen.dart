@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/models.dart';
 import '../core/providers.dart';
+import 'add_server_screen.dart';
 import 'nav.dart';
 import 'shell.dart';
 import 'theme.dart';
@@ -135,15 +136,21 @@ class _ServerRecents extends ConsumerWidget {
 }
 
 /// Full-bleed feature for the thing you were last watching.
-class _Hero extends StatelessWidget {
+class _Hero extends ConsumerWidget {
   const _Hero({required this.item, required this.loading});
   final MediaItem? item;
   final bool loading;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final l = AppLayout.of(context);
     final top = MediaQuery.paddingOf(context).top;
+    final plexServer = ref
+        .watch(serversProvider)
+        .where((s) =>
+            s.kind == ServerKind.plex &&
+            (s.homeToken ?? s.accountToken) != null)
+        .firstOrNull;
     final i = item;
     if (i == null) {
       // No hero: a compact header keeps the page from starting abruptly.
@@ -152,8 +159,20 @@ class _Hero extends StatelessWidget {
         child: l.sideNav
             ? Text(loading ? ' ' : 'Home',
                 style: Theme.of(context).textTheme.headlineMedium)
-            : const Align(
-                alignment: Alignment.centerLeft, child: Wordmark()),
+            : Row(
+                children: [
+                  const Expanded(
+                    child: Align(
+                        alignment: Alignment.centerLeft, child: Wordmark()),
+                  ),
+                  if (plexServer != null)
+                    _ProfilePill(
+                      server: plexServer,
+                      onTap: () => showPlexProfileDialog(context, ref,
+                          server: plexServer),
+                    ),
+                ],
+              ),
       );
     }
     final bg = Theme.of(context).scaffoldBackgroundColor;
@@ -201,7 +220,23 @@ class _Hero extends StatelessWidget {
             Positioned(
               top: top + 14,
               left: l.gutter,
-              child: const Wordmark(size: 18),
+              right: l.gutter,
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Wordmark(size: 18),
+                    ),
+                  ),
+                  if (plexServer != null)
+                    _ProfilePill(
+                      server: plexServer,
+                      onTap: () => showPlexProfileDialog(context, ref,
+                          server: plexServer),
+                    ),
+                ],
+              ),
             ),
           Positioned(
             left: l.gutter,
@@ -280,6 +315,63 @@ class _Hero extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Avatar + name of the active Plex Home profile in the phone header.
+/// Tapping it opens the "Who's watching?" switcher.
+class _ProfilePill extends StatelessWidget {
+  const _ProfilePill({required this.server, required this.onTap});
+  final ServerConfig server;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = server.userName ?? 'Profile';
+    return Semantics(
+      button: true,
+      label: 'Switch Plex profile ($name)',
+      excludeSemantics: true,
+      child: Pressable(
+        onTap: onTap,
+        builder: (context, focused, hovered) => AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.fromLTRB(4, 4, 12, 4),
+          decoration: BoxDecoration(
+            // Translucent so it reads over hero artwork as well as the
+            // plain background.
+            color: focused || hovered
+                ? Palette.surfaceHigh
+                : Palette.bg.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+              color: focused ? Colors.white : Palette.outline,
+              width: focused ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              PlexAvatar(name: name, thumb: server.userThumb, size: 26),
+              const SizedBox(width: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 120),
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Palette.text,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

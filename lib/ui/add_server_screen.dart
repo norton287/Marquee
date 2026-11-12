@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -120,8 +121,279 @@ class _ErrorText extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Plex: link code, then pick servers
+// Plex: link code, pick Home profile (if any), then pick servers
 // ---------------------------------------------------------------------------
+
+class PlexAvatar extends StatelessWidget {
+  const PlexAvatar({
+    super.key,
+    required this.name,
+    this.thumb,
+    this.size = 36,
+  });
+
+  final String name;
+  final String? thumb;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final trimmed = name.trim();
+    final initial = trimmed.isEmpty ? 'P' : trimmed[0].toUpperCase();
+    final hue = (name.hashCode % 360).abs().toDouble();
+    final fallback = Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: HSLColor.fromAHSL(1, hue, 0.35, 0.28).toColor(),
+      ),
+      child: Text(
+        initial,
+        style: TextStyle(
+          fontSize: size * 0.44,
+          fontWeight: FontWeight.w700,
+          color: Colors.white,
+        ),
+      ),
+    );
+    final url = thumb;
+    if (url == null || url.isEmpty || !Artwork.network) return fallback;
+    return ClipOval(
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: CachedNetworkImage(
+          imageUrl: url,
+          fit: BoxFit.cover,
+          placeholder: (_, _) => fallback,
+          errorWidget: (_, _, _) => fallback,
+        ),
+      ),
+    );
+  }
+}
+
+/// Opens the "Who's watching?" dialog to switch the active Plex Home profile.
+Future<void> showPlexProfileDialog(
+  BuildContext context,
+  WidgetRef ref, {
+  ServerConfig? server,
+}) async {
+  final target = server ??
+      ref
+          .read(serversProvider)
+          .where((s) => s.kind == ServerKind.plex)
+          .firstOrNull;
+  if (target == null) return;
+  final homeToken = target.homeToken ?? target.accountToken;
+  if (homeToken == null || homeToken.isEmpty) return;
+  await showDialog<void>(
+    context: context,
+    builder: (_) => _PlexProfileDialog(server: target, homeToken: homeToken),
+  );
+}
+
+class _PlexProfileDialog extends ConsumerStatefulWidget {
+  const _PlexProfileDialog({
+    required this.server,
+    required this.homeToken,
+  });
+
+  final ServerConfig server;
+  final String homeToken;
+
+  @override
+  ConsumerState<_PlexProfileDialog> createState() => _PlexProfileDialogState();
+}
+
+class _PlexProfileDialogState extends ConsumerState<_PlexProfileDialog> {
+  List<PlexHomeUser>? _users;
+  PlexHomeUser? _pinTarget;
+  final _pinController = TextEditingController();
+  bool _busy = false;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _error = null;
+      _users = null;
+    });
+    try {
+      final users = await PlexAccount.homeUsers(widget.homeToken);
+      if (!mounted) return;
+      setState(() => _users = users);
+    } catch (e) {
+      if (mounted) setState(() => _error = e);
+    }
+  }
+
+  Future<void> _pick(PlexHomeUser u, {String? pin}) async {
+    if (u.protected && (pin == null || pin.isEmpty)) {
+      setState(() {
+        _pinTarget = u;
+        _pinController.clear();
+        _error = null;
+      });
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await ref.read(serversProvider.notifier).switchPlexProfile(
+            homeToken: widget.homeToken,
+            user: u,
+            pin: pin,
+          );
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) setState(() => _error = e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pinTarget = _pinTarget;
+    final users = _users;
+    final activeId = widget.server.userId;
+    final activeName = widget.server.userName;
+
+    return AlertDialog(
+      title: Text(pinTarget != null ? 'Enter PIN' : 'Who\'s watching?'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 380, minWidth: 280),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (pinTarget != null) ...[
+                Row(
+                  children: [
+                    PlexAvatar(
+                        name: pinTarget.name, thumb: pinTarget.thumb, size: 40),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(pinTarget.name,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w700)),
+                          Text(pinTarget.subtitle,
+                              style: const TextStyle(
+                                  color: Palette.muted, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _pinController,
+                  autofocus: true,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.done,
+                  maxLength: 4,
+                  decoration: const InputDecoration(
+                    hintText: '4-digit PIN',
+                    prefixIcon: Icon(Icons.lock_outline_rounded),
+                    counterText: '',
+                  ),
+                  onSubmitted: (v) => _pick(pinTarget, pin: v.trim()),
+                ),
+              ] else if (users == null && _error == null) ...[
+                const SizedBox(height: 120, child: Loading()),
+              ] else if (users != null) ...[
+                for (var i = 0; i < users.length; i++) ...[
+                  Builder(builder: (context) {
+                    final u = users[i];
+                    final isCurrent = (activeId != null && activeId.isNotEmpty)
+                        ? u.uuid == activeId
+                        : u.name == activeName;
+                    return ListTile(
+                      autofocus: isCurrent || (activeId == null && i == 0),
+                      enabled: !_busy,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      leading: PlexAvatar(
+                          name: u.name, thumb: u.thumb, size: 40),
+                      title: Text(u.name,
+                          style: const TextStyle(fontWeight: FontWeight.w600)),
+                      subtitle: Text(u.subtitle),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (u.protected)
+                            const Padding(
+                              padding: EdgeInsets.only(right: 6),
+                              child: Icon(Icons.lock_outline_rounded,
+                                  size: 18, color: Palette.muted),
+                            ),
+                          if (isCurrent)
+                            const Icon(Icons.check_circle_rounded,
+                                size: 20, color: Palette.accent),
+                        ],
+                      ),
+                      onTap: _busy ? null : () => _pick(u),
+                    );
+                  }),
+                ],
+              ],
+              _ErrorText(_error),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        if (pinTarget != null) ...[
+          TextButton(
+            onPressed: _busy
+                ? null
+                : () => setState(() {
+                      _pinTarget = null;
+                      _error = null;
+                    }),
+            child: const Text('Back'),
+          ),
+          FilledButton(
+            onPressed: _busy
+                ? null
+                : () => _pick(pinTarget, pin: _pinController.text.trim()),
+            child: Text(_busy ? 'Switching…' : 'Continue'),
+          ),
+        ] else ...[
+          if (_error != null && users == null)
+            TextButton(onPressed: _load, child: const Text('Retry')),
+          TextButton(
+            onPressed: _busy ? null : () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ],
+    );
+  }
+}
 
 class _PlexFlow extends ConsumerStatefulWidget {
   const _PlexFlow({required this.onDone});
@@ -139,12 +411,17 @@ class _FoundServer {
 }
 
 class _PlexFlowState extends ConsumerState<_PlexFlow> {
+  final _profilePinController = TextEditingController();
   PlexPin? _pin;
   Timer? _poll;
   int _polls = 0;
-  String? _token;
-  String? _user;
+  String? _homeToken;
+  String? _accountToken;
+  List<PlexHomeUser>? _homeUsers;
+  PlexHomeUser? _selectedUser;
+  PlexHomeUser? _pinTarget;
   List<_FoundServer>? _servers;
+  bool _busy = false;
   Object? _error;
   bool _expired = false;
 
@@ -157,6 +434,7 @@ class _PlexFlowState extends ConsumerState<_PlexFlow> {
   @override
   void dispose() {
     _poll?.cancel();
+    _profilePinController.dispose();
     super.dispose();
   }
 
@@ -164,6 +442,13 @@ class _PlexFlowState extends ConsumerState<_PlexFlow> {
     _poll?.cancel();
     setState(() {
       _pin = null;
+      _homeToken = null;
+      _accountToken = null;
+      _homeUsers = null;
+      _selectedUser = null;
+      _pinTarget = null;
+      _servers = null;
+      _busy = false;
       _error = null;
       _expired = false;
       _polls = 0;
@@ -192,17 +477,49 @@ class _PlexFlowState extends ConsumerState<_PlexFlow> {
       final token = await PlexAccount.checkPin(pin);
       if (token == null || !mounted) return;
       _poll?.cancel();
-      setState(() => _token = token);
-      await _discover(token);
+      setState(() => _homeToken = token);
+      await _loadProfiles(token);
     } catch (_) {
       // Transient network errors: keep polling.
     }
   }
 
-  Future<void> _discover(String token) async {
+  Future<void> _loadProfiles(String homeToken) async {
     try {
-      final user = await PlexAccount.userName(token);
-      final resources = await PlexAccount.servers(token);
+      final users = await PlexAccount.homeUsers(homeToken);
+      if (!mounted) return;
+      setState(() => _homeUsers = users);
+      if (users.length == 1 && !users.first.protected) {
+        await _selectProfile(users.first, switchToken: false);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = e);
+    }
+  }
+
+  Future<void> _selectProfile(
+    PlexHomeUser user, {
+    String? pin,
+    bool switchToken = true,
+  }) async {
+    if (user.protected && (pin == null || pin.isEmpty)) {
+      setState(() {
+        _pinTarget = user;
+        _profilePinController.clear();
+        _error = null;
+      });
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final homeToken = _homeToken!;
+      final activeToken = switchToken
+          ? await PlexAccount.switchHomeUser(homeToken, user.uuid, pin: pin)
+          : homeToken;
+      final resources = await PlexAccount.servers(activeToken);
       final found = await Future.wait(resources.map((r) async => _FoundServer(
           r, await PlexAccount.bestConnection(r.connections, r.accessToken))));
       for (final f in found) {
@@ -210,16 +527,21 @@ class _PlexFlowState extends ConsumerState<_PlexFlow> {
       }
       if (!mounted) return;
       setState(() {
-        _user = user;
+        _selectedUser = user;
+        _accountToken = activeToken;
+        _pinTarget = null;
         _servers = found;
       });
     } catch (e) {
       if (mounted) setState(() => _error = e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _add() async {
     final notifier = ref.read(serversProvider.notifier);
+    final user = _selectedUser;
     for (final f in _servers!.where((f) => f.selected && f.url != null)) {
       await notifier.add(ServerConfig(
         id: 'plex-${f.resource.machineId}',
@@ -227,8 +549,11 @@ class _PlexFlowState extends ConsumerState<_PlexFlow> {
         name: f.resource.name,
         baseUrl: f.url!,
         token: f.resource.accessToken,
-        accountToken: _token,
-        userName: _user,
+        accountToken: _accountToken ?? _homeToken,
+        homeToken: _homeToken,
+        userId: user?.uuid,
+        userName: user?.name,
+        userThumb: user?.thumb,
         machineId: f.resource.machineId,
         connections: f.resource.connections,
       ));
@@ -241,13 +566,36 @@ class _PlexFlowState extends ConsumerState<_PlexFlow> {
     final theme = Theme.of(context);
     final tv = AppLayout.of(context).tv;
     final servers = _servers;
+    final homeUsers = _homeUsers;
+    final pinTarget = _pinTarget;
+    final user = _selectedUser;
 
-    if (servers != null) {
+    if (servers != null && user != null) {
       final any = servers.any((f) => f.selected && f.url != null);
+      final canSwitchProfile = (homeUsers?.length ?? 0) > 1;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Signed in as $_user', style: theme.textTheme.titleLarge),
+          Row(
+            children: [
+              PlexAvatar(name: user.name, thumb: user.thumb, size: 38),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text('Signed in as ${user.name}',
+                    style: theme.textTheme.titleLarge),
+              ),
+              if (canSwitchProfile)
+                TextButton.icon(
+                  onPressed: () => setState(() {
+                    _servers = null;
+                    _selectedUser = null;
+                    _error = null;
+                  }),
+                  icon: const Icon(Icons.switch_account_rounded, size: 18),
+                  label: const Text('Switch profile'),
+                ),
+            ],
+          ),
           const SizedBox(height: 6),
           Text(
             servers.isEmpty
@@ -280,7 +628,116 @@ class _PlexFlowState extends ConsumerState<_PlexFlow> {
       );
     }
 
-    if (_token != null && _error == null) {
+    if (pinTarget != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Enter PIN for ${pinTarget.name}',
+              style: theme.textTheme.headlineSmall),
+          const SizedBox(height: 8),
+          const Text(
+            'This Plex Home profile is protected with a 4-digit PIN.',
+            style: TextStyle(color: Palette.muted),
+          ),
+          const SizedBox(height: 20),
+          TextField(
+            controller: _profilePinController,
+            autofocus: true,
+            obscureText: true,
+            keyboardType: TextInputType.number,
+            textInputAction: TextInputAction.done,
+            maxLength: 4,
+            decoration: const InputDecoration(
+              hintText: '4-digit PIN',
+              prefixIcon: Icon(Icons.lock_outline_rounded),
+              counterText: '',
+            ),
+            onSubmitted: (v) => _selectProfile(pinTarget, pin: v.trim()),
+          ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: _busy
+                ? null
+                : () => _selectProfile(pinTarget,
+                    pin: _profilePinController.text.trim()),
+            child: Text(_busy ? 'Checking…' : 'Continue'),
+          ),
+          if ((homeUsers?.length ?? 0) > 1) ...[
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () => setState(() {
+                        _pinTarget = null;
+                        _error = null;
+                      }),
+              child: const Text('Choose a different profile'),
+            ),
+          ],
+          _ErrorText(_error),
+        ],
+      );
+    }
+
+    if (homeUsers != null &&
+        _selectedUser == null &&
+        (homeUsers.length > 1 || homeUsers.first.protected)) {
+      if (_busy) {
+        return const Column(
+          children: [
+            Loading(),
+            SizedBox(height: 16),
+            Text('Finding your servers…'),
+          ],
+        );
+      }
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Who\'s watching?', style: theme.textTheme.headlineSmall),
+          const SizedBox(height: 8),
+          const Text(
+            'Choose the Plex Home profile to use on this device. You can '
+            'switch profiles anytime.',
+            style: TextStyle(color: Palette.muted),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            decoration: BoxDecoration(
+              color: Palette.surface,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Palette.outline),
+            ),
+            child: Column(
+              children: [
+                for (var i = 0; i < homeUsers.length; i++) ...[
+                  if (i > 0) const Divider(height: 1),
+                  ListTile(
+                    autofocus: i == 0,
+                    leading: PlexAvatar(
+                      name: homeUsers[i].name,
+                      thumb: homeUsers[i].thumb,
+                      size: 40,
+                    ),
+                    title: Text(homeUsers[i].name,
+                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: Text(homeUsers[i].subtitle),
+                    trailing: homeUsers[i].protected
+                        ? const Icon(Icons.lock_outline_rounded,
+                            size: 18, color: Palette.muted)
+                        : const Icon(Icons.chevron_right_rounded),
+                    onTap: () => _selectProfile(homeUsers[i]),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          _ErrorText(_error),
+        ],
+      );
+    }
+
+    if (_homeToken != null && _error == null) {
       return const Column(
         children: [
           Loading(),

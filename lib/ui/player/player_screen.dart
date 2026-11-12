@@ -59,6 +59,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   // What is playing.
   late MediaItem _item;
+  late List<MediaItem> _queue;
+  int _queueIndex = -1;
   PlaybackSource? _source;
   Object? _error;
   bool _loading = true;
@@ -115,6 +117,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void initState() {
     super.initState();
     _item = widget.args.item;
+    _queue = widget.args.queue;
+    _queueIndex = _queue.indexWhere(
+        (i) => i.id == _item.id && i.serverId == _item.serverId);
     _versionId = widget.args.versionId;
     _container = ProviderScope.containerOf(context, listen: false);
     _maxBitrate = ref.read(settingsProvider).maxBitrateKbps;
@@ -295,10 +300,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Future<void> _loadExtras(MediaBackend backend, MediaItem item) async {
     MediaItem? next;
+    if (_queueIndex >= 0 && _queueIndex + 1 < _queue.length) {
+      next = _queue[_queueIndex + 1];
+    } else if (_queue.isEmpty) {
+      try {
+        next = await backend.nextEpisode(item);
+      } catch (_) {}
+    }
     var markers = item.markers;
-    try {
-      next = await backend.nextEpisode(item);
-    } catch (_) {}
     try {
       if (markers.isEmpty) markers = await backend.markers(item);
     } catch (_) {}
@@ -503,6 +512,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           .then<void>((_) {}, onError: (Object _) {});
     }
     setState(() {
+      if (_queueIndex >= 0 && _queueIndex + 1 < _queue.length) {
+        _queueIndex++;
+      }
       _item = next;
       _source = null;
       _detailLoaded = false;
@@ -1478,9 +1490,9 @@ class _UpNextCard extends StatelessWidget {
                   width: 112,
                   height: 63,
                   child: Artwork(
-                    image: next.thumb ?? next.backdrop,
+                    image: next.thumb ?? next.backdrop ?? next.poster,
                     aspect: 16 / 9,
-                    icon: Icons.tv,
+                    icon: kindIcon(next.kind),
                     seed: next.title,
                   ),
                 ),
