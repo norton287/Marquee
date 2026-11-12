@@ -67,6 +67,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _detailLoaded = false;
   bool _firstLoad = true;
   bool _fallbackTried = false;
+
+  /// An audio/subtitle, quality or chapter panel is up. The controls stay put
+  /// meanwhile: hiding them pulls focus back to the player, which would take
+  /// it out of the panel and leave the remote seeking the video instead.
+  bool _panelOpen = false;
   bool _defaultsApplied = false;
   int _generation = 0;
 
@@ -581,7 +586,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _armHide() {
     _hideTimer?.cancel();
-    if (!_playing) return;
+    if (!_playing || _panelOpen) return;
     _hideTimer = Timer(const Duration(seconds: 4), _hideControls);
   }
 
@@ -596,7 +601,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   void _hideControls() {
-    if (!mounted || !_controls) return;
+    if (!mounted || !_controls || _panelOpen) return;
     setState(() => _controls = false);
     _rootFocus.requestFocus();
   }
@@ -1261,7 +1266,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _pick(VoidCallback action) {
     Navigator.of(context, rootNavigator: true).pop();
     action();
-    _showControls();
+  }
+
+  Future<void> _openPanel(WidgetBuilder builder) async {
+    _hideTimer?.cancel();
+    _panelOpen = true;
+    try {
+      await showPanel<void>(context, builder: builder);
+    } finally {
+      _panelOpen = false;
+      // Closing the panel hands focus back to the button that opened it.
+      _showControls();
+    }
   }
 
   void _openTracks() {
@@ -1273,9 +1289,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final sidecars = source.subtitleStreams
         .where((s) => s.isExternal && s.url != null)
         .toList();
-    showPanel<void>(
-      context,
-      builder: (_) => OptionPanel(
+    // Start the remote on the subtitle in use; "Off" when there isn't one.
+    final subtitleOn = transcoding
+        ? source.subtitleStreams.any((s) => s.id == _subtitleId)
+        : subs.any((t) => t.id == _track.subtitle.id) ||
+            sidecars.any((s) => s.url == _track.subtitle.id);
+    _openPanel(
+      (_) => OptionPanel(
         title: 'Audio and subtitles',
         children: [
           const OptionHeading('Audio'),
@@ -1307,7 +1327,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           if (transcoding) ...[
             OptionTile(
               label: 'Off',
-              autofocus: true,
+              autofocus: !subtitleOn,
               selected: (_subtitleId ?? '').isEmpty,
               onTap: () => _pick(() {
                 _subtitleId = '';
@@ -1318,6 +1338,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             for (final s in source.subtitleStreams)
               OptionTile(
                 label: s.title,
+                autofocus: s.id == _subtitleId,
                 selected: s.id == _subtitleId,
                 onTap: () => _pick(() {
                   _subtitleId = s.id;
@@ -1327,7 +1348,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           ] else ...[
             OptionTile(
               label: 'Off',
-              autofocus: true,
+              autofocus: !subtitleOn,
               selected: _track.subtitle.id == 'no',
               onTap: () =>
                   _pick(() => _player.setSubtitleTrack(SubtitleTrack.no())),
@@ -1336,6 +1357,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               OptionTile(
                 label: _trackLabel(t.title, t.language, t.id),
                 detail: t.codec?.toUpperCase(),
+                autofocus: _track.subtitle.id == t.id,
                 selected: _track.subtitle.id == t.id,
                 onTap: () => _pick(() => _player.setSubtitleTrack(t)),
               ),
@@ -1343,6 +1365,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               OptionTile(
                 label: s.title,
                 detail: 'External',
+                autofocus: _track.subtitle.id == s.url,
                 selected: _track.subtitle.id == s.url,
                 onTap: () => _pick(() => _player.setSubtitleTrack(
                     SubtitleTrack.uri(s.url!,
@@ -1358,9 +1381,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final source = _source;
     final v = source?.version ?? _version;
     final sourceKbps = _version?.bitrateKbps;
-    showPanel<void>(
-      context,
-      builder: (_) => OptionPanel(
+    _openPanel(
+      (_) => OptionPanel(
         title: 'Quality and playback',
         children: [
           if (source != null)
@@ -1417,9 +1439,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _openChapters() {
     final current = _chapterIndex;
     final chapters = _item.chapters;
-    showPanel<void>(
-      context,
-      builder: (_) => OptionPanel(
+    _openPanel(
+      (_) => OptionPanel(
         title: 'Chapters',
         children: [
           for (var i = 0; i < chapters.length; i++)

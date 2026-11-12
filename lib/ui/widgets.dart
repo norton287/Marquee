@@ -878,3 +878,114 @@ String formatClock(Duration d) {
   final s = (d.inSeconds % 60).toString().padLeft(2, '0');
   return h > 0 ? '$h:$m:$s' : '$m:$s';
 }
+
+// ---------------------------------------------------------------------------
+// Menus
+// ---------------------------------------------------------------------------
+
+class SelectMenuItem {
+  const SelectMenuItem({
+    required this.label,
+    required this.onPressed,
+    this.icon,
+    this.selected = false,
+  });
+  final String label;
+  final VoidCallback onPressed;
+  final IconData? icon;
+
+  /// The current choice. Focus lands here when the menu opens.
+  final bool selected;
+}
+
+/// A drop-down menu that works with a remote: opening it moves focus onto the
+/// current choice (MenuAnchor alone leaves focus on the button, so the D-pad
+/// keeps driving the page underneath), and closing it puts focus back on the
+/// button.
+class SelectMenu extends StatefulWidget {
+  const SelectMenu({
+    super.key,
+    required this.items,
+    required this.builder,
+    this.alignmentOffset,
+  });
+  final List<SelectMenuItem> items;
+
+  /// Builds the button. Attach [focusNode] to it and call [toggle] on press.
+  final Widget Function(
+      BuildContext context, FocusNode focusNode, VoidCallback toggle) builder;
+  final Offset? alignmentOffset;
+
+  @override
+  State<SelectMenu> createState() => _SelectMenuState();
+}
+
+class _SelectMenuState extends State<SelectMenu> {
+  final _button = FocusNode(debugLabel: 'menu button');
+  final _controller = MenuController();
+  List<FocusNode> _items = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _syncNodes();
+  }
+
+  @override
+  void didUpdateWidget(SelectMenu old) {
+    super.didUpdateWidget(old);
+    _syncNodes();
+  }
+
+  void _syncNodes() {
+    while (_items.length > widget.items.length) {
+      _items.removeLast().dispose();
+    }
+    _items = [
+      ..._items,
+      for (var i = _items.length; i < widget.items.length; i++)
+        FocusNode(debugLabel: 'menu item $i'),
+    ];
+  }
+
+  @override
+  void dispose() {
+    _button.dispose();
+    for (final n in _items) {
+      n.dispose();
+    }
+    super.dispose();
+  }
+
+  void _focusCurrent() {
+    if (_items.isEmpty) return;
+    final i = widget.items.indexWhere((it) => it.selected);
+    // The menu's items are built in the overlay on the next frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_controller.isOpen) _items[i < 0 ? 0 : i].requestFocus();
+    });
+  }
+
+  void _toggle() =>
+      _controller.isOpen ? _controller.close() : _controller.open();
+
+  @override
+  Widget build(BuildContext context) {
+    return MenuAnchor(
+      controller: _controller,
+      childFocusNode: _button,
+      alignmentOffset: widget.alignmentOffset,
+      onOpen: _focusCurrent,
+      menuChildren: [
+        for (var i = 0; i < widget.items.length; i++)
+          MenuItemButton(
+            focusNode: _items[i],
+            leadingIcon: Icon(widget.items[i].icon, size: 18),
+            onPressed: widget.items[i].onPressed,
+            child: Text(widget.items[i].label),
+          ),
+      ],
+      builder: (context, _, _) => widget.builder(context, _button, _toggle),
+    );
+  }
+}

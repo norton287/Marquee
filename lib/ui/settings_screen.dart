@@ -323,18 +323,19 @@ class _Choice<T> extends StatelessWidget {
             .map((o) => o.$2)
             .firstOrNull ??
         options.first.$2;
-    return MenuAnchor(
+    return SelectMenu(
       alignmentOffset: const Offset(16, 0),
-      menuChildren: [
+      items: [
         for (final (v, label) in options)
-          MenuItemButton(
-            leadingIcon:
-                Icon(v == value ? Icons.check_rounded : null, size: 18),
+          SelectMenuItem(
+            label: label,
+            selected: v == value,
+            icon: v == value ? Icons.check_rounded : null,
             onPressed: () => onChanged(v),
-            child: Text(label),
           ),
       ],
-      builder: (context, controller, _) => ListTile(
+      builder: (context, focusNode, toggle) => ListTile(
+        focusNode: focusNode,
         title: Text(title),
         subtitle: subtitle == null ? null : Text(subtitle!),
         trailing: Row(
@@ -347,8 +348,7 @@ class _Choice<T> extends StatelessWidget {
             const Icon(Icons.unfold_more_rounded, size: 18),
           ],
         ),
-        onTap: () =>
-            controller.isOpen ? controller.close() : controller.open(),
+        onTap: toggle,
       ),
     );
   }

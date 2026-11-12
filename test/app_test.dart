@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marquee/app.dart';
@@ -11,6 +12,8 @@ import 'package:marquee/core/plex.dart';
 import 'package:marquee/core/providers.dart';
 import 'package:marquee/core/storage.dart';
 import 'package:marquee/ui/add_server_screen.dart';
+import 'package:marquee/ui/libraries_screen.dart';
+import 'package:marquee/ui/player/player_widgets.dart';
 import 'package:marquee/ui/widgets.dart';
 
 Future<AppStorage> _storage({bool demo = true}) async {
@@ -436,6 +439,113 @@ void main() {
     calls.clear();
     await jf.search('x');
     expect(calls, ['/Items?parentId=movies', '/Items?parentId=tunes']);
+  });
+
+  testWidgets('TV remote can reach the side menu and come back',
+      (tester) async {
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    FocusNode? focus() => FocusManager.instance.primaryFocus;
+    bool inNav() => focus()?.debugLabel?.startsWith('nav ') ?? false;
+
+    // Down into a shelf, then keep pressing left until the rail takes focus.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(inNav(), isFalse);
+    FocusNode? lastInPage;
+    for (var i = 0; i < 12 && !inNav(); i++) {
+      lastInPage = focus();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+    }
+    expect(focus()?.debugLabel, 'nav Home');
+
+    // Right goes back to the card we left from.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pumpAndSettle();
+    expect(focus(), same(lastInPage));
+
+    // Into the rail, down to Libraries, open it, then right lands on that
+    // tab rather than a card in the hidden Home tab underneath.
+    for (var i = 0; i < 12 && !inNav(); i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+    }
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(focus()?.debugLabel, 'nav Libraries');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pumpAndSettle();
+    expect(inNav(), isFalse);
+    expect(
+        focus()?.context?.findAncestorWidgetOfExactType<LibrariesScreen>(),
+        isNotNull);
+  });
+
+  testWidgets('drop-down menus take focus for the remote and give it back',
+      (tester) async {
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    await tester.tap(find.text('Settings').last);
+    await tester.pumpAndSettle();
+    String? focused() => FocusManager.instance.primaryFocus?.debugLabel;
+
+    await tester.tap(find.text('Video quality'));
+    await tester.pumpAndSettle();
+    // Lands on the current choice ("Original" is first).
+    expect(focused(), 'menu item 0');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(focused(), 'menu item 1');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.text(QualityOption.all[1].label), findsOneWidget);
+    expect(focused(), 'menu button');
+
+    // Reopening starts on the new choice.
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(focused(), 'menu item 1');
+  });
+
+  testWidgets('option panels focus their current row and scroll to it',
+      (tester) async {
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(MaterialApp(
+      home: Builder(
+        builder: (context) => Center(
+          child: TextButton(
+            onPressed: () => showPanel<void>(context,
+                builder: (_) => OptionPanel(title: 'Subtitles', children: [
+                      for (var i = 0; i < 40; i++)
+                        OptionTile(
+                          label: 'Track $i',
+                          selected: i == 33,
+                          autofocus: i == 33,
+                          onTap: () {},
+                        ),
+                    ])),
+            child: const Text('Open'),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    final ctx = FocusManager.instance.primaryFocus!.context!;
+    expect(ctx.findAncestorWidgetOfExactType<OptionTile>()!.label, 'Track 33');
+    final box = tester.getRect(find.text('Track 33'));
+    expect(box.top, greaterThanOrEqualTo(0));
+    expect(box.bottom, lessThanOrEqualTo(1080));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(
+        FocusManager.instance.primaryFocus!.context!
+            .findAncestorWidgetOfExactType<OptionTile>()!
+            .label,
+        'Track 34');
   });
 
   test('backend errors reach the user verbatim', () {

@@ -157,8 +157,10 @@ final routerProvider = Provider<GoRouter>((ref) {
               FadeTransition(opacity: a, child: child),
         ),
       ),
-      StatefulShellRoute.indexedStack(
+      StatefulShellRoute(
         builder: (_, _, shell) => AppShell(shell: shell),
+        navigatorContainerBuilder: (_, shell, children) =>
+            _BranchStack(index: shell.currentIndex, children: children),
         branches: [
           branch('home', (_, _) => const HomeScreen()),
           branch('libraries', (_, _) => const LibrariesScreen()),
@@ -177,3 +179,24 @@ final routerProvider = Provider<GoRouter>((ref) {
   ref.onDispose(router.dispose);
   return router;
 });
+
+/// Keeps every tab alive like an IndexedStack, but only the visible one can
+/// take focus. Otherwise arrow keys on a TV can land on cards in a hidden
+/// tab, since they're still laid out underneath.
+class _BranchStack extends StatelessWidget {
+  const _BranchStack({required this.index, required this.children});
+  final int index;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => IndexedStack(
+        index: index,
+        children: [
+          for (var i = 0; i < children.length; i++)
+            ExcludeFocus(
+              excluding: i != index,
+              child: TickerMode(enabled: i == index, child: children[i]),
+            ),
+        ],
+      );
+}

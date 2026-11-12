@@ -237,18 +237,17 @@ class _SortButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MenuAnchor(
-      menuChildren: [
+    return SelectMenu(
+      items: [
         for (final f in SortField.values)
-          MenuItemButton(
-            leadingIcon: Icon(
-              query.sort == f
-                  ? (query.descending
-                      ? Icons.arrow_downward_rounded
-                      : Icons.arrow_upward_rounded)
-                  : null,
-              size: 18,
-            ),
+          SelectMenuItem(
+            label: f.label,
+            selected: query.sort == f,
+            icon: query.sort == f
+                ? (query.descending
+                    ? Icons.arrow_downward_rounded
+                    : Icons.arrow_upward_rounded)
+                : null,
             // Picking the current field flips direction; a new field starts
             // with the direction that makes sense for it.
             onPressed: () => onChanged(query.copyWith(
@@ -256,14 +255,13 @@ class _SortButton extends StatelessWidget {
               descending:
                   query.sort == f ? !query.descending : f != SortField.title,
             )),
-            child: Text(f.label),
           ),
       ],
-      builder: (context, controller, _) => ActionChip(
+      builder: (context, focusNode, toggle) => ActionChip(
+        focusNode: focusNode,
         avatar: const Icon(Icons.sort_rounded, size: 18),
         label: Text(query.sort.label),
-        onPressed: () =>
-            controller.isOpen ? controller.close() : controller.open(),
+        onPressed: toggle,
       ),
     );
   }

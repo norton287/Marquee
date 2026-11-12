@@ -456,22 +456,21 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
             ),
           ),
         if (kind.isVideo && item.versions.length > 1)
-          MenuAnchor(
-            menuChildren: [
+          SelectMenu(
+            items: [
               for (final v in item.versions)
-                MenuItemButton(
-                  leadingIcon: Icon(
-                      (v.id == (_versionId ?? item.versions.first.id))
-                          ? Icons.check_rounded
-                          : null,
-                      size: 18),
+                SelectMenuItem(
+                  label: v.label.isEmpty ? 'Version' : v.label,
+                  selected: v.id == (_versionId ?? item.versions.first.id),
+                  icon: v.id == (_versionId ?? item.versions.first.id)
+                      ? Icons.check_rounded
+                      : null,
                   onPressed: () => setState(() => _versionId = v.id),
-                  child: Text(v.label.isEmpty ? 'Version' : v.label),
                 ),
             ],
-            builder: (context, controller, _) => OutlinedButton.icon(
-              onPressed: () =>
-                  controller.isOpen ? controller.close() : controller.open(),
+            builder: (context, focusNode, toggle) => OutlinedButton.icon(
+              focusNode: focusNode,
+              onPressed: toggle,
               icon: const Icon(Icons.layers_outlined, size: 18),
               label: Text('${item.versions.length} versions'),
             ),

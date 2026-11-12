@@ -265,16 +265,22 @@ class OptionPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      shrinkWrap: true,
+    // Built eagerly rather than as a lazy ListView: a row that starts below
+    // the fold would otherwise not exist yet, so its `autofocus` never fires
+    // and a remote is left with nothing focused. These lists are short.
+    return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-          child: Text(title, style: Theme.of(context).textTheme.titleLarge),
-        ),
-        ...children,
-      ],
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Text(title, style: Theme.of(context).textTheme.titleLarge),
+          ),
+          ...children,
+        ],
+      ),
     );
   }
 }
@@ -315,6 +321,22 @@ class OptionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Arrow-key moves scroll the list already; this also covers the row
+    // that takes focus when the panel opens, which may start off screen.
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onFocusChange: (focused) {
+        if (focused) {
+          Scrollable.ensureVisible(context,
+              alignment: 0.5, duration: const Duration(milliseconds: 150));
+        }
+      },
+      child: _tile(),
+    );
+  }
+
+  Widget _tile() {
     return ListTile(
       dense: true,
       autofocus: autofocus,

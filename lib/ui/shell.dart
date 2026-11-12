@@ -25,12 +25,68 @@ const _destinations = [
 ];
 
 /// Bottom bar on phones; a side rail on tablets, desktops and TVs.
-class AppShell extends StatelessWidget {
+class AppShell extends StatefulWidget {
   const AppShell({super.key, required this.shell});
   final StatefulNavigationShell shell;
 
+  @override
+  State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  StatefulNavigationShell get shell => widget.shell;
+
+  /// Parent of everything in the side rail, to tell rail focus from page focus.
+  final _navArea = FocusNode(
+      debugLabel: 'side nav', canRequestFocus: false, skipTraversal: true);
+  final _navItems = [
+    for (final d in _destinations) FocusNode(debugLabel: 'nav ${d.label}'),
+  ];
+
+  /// Where focus was in each tab when the user moved into the rail, so
+  /// pressing right goes back to the same card.
+  final _lastInTab = <int, FocusNode>{};
+
+  @override
+  void dispose() {
+    _navArea.dispose();
+    for (final n in _navItems) {
+      n.dispose();
+    }
+    super.dispose();
+  }
+
   void _go(int i) =>
       shell.goBranch(i, initialLocation: i == shell.currentIndex);
+
+  bool _inNav(FocusNode node) =>
+      node == _navArea || node.ancestors.contains(_navArea);
+
+  /// Arrow keys with a remote. Each page lives in its own route focus scope
+  /// that stops at its edges, so the default traversal can never leave the
+  /// page for the rail. Run the default first; when it finds nothing to the
+  /// left, step into the rail ourselves.
+  void _onDirection(DirectionalFocusIntent intent) {
+    final node = FocusManager.instance.primaryFocus;
+    if (node == null) return;
+    final dir = intent.direction;
+    if (_inNav(node)) {
+      if (dir == TraversalDirection.right) {
+        final back = _lastInTab[shell.currentIndex];
+        if (back != null && back.context != null && back.canRequestFocus) {
+          back.requestFocus();
+          return;
+        }
+      }
+      node.focusInDirection(dir);
+      return;
+    }
+    if (node.focusInDirection(dir)) return;
+    if (dir == TraversalDirection.left) {
+      _lastInTab[shell.currentIndex] = node;
+      _navItems[shell.currentIndex].requestFocus();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -61,21 +117,45 @@ class AppShell extends StatelessWidget {
     final expanded = l.width >= 1360 && !l.tv;
     return Scaffold(
       body: SafeArea(
-        child: Row(
-          children: [
-            FocusTraversalGroup(
-              child: _SideNav(
-                index: shell.currentIndex,
-                expanded: expanded,
-                tv: l.tv,
-                onSelect: _go,
+        child: Actions(
+          actions: {
+            DirectionalFocusIntent: _DirectionalAction(_onDirection),
+          },
+          child: Row(
+            children: [
+              Focus(
+                focusNode: _navArea,
+                child: FocusTraversalGroup(
+                  child: _SideNav(
+                    index: shell.currentIndex,
+                    expanded: expanded,
+                    tv: l.tv,
+                    onSelect: _go,
+                    focusNodes: _navItems,
+                  ),
+                ),
               ),
-            ),
-            Expanded(child: FocusTraversalGroup(child: body)),
-          ],
+              Expanded(child: FocusTraversalGroup(child: body)),
+            ],
+          ),
         ),
       ),
     );
+  }
+}
+
+/// Same as Flutter's DirectionalFocusAction (arrow keys still move the
+/// cursor inside text fields), but routed through [AppShell]'s handler.
+class _DirectionalAction extends Action<DirectionalFocusIntent> {
+  _DirectionalAction(this.onInvoke);
+  final void Function(DirectionalFocusIntent) onInvoke;
+
+  @override
+  void invoke(DirectionalFocusIntent intent) {
+    final inText =
+        FocusManager.instance.primaryFocus?.context?.widget is EditableText;
+    if (intent.ignoreTextFields && inText) return;
+    onInvoke(intent);
   }
 }
 
@@ -85,11 +165,13 @@ class _SideNav extends ConsumerWidget {
     required this.expanded,
     required this.tv,
     required this.onSelect,
+    required this.focusNodes,
   });
   final int index;
   final bool expanded;
   final bool tv;
   final ValueChanged<int> onSelect;
+  final List<FocusNode> focusNodes;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -133,6 +215,7 @@ class _SideNav extends ConsumerWidget {
               dest: _destinations[i],
               selected: i == index,
               expanded: expanded,
+              focusNode: focusNodes[i],
               onTap: () => onSelect(i),
             ),
             const SizedBox(height: 6),
@@ -214,11 +297,13 @@ class _SideItem extends StatelessWidget {
     required this.dest,
     required this.selected,
     required this.expanded,
+    required this.focusNode,
     required this.onTap,
   });
   final _Dest dest;
   final bool selected;
   final bool expanded;
+  final FocusNode focusNode;
   final VoidCallback onTap;
 
   @override
@@ -228,6 +313,7 @@ class _SideItem extends StatelessWidget {
       selected: selected,
       label: dest.label,
       child: Pressable(
+        focusNode: focusNode,
         onTap: onTap,
         grow: 1,
         builder: (context, focused, hovered) {
