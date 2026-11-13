@@ -30,6 +30,7 @@ class DemoBackend extends MediaBackend {
 
   // What Manage and playlists changed, kept for the life of the app.
   static final _titles = <String, String>{};
+  static final _deleted = <String>{};
   static final _overviews = <String, String>{};
   static final _posters = <String, ImageRef>{};
   static final _backdrops = <String, ImageRef>{};
@@ -270,7 +271,13 @@ class DemoBackend extends MediaBackend {
     );
   }
 
-  List<MediaItem> _liveAll(Iterable<MediaItem> l) => l.map(_live).toList();
+  bool _gone(MediaItem i) =>
+      _deleted.contains(i.id) ||
+      _deleted.contains(i.parentId) ||
+      _deleted.contains(i.grandparentId);
+
+  List<MediaItem> _liveAll(Iterable<MediaItem> l) =>
+      l.where((i) => !_gone(i)).map(_live).toList();
 
   Iterable<MediaItem> get _allEpisodes => _episodes.values.expand((e) => e);
   Iterable<MediaItem> get _everything => [
@@ -428,7 +435,9 @@ class DemoBackend extends MediaBackend {
       return MediaItem(
           serverId: serverId, id: id, kind: MediaKind.folder, title: 'Folder');
     }
-    return _live(_everything.firstWhere((i) => i.id == id));
+    final found = _everything.where((i) => i.id == id && !_gone(i));
+    if (found.isEmpty) throw StateError('That item was deleted');
+    return _live(found.first);
   }
 
   @override
@@ -468,25 +477,33 @@ class DemoBackend extends MediaBackend {
   // -- Manage (works on the sample library so it can be explored) -----------
 
   @override
-  Future<Set<ManageAction>> manageActions(MediaItem item) async =>
-      switch (item.kind) {
-        MediaKind.movie || MediaKind.show => const {
-            ManageAction.edit,
-            ManageAction.refresh,
-            ManageAction.match,
-            ManageAction.poster,
-            ManageAction.upload,
-            ManageAction.background,
-            ManageAction.uploadBackground,
-          },
-        MediaKind.season => const {
-            ManageAction.edit,
-            ManageAction.refresh,
-            ManageAction.poster,
-          },
-        MediaKind.episode => const {ManageAction.edit, ManageAction.refresh},
-        _ => const {},
-      };
+  Future<Set<ManageAction>> manageActions(MediaItem item) async {
+    final actions = switch (item.kind) {
+      MediaKind.movie || MediaKind.show => const {
+          ManageAction.edit,
+          ManageAction.refresh,
+          ManageAction.match,
+          ManageAction.poster,
+          ManageAction.upload,
+          ManageAction.background,
+          ManageAction.uploadBackground,
+        },
+      MediaKind.season => const {
+          ManageAction.edit,
+          ManageAction.refresh,
+          ManageAction.poster,
+        },
+      MediaKind.episode => const {ManageAction.edit, ManageAction.refresh},
+      _ => const <ManageAction>{},
+    };
+    // The sample library lets you try deleting (in memory only).
+    return actions.isEmpty ? actions : {...actions, ManageAction.delete};
+  }
+
+  @override
+  Future<void> deleteItem(MediaItem item) async {
+    _deleted.add(item.id);
+  }
 
   @override
   Future<void> editDetails(MediaItem item,

@@ -121,6 +121,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Something was deleted: the hand-paged grid starts over.
+    ref.listen(contentRevisionProvider, (_, _) => _reload());
     final l = AppLayout.of(context);
     final lib = _library ??
         ref.watch(libraryProvider(widget.libraryRef)).value;

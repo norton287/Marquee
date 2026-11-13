@@ -827,11 +827,35 @@ class PlexBackend extends MediaBackend {
     }
   }
 
+  Future<bool>? _deletionAllowed;
+
+  /// Plex refuses deletes unless the owner turned on Settings → Library →
+  /// "Allow media deletion". Read it once; unreadable (not the owner) = no.
+  Future<bool> _canDelete() => _deletionAllowed ??= () async {
+        try {
+          final c = await _get('/:/prefs');
+          final pref = ((c['Setting'] as List?) ?? const [])
+              .whereType<Map>()
+              .where((s) => s['id'] == 'allowMediaDeletion')
+              .firstOrNull;
+          return asBool(pref?['value']);
+        } on DioException {
+          return false;
+        }
+      }();
+
   @override
   Future<Set<ManageAction>> manageActions(MediaItem item) async {
     if (item.external) return const {};
-    return switch (item.kind) {
-      MediaKind.movie || MediaKind.show => ManageAction.values.toSet(),
+    final actions = _manageActionsFor(item.kind);
+    if (actions.isEmpty || !await _canDelete()) return actions;
+    return {...actions, ManageAction.delete};
+  }
+
+  static Set<ManageAction> _manageActionsFor(MediaKind kind) {
+    return switch (kind) {
+      MediaKind.movie || MediaKind.show =>
+        ManageAction.values.toSet()..remove(ManageAction.delete),
       MediaKind.season => const {
           ManageAction.edit,
           ManageAction.refresh,
@@ -874,6 +898,20 @@ class PlexBackend extends MediaBackend {
             'summary.locked': 1,
           },
         ));
+  }
+
+  @override
+  Future<void> deleteItem(MediaItem item) async {
+    try {
+      await _dio.delete<dynamic>('/library/metadata/${item.id}');
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException('Plex refused to delete this. The server '
+            'owner must allow media deletion in Settings → Library.');
+      }
+      rethrow;
+    }
   }
 
   @override

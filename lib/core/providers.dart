@@ -343,6 +343,37 @@ void reloadItem(ProviderContainer container, MediaItem item,
   if (again) Timer(const Duration(seconds: 10), reload);
 }
 
+/// Bumped when content disappears from a server (a delete). Screens that
+/// page results themselves, like the library grid, listen and reload.
+class ContentRevision extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  void bump() => state++;
+}
+
+final contentRevisionProvider =
+    NotifierProvider<ContentRevision, int>(ContentRevision.new);
+
+/// After [item] was deleted: drop it from every list that could show it.
+void itemDeleted(ProviderContainer container, MediaItem item) {
+  container
+    ..read(contentRevisionProvider.notifier).bump()
+    ..invalidate(itemProvider(item.ref))
+    ..invalidate(childrenProvider)
+    ..invalidate(similarProvider)
+    ..invalidate(continueWatchingProvider)
+    ..invalidate(nextUpProvider)
+    ..invalidate(recentlyAddedProvider)
+    ..invalidate(libraryRecommendedProvider)
+    ..invalidate(collectionsProvider)
+    ..invalidate(libraryCollectionsProvider)
+    ..invalidate(playlistsProvider)
+    ..invalidate(discoverProvider)
+    ..invalidate(watchlistProvider)
+    ..invalidate(searchProvider);
+}
+
 /// Call after anything that changes watch state.
 void refreshWatchState(WidgetRef ref, [MediaItem? item]) {
   ref.invalidate(continueWatchingProvider);

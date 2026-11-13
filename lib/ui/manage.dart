@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../core/models.dart';
 import '../core/providers.dart';
@@ -52,6 +53,7 @@ class ManageButton extends ConsumerWidget {
         ManageAction.upload => Icons.upload_file_rounded,
         ManageAction.background => Icons.wallpaper_rounded,
         ManageAction.uploadBackground => Icons.add_photo_alternate_outlined,
+        ManageAction.delete => Icons.delete_forever_outlined,
       };
 
   Future<void> _run(BuildContext context, WidgetRef ref, ManageAction a) async {
@@ -63,6 +65,26 @@ class ManageButton extends ConsumerWidget {
         (messenger..hideCurrentSnackBar()).showSnackBar(SnackBar(content: Text(text)));
 
     switch (a) {
+      case ManageAction.delete:
+        final router = GoRouter.of(context);
+        final ok = await showDialog<bool>(
+            context: context, builder: (_) => _DeleteDialog(item: item));
+        if (ok != true) return;
+        try {
+          await backend.deleteItem(item);
+        } catch (e) {
+          say(friendlyError(e));
+          return;
+        }
+        // The page's item no longer exists: leave it, then clear it out of
+        // every list.
+        if (router.canPop()) {
+          router.pop();
+        } else {
+          router.go('/home');
+        }
+        say('Deleted ${item.title}');
+        itemDeleted(container, item);
       case ManageAction.edit:
         await showPanel<void>(context,
             width: 460, builder: (_) => _EditPanel(item: item));
@@ -128,6 +150,44 @@ class ManageButton extends ConsumerWidget {
           say(friendlyError(e));
         }
     }
+  }
+}
+
+/// Asks before deleting. Cancel has focus, so a stray OK on a remote
+/// can't delete anything.
+class _DeleteDialog extends StatelessWidget {
+  const _DeleteDialog({required this.item});
+  final MediaItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final what = switch (item.kind) {
+      MediaKind.show => 'every season and episode of this show',
+      MediaKind.season => 'every episode in this season',
+      MediaKind.episode => "this episode's files",
+      _ => "this movie's files",
+    };
+    final error = Theme.of(context).colorScheme.error;
+    return AlertDialog(
+      icon: Icon(Icons.delete_forever_outlined, color: error),
+      title: Text('Delete ${item.title}?'),
+      content: Text('This permanently deletes $what from the server\'s '
+          'disk. It can\'t be undone.'),
+      actions: [
+        TextButton(
+          autofocus: true,
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+              backgroundColor: error,
+              foregroundColor: Theme.of(context).colorScheme.onError),
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Delete'),
+        ),
+      ],
+    );
   }
 }
 

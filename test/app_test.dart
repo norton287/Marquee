@@ -848,7 +848,9 @@ void main() {
     final movie = plex.parse({'ratingKey': '42', 'type': 'movie',
         'title': 'Heat', 'librarySectionID': 1});
 
-    expect(await plex.manageActions(movie), ManageAction.values.toSet());
+    // This fake server doesn't allow deletion, so Delete isn't offered.
+    expect(await plex.manageActions(movie),
+        ManageAction.values.toSet()..remove(ManageAction.delete));
     final matches = await plex.searchMatches(movie, title: 'Heat', year: 1995);
     expect(calls.last, contains('/library/metadata/42/matches'));
     expect(calls.last, contains('agent: tv.plex.agents.movie'));
@@ -1282,6 +1284,118 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('This device has no file browser. Use an image link instead.'),
         findsOneWidget);
+  });
+
+  test('Delete: Plex offers it only when the server allows deletion',
+      () async {
+    for (final allowed in [false, true]) {
+      final calls = <String>[];
+      final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+        ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+          calls.add('${o.method} ${o.path}');
+          if (o.method == 'DELETE' && !allowed) {
+            return h.reject(DioException(
+                requestOptions: o,
+                response: Response(requestOptions: o, statusCode: 403)));
+          }
+          h.resolve(Response(requestOptions: o, statusCode: 200, data: {
+            'MediaContainer': {
+              'Setting': [
+                {'id': 'allowMediaDeletion', 'value': allowed},
+              ]
+            }
+          }));
+        }));
+      final plex = PlexBackend(
+          const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+              baseUrl: 'http://h', token: 't'),
+          dio: dio);
+      const movie = MediaItem(serverId: 'p', id: '42',
+          kind: MediaKind.movie, title: 'Heat');
+      expect((await plex.manageActions(movie)).contains(ManageAction.delete),
+          allowed);
+      if (allowed) {
+        await plex.deleteItem(movie);
+        expect(calls.last, 'DELETE /library/metadata/42');
+      } else {
+        await expectLater(plex.deleteItem(movie),
+            throwsA(isA<BackendException>().having(
+                (e) => e.message, 'message', contains('allow media deletion'))));
+      }
+    }
+  });
+
+  test('Delete: Jellyfin needs content deletion as well as admin', () async {
+    var policy = <String, Object>{'IsAdministrator': true};
+    final calls = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add('${o.method} ${o.path}');
+        h.resolve(Response(
+            requestOptions: o, statusCode: 200, data: {'Policy': policy}));
+      }));
+    JellyfinBackend make() => JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const show = MediaItem(serverId: 'j', id: 's1', kind: MediaKind.show,
+        title: 'Lost');
+    expect(await make().manageActions(show), isNot(contains(ManageAction.delete)));
+    policy = {'IsAdministrator': true, 'EnableContentDeletion': true};
+    final jf = make();
+    expect(await jf.manageActions(show), contains(ManageAction.delete));
+    await jf.deleteItem(show);
+    expect(calls.last, 'DELETE /Items/s1');
+  });
+
+  testWidgets('Delete asks first, then removes the movie everywhere',
+      (tester) async {
+    await openDemoMovie(tester, 'Ember & Ash');
+    Future<void> openDelete() async {
+      await tester.tap(find.byTooltip('Manage'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete…'));
+      await tester.pumpAndSettle();
+    }
+
+    await openDelete();
+    expect(find.text('Delete Ember & Ash?'), findsOneWidget);
+    expect(find.textContaining("permanently deletes this movie's files"),
+        findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Manage'), findsOneWidget); // still on the page
+
+    await openDelete();
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.pumpAndSettle();
+    expect(find.text('Deleted Ember & Ash'), findsOneWidget);
+    // Back on the library grid, which reloaded without it.
+    expect(find.widgetWithText(ChoiceChip, 'All'), findsOneWidget);
+    expect(find.text('Ember & Ash'), findsNothing);
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    expect(
+        await container.read(backendsProvider)['demo']!.search('Ember'),
+        isEmpty);
+  });
+
+  testWidgets('Delete dialog on a TV: OK on the default button cancels',
+      (tester) async {
+    await openDemoMovie(tester, 'Blue Hour', tv: true);
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete…'));
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.text('Delete Blue Hour?'), findsNothing);
+    expect(find.byTooltip('Manage'), findsOneWidget);
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    expect(
+        await container.read(backendsProvider)['demo']!.search('Blue Hour'),
+        isNotEmpty);
   });
 
   test('backend errors reach the user verbatim', () {

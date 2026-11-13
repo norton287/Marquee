@@ -964,17 +964,28 @@ class JellyfinBackend extends MediaBackend {
 
   // -- managing items (administrators) --------------------------------------
 
-  Future<bool>? _isAdmin;
+  Future<Map<dynamic, dynamic>>? _policy;
 
-  /// Manage actions need an administrator; ask once per backend.
-  Future<bool> _admin() => _isAdmin ??= () async {
+  /// The user's permissions, asked once per backend: manage actions need an
+  /// administrator, deleting needs content deletion on top.
+  Future<Map<dynamic, dynamic>> _userPolicy() => _policy ??= () async {
         try {
           final r = await _dio.get<Map<String, dynamic>>('/Users/$_uid');
-          return asBool((r.data?['Policy'] as Map?)?['IsAdministrator']);
+          return (r.data?['Policy'] as Map?) ?? const {};
         } on DioException {
-          return false;
+          return const {};
         }
       }();
+
+  Future<bool> _admin() async =>
+      asBool((await _userPolicy())['IsAdministrator']);
+
+  Future<bool> _canDelete() async {
+    final p = await _userPolicy();
+    return asBool(p['EnableContentDeletion']) ||
+        ((p['EnableContentDeletionFromFolders'] as List?) ?? const [])
+            .isNotEmpty;
+  }
 
   Future<T> _manage<T>(Future<T> Function() f) async {
     try {
@@ -992,7 +1003,13 @@ class JellyfinBackend extends MediaBackend {
   @override
   Future<Set<ManageAction>> manageActions(MediaItem item) async {
     if (!await _admin()) return const {};
-    return switch (item.kind) {
+    final actions = _manageActionsFor(item.kind);
+    if (actions.isEmpty || !await _canDelete()) return actions;
+    return {...actions, ManageAction.delete};
+  }
+
+  static Set<ManageAction> _manageActionsFor(MediaKind kind) {
+    return switch (kind) {
       MediaKind.movie || MediaKind.show => const {
           ManageAction.edit,
           ManageAction.refresh,
@@ -1011,6 +1028,20 @@ class JellyfinBackend extends MediaBackend {
       MediaKind.episode => const {ManageAction.edit, ManageAction.refresh},
       _ => const {},
     };
+  }
+
+  @override
+  Future<void> deleteItem(MediaItem item) async {
+    try {
+      await _dio.delete<dynamic>('/Items/${item.id}');
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Your Jellyfin account isn\'t allowed to delete media.');
+      }
+      rethrow;
+    }
   }
 
   /// `POST /Items/{id}` replaces the whole record, so read it, change the

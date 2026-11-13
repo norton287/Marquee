@@ -171,5 +171,9 @@ abstract class MediaBackend {
   Future<void> uploadArtwork(MediaItem item, ArtworkKind kind,
       {Uint8List? bytes, String? mimeType, String? url}) async {}
 
+  /// Permanently deletes [item]'s files from the server's disk. Only offered
+  /// (via [manageActions]) where the server allows deletion.
+  Future<void> deleteItem(MediaItem item) async {}
+
   void dispose() {}
 }

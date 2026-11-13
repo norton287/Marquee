@@ -673,7 +673,8 @@ enum ManageAction {
   poster('Change poster…'),
   upload('Upload poster…'),
   background('Change background…'),
-  uploadBackground('Upload background…');
+  uploadBackground('Upload background…'),
+  delete('Delete…');
 
   const ManageAction(this.label);
   final String label;
