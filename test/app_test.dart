@@ -696,6 +696,352 @@ void main() {
         closeTo(poster, 0.5));
   });
 
+  test('skip lengths default to 10/30, round-trip, and reject odd values',
+      () async {
+    expect(const AppSettings().skipBackSeconds, 10);
+    expect(const AppSettings().skipForwardSeconds, 30);
+    final store = MemoryStore();
+    final a = AppStorage(store);
+    await a.load();
+    await a.saveSettings(
+        const AppSettings(skipBackSeconds: 5, skipForwardSeconds: 60));
+    final b = AppStorage(store);
+    await b.load();
+    expect(b.settings.skipBackSeconds, 5);
+    expect(b.settings.skipForwardSeconds, 60);
+    final odd = AppSettings.fromJson(
+        {'skipBackSeconds': 7, 'skipForwardSeconds': 'x'}, const {});
+    expect((odd.skipBackSeconds, odd.skipForwardSeconds), (10, 30));
+  });
+
+  testWidgets('skip lengths are chosen in Settings', (tester) async {
+    await _pump(tester, const Size(1440, 900));
+    await tester.tap(find.text('Settings').last);
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Skip back'), 200,
+        scrollable: find.byType(Scrollable).last);
+    // Let the scroll come to rest: a menu closes if its page scrolls.
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Skip back'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('45 seconds').last);
+    await tester.pumpAndSettle();
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    expect(container.read(settingsProvider).skipBackSeconds, 45);
+    expect(container.read(settingsProvider).skipForwardSeconds, 30);
+  });
+
+  testWidgets('a menu low on a TV page stays open while arrowing through it',
+      (tester) async {
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    await tester.tap(find.text('Settings').last);
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Skip forward'), 200,
+        scrollable: find.byType(Scrollable).last);
+    await tester.pumpAndSettle();
+    final tile = find.ancestor(
+        of: find.text('Skip forward'), matching: find.byType(ListTile));
+    Focus.of(tester.element(find.text('Skip forward'))).requestFocus();
+    await tester.pumpAndSettle();
+    expect(tile, findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    String? focused() => FocusManager.instance.primaryFocus?.debugLabel;
+    expect(focused(), 'menu item 4'); // 30 seconds
+    for (var i = 0; i < 2; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+    }
+    expect(focused(), 'menu item 6');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    expect(container.read(settingsProvider).skipForwardSeconds, 60);
+  });
+
+  testWidgets('scrubber steps back and forward by their own lengths',
+      (tester) async {
+    final seeks = <Duration>[];
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SeekBar(
+          position: ValueNotifier(const Duration(seconds: 100)),
+          buffer: ValueNotifier(Duration.zero),
+          duration: const Duration(minutes: 10),
+          onSeek: seeks.add,
+          step: const Duration(seconds: 45),
+          backStep: const Duration(seconds: 5),
+        ),
+      ),
+    ));
+    Focus.of(tester.element(find.descendant(
+            of: find.byType(SeekBar), matching: find.byType(Semantics))
+        .first))
+        .requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    expect(seeks, [const Duration(seconds: 95), const Duration(seconds: 145)]);
+  });
+
+  testWidgets('skip icons show the length', (tester) async {
+    await tester.pumpWidget(const MaterialApp(
+      home: Row(children: [
+        SkipIcon(seconds: 10, forward: false),
+        SkipIcon(seconds: 45, forward: true),
+      ]),
+    ));
+    expect(find.byIcon(Icons.replay_10_rounded), findsOneWidget);
+    expect(find.text('45'), findsOneWidget);
+  });
+
+  test('Plex manage and playlist calls', () async {
+    final calls = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final q = Map.of(o.queryParameters)..remove('X-Plex-Token');
+        calls.add('${o.method} ${o.path} $q');
+        Object? data = const <String, dynamic>{};
+        if (o.path == '/library/sections') {
+          data = {
+            'MediaContainer': {
+              'Directory': [
+                {'key': '1', 'agent': 'tv.plex.agents.movie', 'language': 'en-US'}
+              ]
+            }
+          };
+        } else if (o.path.endsWith('/matches')) {
+          data = {
+            'MediaContainer': {
+              'SearchResult': [
+                {'guid': 'plex://movie/abc', 'name': 'Heat', 'year': 1995,
+                 'score': 98, 'thumb': 'https://img/heat.jpg'}
+              ]
+            }
+          };
+        } else if (o.path.endsWith('/posters')) {
+          data = {
+            'MediaContainer': {
+              'Metadata': [
+                {'ratingKey': 'https://img/p1.jpg', 'thumb': 'https://img/p1.jpg',
+                 'selected': true, 'provider': 'tmdb'},
+                {'ratingKey': 'upload://posters/x', 'thumb': '/library/metadata/42/file?url=x'},
+              ]
+            }
+          };
+        } else if (o.path.endsWith('/refresh') && o.method == 'PUT') {
+          return h.reject(DioException(
+              requestOptions: o,
+              response: Response(requestOptions: o, statusCode: 403)));
+        }
+        h.resolve(Response(requestOptions: o, statusCode: 200, data: data));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't', machineId: 'mach'),
+        dio: dio);
+    final movie = plex.parse({'ratingKey': '42', 'type': 'movie',
+        'title': 'Heat', 'librarySectionID': 1});
+
+    expect(await plex.manageActions(movie), ManageAction.values.toSet());
+    final matches = await plex.searchMatches(movie, title: 'Heat', year: 1995);
+    expect(calls.last, contains('/library/metadata/42/matches'));
+    expect(calls.last, contains('agent: tv.plex.agents.movie'));
+    expect(calls.last, contains('language: en-US'));
+    expect((matches.single.id, matches.single.score, matches.single.source),
+        ('plex://movie/abc', 98, 'Plex'));
+    await plex.applyMatch(movie, matches.single);
+    expect(calls.last,
+        'PUT /library/metadata/42/match {guid: plex://movie/abc, name: Heat, year: 1995}');
+
+    final posters = await plex.artwork(movie, ArtworkKind.poster);
+    expect(posters.map((p) => (p.id, p.selected)),
+        [('https://img/p1.jpg', true), ('upload://posters/x', false)]);
+    await plex.setArtwork(movie, ArtworkKind.poster, posters[1]);
+    expect(calls.last, 'PUT /library/metadata/42/poster {url: upload://posters/x}');
+
+    await expectLater(plex.refreshMetadata(movie),
+        throwsA(isA<BackendException>().having((e) => e.message, 'message',
+            contains('server owner'))));
+
+    final playlist = plex.parse(
+        {'ratingKey': '9', 'type': 'playlist', 'title': 'Mine'});
+    await plex.addToPlaylist(playlist, movie);
+    expect(calls.last, 'PUT /playlists/9/items '
+        '{uri: server://mach/com.plexapp.plugins.library/library/metadata/42}');
+    await plex.createPlaylist('Friday', movie);
+    expect(calls.last, startsWith('POST /playlists {type: video, title: Friday, smart: 0'));
+  });
+
+  test('Jellyfin manage needs an admin and maps its calls', () async {
+    var admin = false;
+    final calls = <(String, String, Object?)>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add((o.method, o.path, o.data));
+        final data = switch (o.path) {
+          '/Users/u' => {'Policy': {'IsAdministrator': admin}},
+          '/Items/RemoteSearch/Movie' => [
+              {'Name': 'Heat', 'ProductionYear': 1995,
+               'ProviderIds': {'Tmdb': '949'}, 'ImageUrl': 'https://img/h.jpg',
+               'SearchProviderName': 'TheMovieDb'}
+            ],
+          '/Items/m1/RemoteImages' => {
+              'Images': [
+                {'Url': 'https://img/a.jpg', 'ThumbnailUrl': 'https://img/a_t.jpg',
+                 'ProviderName': 'TheMovieDb', 'Width': 1000, 'Height': 1500}
+              ]
+            },
+          _ => <String, dynamic>{},
+        };
+        h.resolve(Response(requestOptions: o, statusCode: 200, data: data));
+      }));
+    JellyfinBackend make() => JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const movie = MediaItem(serverId: 'j', id: 'm1', kind: MediaKind.movie,
+        title: 'Heat');
+
+    expect(await make().manageActions(movie), isEmpty);
+    admin = true;
+    final jf = make();
+    expect(await jf.manageActions(movie), contains(ManageAction.match));
+
+    final m = (await jf.searchMatches(movie, title: 'Heat', year: 1995)).single;
+    expect((m.id, m.source), ('tmdb:949', 'TheMovieDb'));
+    expect(calls.last.$3, containsPair('ItemId', 'm1'));
+    await jf.applyMatch(movie, m);
+    expect(calls.last.$2, '/Items/RemoteSearch/Apply/m1');
+    expect(calls.last.$3, same(m.raw));
+
+    final art = (await jf.artwork(movie, ArtworkKind.background)).single;
+    expect((art.id, art.image.template), ('https://img/a.jpg', 'https://img/a_t.jpg'));
+    await jf.setArtwork(movie, ArtworkKind.background, art);
+    expect(calls.last.$2, '/Items/m1/RemoteImages/Download');
+
+    await jf.createPlaylist('Friday', movie);
+    expect((calls.last.$1, calls.last.$2), ('POST', '/Playlists'));
+    expect(calls.last.$3,
+        {'Name': 'Friday', 'Ids': ['m1'], 'UserId': 'u', 'MediaType': 'Video'});
+  });
+
+  Future<void> openDemoMovie(WidgetTester tester, String title,
+      {bool tv = false}) async {
+    await _pump(tester, const Size(1440, 900), tv: tv);
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Movies').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(title).first);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('Manage: fix match renames, poster can be changed',
+      (tester) async {
+    await openDemoMovie(tester, 'Night Ferry');
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    for (final a in ['Refresh metadata', 'Fix match…', 'Change poster…',
+        'Change background…']) {
+      expect(find.text(a), findsOneWidget);
+    }
+    await tester.tap(find.text('Fix match…'));
+    await tester.pumpAndSettle();
+    final title = find.descendant(
+        of: find.byType(TextField).first, matching: find.byType(EditableText));
+    await tester.enterText(title, 'Harbor');
+    // "Search" is also a nav tab on desktop; this is the panel's button.
+    await tester.tap(find.ancestor(
+        of: find.text('Search'),
+        matching: find.byWidgetPredicate((w) => w is FilledButton)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Harbor Lights ('));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Matched to Harbor Lights'), findsOneWidget);
+    expect(find.text('Harbor Lights'), findsWidgets);
+
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Change poster…'));
+    await tester.pumpAndSettle();
+    final panel = find.ancestor(
+        of: find.text('Change poster'),
+        matching: find.byType(SingleChildScrollView));
+    final choices =
+        find.descendant(of: panel.first, matching: find.byType(Pressable));
+    expect(choices, findsNWidgets(8));
+    await tester.tap(choices.at(3));
+    await tester.pumpAndSettle();
+    expect(find.text('Poster updated'), findsOneWidget);
+    // A match reloads once more after the server has had time to finish.
+    await tester.pump(const Duration(seconds: 11));
+  });
+
+  testWidgets('Add to playlist creates a playlist with the item',
+      (tester) async {
+    await openDemoMovie(tester, 'Low Sun');
+    await tester.tap(find.byTooltip('Add to playlist'));
+    await tester.pumpAndSettle();
+    expect(find.text('Friday Night'), findsOneWidget);
+    await tester.tap(find.text('New playlist…'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, 'Rainy day');
+    await tester.tap(find.text('Create'));
+    await tester.pumpAndSettle();
+    expect(find.text('Added to "Rainy day"'), findsOneWidget);
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final lists = await container.read(playlistsProvider('demo').future);
+    final created = lists.firstWhere((p) => p.title == 'Rainy day');
+    final items = await container.read(backendsProvider)['demo']!.children(created);
+    expect(items.single.title, 'Low Sun');
+  });
+
+  testWidgets('Manage panels put the remote on something', (tester) async {
+    await openDemoMovie(tester, 'Copper Sky', tv: true);
+    String? focusedText() {
+      final ctx = FocusManager.instance.primaryFocus?.context;
+      if (ctx == null) return null;
+      final texts = <String>[];
+      void visit(Element e) {
+        if (e.widget is Text) texts.add((e.widget as Text).data ?? '');
+        e.visitChildren(visit);
+      }
+      (ctx as Element).visitChildren(visit);
+      return texts.join(' | ');
+    }
+
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Fix match…'));
+    await tester.pumpAndSettle();
+    // The search runs on open and the first result takes focus.
+    expect(focusedText(), contains('Copper Sky ('));
+    // ↑ from the results reaches the Search button, not a trapped field.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pumpAndSettle();
+    expect(focusedText(), contains('Search'));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pumpAndSettle();
+    expect(FocusManager.instance.primaryFocus?.context?.widget,
+        isA<Focus>()); // inside the title field
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(focusedText(), contains('Search'));
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Add to playlist'));
+    await tester.pumpAndSettle();
+    expect(focusedText(), contains('New playlist…'));
+  });
+
   test('backend errors reach the user verbatim', () {
     expect(friendlyError(const BackendException('That PIN wasn\'t right.')),
         'That PIN wasn\'t right.');

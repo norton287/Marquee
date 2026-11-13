@@ -810,6 +810,188 @@ class PlexBackend extends MediaBackend {
             'key': item.id,
           });
 
+  // -- managing items -------------------------------------------------------
+
+  /// Maps the server refusing (managed profiles, shared users) to a message.
+  Future<T> _manage<T>(Future<T> Function() f) async {
+    try {
+      return await f();
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Only the server owner can manage items on this Plex server.');
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<Set<ManageAction>> manageActions(MediaItem item) async {
+    if (item.external) return const {};
+    return switch (item.kind) {
+      MediaKind.movie || MediaKind.show => ManageAction.values.toSet(),
+      MediaKind.season => const {
+          ManageAction.refresh,
+          ManageAction.analyze,
+          ManageAction.poster,
+          ManageAction.background,
+        },
+      MediaKind.episode => const {ManageAction.refresh, ManageAction.analyze},
+      _ => const {},
+    };
+  }
+
+  @override
+  Future<void> refreshMetadata(MediaItem item) => _manage(
+      () => _dio.put<dynamic>('/library/metadata/${item.id}/refresh'));
+
+  @override
+  Future<void> analyze(MediaItem item) => _manage(
+      () => _dio.put<dynamic>('/library/metadata/${item.id}/analyze'));
+
+  @override
+  Future<void> unmatch(MediaItem item) => _manage(
+      () => _dio.put<dynamic>('/library/metadata/${item.id}/unmatch'));
+
+  Map<String, ({String? agent, String? language})>? _sections;
+
+  /// The metadata agent and language a library uses; match searches need them.
+  Future<({String? agent, String? language})> _sectionInfo(
+      String? libraryId) async {
+    _sections ??= {
+      for (final raw in ((await _get('/library/sections'))['Directory']
+              as List?) ??
+          const [])
+        '${(raw as Map)['key']}': (
+          agent: raw['agent'] as String?,
+          language: raw['language'] as String?,
+        ),
+    };
+    return _sections![libraryId] ?? (agent: null, language: null);
+  }
+
+  @override
+  Future<List<MatchCandidate>> searchMatches(MediaItem item,
+      {required String title, int? year}) async {
+    final section = await _sectionInfo(item.libraryId);
+    final c = await _manage(() => _get('/library/metadata/${item.id}/matches', {
+          'manual': 1,
+          'title': title,
+          'year': ?year,
+          'agent': ?section.agent,
+          'language': ?section.language,
+        }));
+    return [
+      for (final raw in (c['SearchResult'] as List?) ?? const [])
+        if ((raw as Map)['guid'] != null)
+          MatchCandidate(
+            id: '${raw['guid']}',
+            title: '${raw['name'] ?? raw['title'] ?? ''}',
+            year: asInt(raw['year']),
+            score: asInt(raw['score']),
+            image: _img(raw['thumb']),
+            overview: raw['summary'] as String?,
+            source: _agentName('${raw['guid']}'),
+          ),
+    ];
+  }
+
+  static String? _agentName(String guid) {
+    final scheme = guid.split('://').first;
+    return switch (scheme) {
+      'plex' => 'Plex',
+      'com.plexapp.agents.imdb' => 'IMDb',
+      'com.plexapp.agents.themoviedb' || 'tmdb' => 'TMDB',
+      'com.plexapp.agents.thetvdb' || 'tvdb' => 'TheTVDB',
+      _ => null,
+    };
+  }
+
+  @override
+  Future<void> applyMatch(MediaItem item, MatchCandidate match) => _manage(
+      () => _dio.put<dynamic>('/library/metadata/${item.id}/match',
+              queryParameters: {
+                'guid': match.id,
+                'name': match.title,
+                'year': ?match.year,
+              }));
+
+  static String _artPath(ArtworkKind kind) =>
+      kind == ArtworkKind.poster ? 'poster' : 'art';
+
+  @override
+  Future<List<ArtworkOption>> artwork(MediaItem item, ArtworkKind kind) async {
+    final c = await _manage(
+        () => _get('/library/metadata/${item.id}/${_artPath(kind)}s'));
+    return [
+      for (final raw in (c['Metadata'] as List?) ?? const [])
+        if (_img((raw as Map)['thumb'] ?? raw['key']) case final image?)
+          ArtworkOption(
+            // Plex selects by the option's ratingKey (a URL or upload path).
+            id: '${raw['ratingKey'] ?? raw['key']}',
+            image: image,
+            selected: asBool(raw['selected']),
+            source: raw['provider'] as String?,
+          ),
+    ];
+  }
+
+  @override
+  Future<void> setArtwork(
+          MediaItem item, ArtworkKind kind, ArtworkOption option) =>
+      _manage(() => _dio.put<dynamic>(
+          '/library/metadata/${item.id}/${_artPath(kind)}',
+          queryParameters: {'url': option.id}));
+
+  // -- playlists ------------------------------------------------------------
+
+  static String? _playlistType(MediaItem item) => item.kind.isMusic
+      ? 'audio'
+      : (item.kind.isVideo ||
+              item.kind == MediaKind.show ||
+              item.kind == MediaKind.season)
+          ? 'video'
+          : null;
+
+  String? _machineId;
+
+  /// Plex addresses items by `server://<machine id>/…` URIs.
+  Future<String> _itemUri(MediaItem item) async {
+    final machine = _machineId ??= config.machineId?.isNotEmpty == true
+        ? config.machineId
+        : '${(await _get('/identity'))['machineIdentifier']}';
+    return 'server://$machine/com.plexapp.plugins.library'
+        '/library/metadata/${item.id}';
+  }
+
+  @override
+  bool canAddToPlaylist(MediaItem item) =>
+      !item.external && _playlistType(item) != null;
+
+  @override
+  Future<List<MediaItem>> playlistsFor(MediaItem item) async {
+    final c = await _get('/playlists',
+        {'playlistType': ?_playlistType(item), 'smart': 0});
+    return _items(c).where((p) => p.kind == MediaKind.playlist).toList();
+  }
+
+  @override
+  Future<void> addToPlaylist(MediaItem playlist, MediaItem item) async {
+    await _dio.put<dynamic>('/playlists/${playlist.id}/items',
+        queryParameters: {'uri': await _itemUri(item)});
+  }
+
+  @override
+  Future<void> createPlaylist(String title, MediaItem item) async {
+    await _dio.post<dynamic>('/playlists', queryParameters: {
+      'type': ?_playlistType(item),
+      'title': title,
+      'smart': 0,
+      'uri': await _itemUri(item),
+    });
+  }
+
   // -- library scans --------------------------------------------------------
 
   @override

@@ -960,6 +960,178 @@ class JellyfinBackend extends MediaBackend {
         'parentId': ?parent,
       }));
 
+  // -- managing items (administrators) --------------------------------------
+
+  Future<bool>? _isAdmin;
+
+  /// Manage actions need an administrator; ask once per backend.
+  Future<bool> _admin() => _isAdmin ??= () async {
+        try {
+          final r = await _dio.get<Map<String, dynamic>>('/Users/$_uid');
+          return asBool((r.data?['Policy'] as Map?)?['IsAdministrator']);
+        } on DioException {
+          return false;
+        }
+      }();
+
+  Future<T> _manage<T>(Future<T> Function() f) async {
+    try {
+      return await f();
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Only a Jellyfin administrator can manage items.');
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<Set<ManageAction>> manageActions(MediaItem item) async {
+    if (!await _admin()) return const {};
+    return switch (item.kind) {
+      MediaKind.movie || MediaKind.show => const {
+          ManageAction.refresh,
+          ManageAction.match,
+          ManageAction.poster,
+          ManageAction.background,
+        },
+      MediaKind.season => const {ManageAction.refresh, ManageAction.poster},
+      MediaKind.episode => const {ManageAction.refresh},
+      _ => const {},
+    };
+  }
+
+  @override
+  Future<void> refreshMetadata(MediaItem item) =>
+      _manage(() => _dio.post<dynamic>('/Items/${item.id}/Refresh',
+              queryParameters: {
+                'metadataRefreshMode': 'FullRefresh',
+                'imageRefreshMode': 'FullRefresh',
+                'replaceAllMetadata': false,
+                'replaceAllImages': false,
+              }));
+
+  @override
+  Future<List<MatchCandidate>> searchMatches(MediaItem item,
+      {required String title, int? year}) async {
+    final type = item.kind == MediaKind.show ? 'Series' : 'Movie';
+    final r = await _manage(() => _dio.post<List<dynamic>>(
+          '/Items/RemoteSearch/$type',
+          data: {
+            'SearchInfo': {'Name': title, 'Year': ?year},
+            'ItemId': item.id,
+            'IncludeDisabledProviders': true,
+          },
+        ));
+    return [
+      for (final raw in r.data ?? const [])
+        if (raw is Map<String, dynamic>)
+          MatchCandidate(
+            id: (((raw['ProviderIds'] as Map?) ?? const {}).entries)
+                    .map((e) => '${e.key}:${e.value}'.toLowerCase())
+                    .firstOrNull ??
+                '${raw['Name']}',
+            title: '${raw['Name'] ?? ''}',
+            year: asInt(raw['ProductionYear']),
+            image: raw['ImageUrl'] is String
+                ? ImageRef(raw['ImageUrl'] as String)
+                : null,
+            source: raw['SearchProviderName'] as String?,
+            overview: raw['Overview'] as String?,
+            raw: raw,
+          ),
+    ];
+  }
+
+  @override
+  Future<void> applyMatch(MediaItem item, MatchCandidate match) =>
+      _manage(() => _dio.post<dynamic>(
+            '/Items/RemoteSearch/Apply/${item.id}',
+            queryParameters: {'replaceAllImages': true},
+            data: match.raw,
+          ));
+
+  static String _imageType(ArtworkKind kind) =>
+      kind == ArtworkKind.poster ? 'Primary' : 'Backdrop';
+
+  @override
+  Future<List<ArtworkOption>> artwork(MediaItem item, ArtworkKind kind) async {
+    final r = await _manage(() => _dio.get<Map<String, dynamic>>(
+          '/Items/${item.id}/RemoteImages',
+          queryParameters: {
+            'type': _imageType(kind),
+            'includeAllLanguages': false,
+            'limit': 60,
+          },
+        ));
+    return [
+      for (final raw in (r.data?['Images'] as List?) ?? const [])
+        if ((raw as Map)['Url'] is String)
+          ArtworkOption(
+            id: raw['Url'] as String,
+            image: ImageRef('${raw['ThumbnailUrl'] ?? raw['Url']}'),
+            source: raw['ProviderName'] as String?,
+            width: asInt(raw['Width']),
+            height: asInt(raw['Height']),
+          ),
+    ];
+  }
+
+  @override
+  Future<void> setArtwork(
+          MediaItem item, ArtworkKind kind, ArtworkOption option) =>
+      _manage(() => _dio.post<dynamic>(
+            '/Items/${item.id}/RemoteImages/Download',
+            queryParameters: {'type': _imageType(kind), 'imageUrl': option.id},
+          ));
+
+  // -- playlists ------------------------------------------------------------
+
+  static String? _playlistMediaType(MediaItem item) => item.kind.isMusic
+      ? 'Audio'
+      : (item.kind.isVideo ||
+              item.kind == MediaKind.show ||
+              item.kind == MediaKind.season)
+          ? 'Video'
+          : null;
+
+  @override
+  bool canAddToPlaylist(MediaItem item) => _playlistMediaType(item) != null;
+
+  @override
+  Future<List<MediaItem>> playlistsFor(MediaItem item) async {
+    final type = _playlistMediaType(item);
+    final r = await _dio.get<Map<String, dynamic>>('/Items', queryParameters: {
+      'userId': _uid,
+      'includeItemTypes': 'Playlist',
+      'recursive': true,
+      'sortBy': 'SortName',
+      'fields': _listFields,
+    });
+    return [
+      for (final raw in (r.data?['Items'] as List?) ?? const [])
+        // A playlist holds one media type; an empty one may not say yet.
+        if ((raw as Map)['MediaType'] == null || raw['MediaType'] == type)
+          parse(raw as Map<String, dynamic>),
+    ];
+  }
+
+  @override
+  Future<void> addToPlaylist(MediaItem playlist, MediaItem item) =>
+      _dio.post<dynamic>('/Playlists/${playlist.id}/Items',
+          queryParameters: {'ids': item.id, 'userId': _uid});
+
+  @override
+  Future<void> createPlaylist(String title, MediaItem item) =>
+      _dio.post<dynamic>('/Playlists', data: {
+        'Name': title,
+        'Ids': [item.id],
+        'UserId': _uid,
+        'MediaType': ?_playlistMediaType(item),
+      });
+
   // -- library scans --------------------------------------------------------
 
   @override

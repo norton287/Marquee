@@ -26,6 +26,13 @@ class DemoBackend extends MediaBackend {
   static final _played = <String>{};
   static final _favorites = <String>{'m2', 's1'};
 
+  // What Manage and playlists changed, kept for the life of the app.
+  static final _titles = <String, String>{};
+  static final _posters = <String, ImageRef>{};
+  static final _backdrops = <String, ImageRef>{};
+  static final _userPlaylists = <MediaItem>[];
+  static final _playlistAdds = <String, List<MediaItem>>{};
+
   static ImageRef _pic(String seed) =>
       ImageRef('https://picsum.photos/seed/marquee-$seed/{w}/{h}');
 
@@ -224,7 +231,7 @@ class DemoBackend extends MediaBackend {
       serverId: i.serverId,
       id: i.id,
       kind: i.kind,
-      title: i.title,
+      title: _titles[i.id] ?? i.title,
       overview: i.overview,
       tagline: i.tagline,
       year: i.year,
@@ -233,9 +240,9 @@ class DemoBackend extends MediaBackend {
       played: played,
       unplayedCount: unplayed,
       childCount: i.childCount,
-      poster: i.poster,
+      poster: _posters[i.id] ?? i.poster,
       thumb: i.thumb,
-      backdrop: i.backdrop,
+      backdrop: _backdrops[i.id] ?? i.backdrop,
       parentId: i.parentId,
       grandparentId: i.grandparentId,
       parentTitle: i.parentTitle,
@@ -366,7 +373,15 @@ class DemoBackend extends MediaBackend {
           : const [];
 
   @override
-  Future<List<MediaItem>> playlists() async => [_playlist];
+  Future<List<MediaItem>> playlists() async =>
+      [_playlist, ..._userPlaylists.map(_withCount)];
+
+  MediaItem _withCount(MediaItem p) => MediaItem(
+      serverId: p.serverId,
+      id: p.id,
+      kind: MediaKind.playlist,
+      title: p.title,
+      childCount: (_playlistAdds[p.id] ?? const []).length);
 
   @override
   Future<List<MediaItem>> folders(Library library) async => [
@@ -384,7 +399,13 @@ class DemoBackend extends MediaBackend {
         MediaKind.season => _episodes[parent.id] ?? const [],
         MediaKind.album => _tracks[parent.id] ?? const [],
         MediaKind.collection => _movies.take(6),
-        MediaKind.playlist => [..._movies.skip(8).take(3), ..._allEpisodes.take(2)],
+        MediaKind.playlist => [
+            if (parent.id == _playlist.id) ...[
+              ..._movies.skip(8).take(3),
+              ..._allEpisodes.take(2),
+            ],
+            ...?_playlistAdds[parent.id],
+          ],
         MediaKind.folder => parent.id == 'f-shows'
             ? _shows.take(4)
             : parent.id == 'f-music'
@@ -397,6 +418,9 @@ class DemoBackend extends MediaBackend {
   Future<MediaItem> item(String id, {MediaKind? kind}) async {
     if (id == _collection.id) return _collection;
     if (id == _playlist.id) return _playlist;
+    for (final p in _userPlaylists) {
+      if (p.id == id) return _withCount(p);
+    }
     if (id.startsWith('f-')) {
       return MediaItem(
           serverId: serverId, id: id, kind: MediaKind.folder, title: 'Folder');
@@ -436,6 +460,101 @@ class DemoBackend extends MediaBackend {
         Shelf('More $genre',
             pool.where((i) => i.genres.contains(genre)).toList()),
     ].where((s) => s.items.isNotEmpty).toList();
+  }
+
+  // -- Manage (works on the sample library so it can be explored) -----------
+
+  @override
+  Future<Set<ManageAction>> manageActions(MediaItem item) async =>
+      switch (item.kind) {
+        MediaKind.movie || MediaKind.show => const {
+            ManageAction.refresh,
+            ManageAction.match,
+            ManageAction.poster,
+            ManageAction.background,
+          },
+        MediaKind.season => const {ManageAction.refresh, ManageAction.poster},
+        MediaKind.episode => const {ManageAction.refresh},
+        _ => const {},
+      };
+
+  @override
+  Future<List<MatchCandidate>> searchMatches(MediaItem item,
+      {required String title, int? year}) async {
+    final pool = item.kind == MediaKind.show ? _shows : _movies;
+    final words = title.toLowerCase().split(' ').where((w) => w.length > 2);
+    final hits = pool.where((i) =>
+        words.any((w) => i.title.toLowerCase().contains(w)));
+    return [
+      for (final (n, i) in (hits.isEmpty ? pool.take(6) : hits).indexed)
+        MatchCandidate(
+          id: 'demo://${i.id}',
+          title: i.title,
+          year: i.year,
+          score: 100 - n * 7,
+          image: i.poster,
+          source: 'Demo',
+          overview: i.overview,
+        ),
+    ];
+  }
+
+  @override
+  Future<void> applyMatch(MediaItem item, MatchCandidate match) async {
+    _titles[item.id] = match.title;
+    if (match.image != null) _posters[item.id] = match.image!;
+  }
+
+  @override
+  Future<List<ArtworkOption>> artwork(MediaItem item, ArtworkKind kind) async {
+    final current =
+        (kind == ArtworkKind.poster ? _posters : _backdrops)[item.id];
+    return [
+      for (var n = 0; n < 8; n++)
+        if (_pic('${kind.name}-${item.id}-$n') case final image)
+          ArtworkOption(
+            id: image.template,
+            image: image,
+            selected: current == null
+                ? n == 0
+                : current.template == image.template,
+            source: 'Demo',
+          ),
+    ];
+  }
+
+  @override
+  Future<void> setArtwork(
+      MediaItem item, ArtworkKind kind, ArtworkOption option) async {
+    (kind == ArtworkKind.poster ? _posters : _backdrops)[item.id] = option.image;
+  }
+
+  // -- playlists ------------------------------------------------------------
+
+  @override
+  bool canAddToPlaylist(MediaItem item) =>
+      item.kind.isPlayable ||
+      item.kind == MediaKind.show ||
+      item.kind == MediaKind.season ||
+      item.kind == MediaKind.album;
+
+  @override
+  Future<List<MediaItem>> playlistsFor(MediaItem item) => playlists();
+
+  @override
+  Future<void> addToPlaylist(MediaItem playlist, MediaItem item) async {
+    (_playlistAdds[playlist.id] ??= []).add(item);
+  }
+
+  @override
+  Future<void> createPlaylist(String title, MediaItem item) async {
+    final p = MediaItem(
+        serverId: serverId,
+        id: 'up${_userPlaylists.length + 1}',
+        kind: MediaKind.playlist,
+        title: title);
+    _userPlaylists.add(p);
+    await addToPlaylist(p, item);
   }
 
   @override

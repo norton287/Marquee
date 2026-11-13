@@ -306,6 +306,43 @@ Future<void> scanLibrary(
   Timer(const Duration(seconds: 20), reload);
 }
 
+/// What the Manage menu offers for an item (empty: no menu).
+final manageActionsProvider =
+    FutureProvider.family<Set<ManageAction>, ItemRef>((ref, key) async {
+  final item = await ref.watch(itemProvider(key).future);
+  return ref.backend(key.serverId).manageActions(item);
+});
+
+/// The user's playlists that [ItemRef] can be added to.
+final playlistsForProvider = FutureProvider.autoDispose
+    .family<List<MediaItem>, ItemRef>((ref, key) async {
+  final item = await ref.watch(itemProvider(key).future);
+  return ref.backend(key.serverId).playlistsFor(item);
+});
+
+/// Reloads everything that shows [item] after its metadata or artwork
+/// changed. Refreshes and matches finish on the server a little later, so
+/// [again] reloads once more after that.
+void reloadItem(ProviderContainer container, MediaItem item,
+    {bool again = false}) {
+  void reload() {
+    container
+      ..invalidate(itemProvider(item.ref))
+      ..invalidate(childrenProvider)
+      ..invalidate(similarProvider)
+      ..invalidate(continueWatchingProvider)
+      ..invalidate(nextUpProvider)
+      ..invalidate(recentlyAddedProvider)
+      ..invalidate(libraryRecommendedProvider)
+      ..invalidate(collectionsProvider(item.serverId))
+      ..invalidate(discoverProvider)
+      ..invalidate(watchlistProvider);
+  }
+
+  reload();
+  if (again) Timer(const Duration(seconds: 10), reload);
+}
+
 /// Call after anything that changes watch state.
 void refreshWatchState(WidgetRef ref, [MediaItem? item]) {
   ref.invalidate(continueWatchingProvider);

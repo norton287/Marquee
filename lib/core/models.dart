@@ -658,3 +658,82 @@ double? asDouble(Object? v) => switch (v) {
     };
 
 bool asBool(Object? v) => v == true || v == 1 || v == '1' || v == 'true';
+
+// ---------------------------------------------------------------------------
+// Managing items (refresh, match, artwork)
+// ---------------------------------------------------------------------------
+
+/// What the Manage menu on a details page can do for an item.
+enum ManageAction {
+  refresh('Refresh metadata'),
+  analyze('Analyze'),
+  match('Fix match…'),
+  unmatch('Unmatch'),
+  poster('Change poster…'),
+  background('Change background…');
+
+  const ManageAction(this.label);
+  final String label;
+}
+
+enum ArtworkKind {
+  poster('Poster'),
+  background('Background');
+
+  const ArtworkKind(this.label);
+  final String label;
+}
+
+/// One result of a "fix match" search.
+@immutable
+class MatchCandidate {
+  const MatchCandidate({
+    required this.id,
+    required this.title,
+    this.year,
+    this.score,
+    this.image,
+    this.source,
+    this.overview,
+    this.raw = const {},
+  });
+
+  /// Plex: the agent guid. Jellyfin: a provider id such as "tmdb:603".
+  final String id;
+  final String title;
+  final int? year;
+
+  /// 0–100 where the server ranks results (Plex).
+  final int? score;
+  final ImageRef? image;
+
+  /// Where the result came from, e.g. "TheMovieDb".
+  final String? source;
+  final String? overview;
+
+  /// The server's own record, sent back as-is when applying (Jellyfin).
+  final Map<String, dynamic> raw;
+}
+
+/// One choice when changing a poster or background.
+@immutable
+class ArtworkOption {
+  const ArtworkOption({
+    required this.id,
+    required this.image,
+    this.selected = false,
+    this.source,
+    this.width,
+    this.height,
+  });
+
+  /// Plex: the image key to select. Jellyfin: the remote image URL.
+  final String id;
+  final ImageRef image;
+
+  /// The one in use now (Plex says; Jellyfin doesn't).
+  final bool selected;
+  final String? source;
+  final int? width;
+  final int? height;
+}

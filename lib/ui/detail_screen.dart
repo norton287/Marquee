@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/models.dart';
 import '../core/providers.dart';
 import 'libraries_screen.dart';
+import 'manage.dart';
 import 'nav.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -455,6 +456,8 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
               color: listed ? Palette.accent : null,
             ),
           ),
+        AddToPlaylistButton(item: item),
+        ManageButton(item: item),
         if (kind.isVideo && item.versions.length > 1)
           SelectMenu(
             items: [

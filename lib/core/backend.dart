@@ -115,5 +115,48 @@ abstract class MediaBackend {
   Future<bool> isWatchlisted(MediaItem item);
   Future<void> setWatchlisted(MediaItem item, bool value);
 
+  // -- managing items (server owner / administrator) ---------------------------
+
+  /// What the Manage menu offers for [item]; empty hides the menu. Servers
+  /// that can tell the user isn't allowed to manage return empty up front.
+  Future<Set<ManageAction>> manageActions(MediaItem item) async => const {};
+
+  /// Re-fetch [item]'s metadata from the server's agents. Returns once the
+  /// server has accepted the request; the refresh itself runs in the
+  /// background.
+  Future<void> refreshMetadata(MediaItem item) async {}
+
+  /// Re-read the file's media info (Plex).
+  Future<void> analyze(MediaItem item) async {}
+
+  /// Search the metadata agents for what [item] really is.
+  Future<List<MatchCandidate>> searchMatches(MediaItem item,
+          {required String title, int? year}) async =>
+      const [];
+
+  Future<void> applyMatch(MediaItem item, MatchCandidate match) async {}
+
+  Future<void> unmatch(MediaItem item) async {}
+
+  /// Images the server can use as [item]'s poster or background.
+  Future<List<ArtworkOption>> artwork(MediaItem item, ArtworkKind kind) async =>
+      const [];
+
+  Future<void> setArtwork(
+      MediaItem item, ArtworkKind kind, ArtworkOption option) async {}
+
+  // -- playlists (any user) ----------------------------------------------------
+
+  /// Whether [item] can go into a playlist on this server.
+  bool canAddToPlaylist(MediaItem item) => false;
+
+  /// The user's playlists that can take [item] (same media type, not smart).
+  Future<List<MediaItem>> playlistsFor(MediaItem item) async => const [];
+
+  Future<void> addToPlaylist(MediaItem playlist, MediaItem item) async {}
+
+  /// Creates a playlist called [title] holding [item].
+  Future<void> createPlaylist(String title, MediaItem item) async {}
+
   void dispose() {}
 }
