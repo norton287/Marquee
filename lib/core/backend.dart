@@ -185,6 +185,16 @@ abstract class MediaBackend {
   /// (via [manageActions]) where the server allows deletion.
   Future<void> deleteItem(MediaItem item) async {}
 
+  /// The versions of [item] that can be deleted one by one: all of them
+  /// when there are several. Offered under the same rule as [deleteItem].
+  List<MediaVersion> deletableVersions(MediaItem item) =>
+      item.versions.length > 1 ? item.versions : const [];
+
+  /// Permanently deletes one version's file(s); the item and its other
+  /// versions stay.
+  Future<void> deleteVersion(MediaItem item, MediaVersion version) =>
+      throw UnsupportedError('This server can\'t delete single versions.');
+
   /// Deletes a playlist (not the media in it). Users may delete their own
   /// playlists, so this needs no owner or administrator rights.
   Future<void> deletePlaylist(MediaItem playlist) async {}

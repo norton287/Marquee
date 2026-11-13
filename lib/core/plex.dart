@@ -863,13 +863,18 @@ class PlexBackend extends MediaBackend {
     if (item.kind == MediaKind.playlist) return MediaBackend.playlistActions(item);
     final actions = _manageActionsFor(item.kind);
     if (actions.isEmpty || !await _canDelete()) return actions;
-    return {...actions, ManageAction.delete};
+    return {
+      ...actions,
+      ManageAction.delete,
+      if (deletableVersions(item).isNotEmpty) ManageAction.deleteVersion,
+    };
   }
 
   static Set<ManageAction> _manageActionsFor(MediaKind kind) {
     return switch (kind) {
       MediaKind.movie || MediaKind.show => ManageAction.values.toSet()
         ..remove(ManageAction.delete)
+        ..remove(ManageAction.deleteVersion)
         ..remove(ManageAction.removeFromPlaylist)
         ..remove(ManageAction.deletePlaylist),
       MediaKind.season => const {
@@ -968,6 +973,21 @@ class PlexBackend extends MediaBackend {
   Future<void> deleteItem(MediaItem item) async {
     try {
       await _dio.delete<dynamic>('/library/metadata/${item.id}');
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException('Plex refused to delete this. The server '
+            'owner must allow media deletion in Settings → Library.');
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> deleteVersion(MediaItem item, MediaVersion version) async {
+    try {
+      await _dio
+          .delete<dynamic>('/library/metadata/${item.id}/media/${version.id}');
     } on DioException catch (e) {
       final code = e.response?.statusCode;
       if (code == 401 || code == 403) {

@@ -268,6 +268,9 @@ class MediaVersion {
         final n => '$n ch',
       };
 
+  /// A few words naming this version ("4K", "720p", or the server's name).
+  String get shortLabel => name ?? resolution ?? 'this';
+
   String get label => [
         ?name,
         ?resolution,
@@ -709,6 +712,7 @@ enum ManageAction {
   background('Change background…'),
   uploadBackground('Upload background…'),
   delete('Delete…'),
+  deleteVersion('Delete a version…'),
   removeFromPlaylist('Remove from playlist…'),
   deletePlaylist('Delete playlist…');
 

@@ -55,6 +55,7 @@ class ManageButton extends ConsumerWidget {
         ManageAction.background => Icons.wallpaper_rounded,
         ManageAction.uploadBackground => Icons.add_photo_alternate_outlined,
         ManageAction.delete => Icons.delete_forever_outlined,
+        ManageAction.deleteVersion => Icons.layers_clear_outlined,
         ManageAction.removeFromPlaylist => Icons.remove_circle_outline_rounded,
         ManageAction.deletePlaylist => Icons.playlist_remove_rounded,
       };
@@ -103,6 +104,9 @@ class ManageButton extends ConsumerWidget {
                 kind: a == ManageAction.upload
                     ? ArtworkKind.poster
                     : ArtworkKind.background));
+      case ManageAction.deleteVersion:
+        await showPanel<void>(context,
+            width: 460, builder: (_) => _DeleteVersionPanel(item: item));
       case ManageAction.removeFromPlaylist:
         await showPanel<void>(context,
             width: 460,
@@ -1039,6 +1043,122 @@ class _ArtworkPanelState extends ConsumerState<_ArtworkPanel> {
               });
             },
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Delete a version
+// ---------------------------------------------------------------------------
+
+/// The versions that can go one by one; choosing one asks first (Cancel
+/// focused, as for Delete) and deletes only that version's file.
+class _DeleteVersionPanel extends ConsumerStatefulWidget {
+  const _DeleteVersionPanel({required this.item});
+  final MediaItem item;
+
+  @override
+  ConsumerState<_DeleteVersionPanel> createState() =>
+      _DeleteVersionPanelState();
+}
+
+class _DeleteVersionPanelState extends ConsumerState<_DeleteVersionPanel> {
+  String? _deleting;
+  Object? _error;
+
+  Future<void> _delete(MediaVersion v) async {
+    final item = widget.item;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        final error = Theme.of(context).colorScheme.error;
+        return AlertDialog(
+          icon: Icon(Icons.layers_clear_outlined, color: error),
+          title: Text('Delete the ${v.shortLabel} version of ${item.title}?'),
+          content: const Text('This permanently deletes that version\'s file '
+              'from the server\'s disk. The other versions stay. It can\'t '
+              'be undone.'),
+          actions: [
+            TextButton(
+              autofocus: true,
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                  backgroundColor: error,
+                  foregroundColor: Theme.of(context).colorScheme.onError),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+    if (ok != true || !mounted) return;
+    final container = ProviderScope.containerOf(context, listen: false);
+    final messenger = ScaffoldMessenger.of(context);
+    final backend = container.read(backendsProvider)[item.serverId];
+    if (backend == null) return;
+    setState(() {
+      _deleting = v.id;
+      _error = null;
+    });
+    try {
+      await backend.deleteVersion(item, v);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _deleting = null;
+          _error = e;
+        });
+      }
+      return;
+    }
+    (messenger..hideCurrentSnackBar()).showSnackBar(
+        SnackBar(content: Text('Deleted the ${v.shortLabel} version')));
+    reloadItem(container, item);
+    if (mounted) Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final backend = ref.read(backendsProvider)[widget.item.serverId];
+    final versions = backend?.deletableVersions(widget.item) ?? const [];
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _PanelTitle('Delete a version', subtitle: widget.item.title),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(friendlyError(_error!),
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.error)),
+            ),
+          for (final (i, v) in versions.indexed)
+            ListTile(
+              autofocus: i == 0,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+              focusColor: Palette.surfaceHigh,
+              leading: const Icon(Icons.movie_outlined),
+              title: Text(v.label.isEmpty ? v.shortLabel : v.label),
+              subtitle: v.container == null
+                  ? null
+                  : Text(v.container!.toUpperCase()),
+              trailing: _deleting == v.id
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : null,
+              onTap: _deleting == null ? () => _delete(v) : null,
+            ),
         ],
       ),
     );

@@ -1073,7 +1073,35 @@ class JellyfinBackend extends MediaBackend {
     if (!await _admin()) return const {};
     final actions = _manageActionsFor(item.kind);
     if (actions.isEmpty || !await _canDelete()) return actions;
-    return {...actions, ManageAction.delete};
+    return {
+      ...actions,
+      ManageAction.delete,
+      if (deletableVersions(item).isNotEmpty) ManageAction.deleteVersion,
+    };
+  }
+
+  /// Extra versions are items of their own; the primary one has the item's
+  /// id, and deleting it would delete the whole title.
+  @override
+  List<MediaVersion> deletableVersions(MediaItem item) => item.versions.length > 1
+      ? item.versions.where((v) => v.id != item.id).toList()
+      : const [];
+
+  @override
+  Future<void> deleteVersion(MediaItem item, MediaVersion version) async {
+    if (version.id == item.id) {
+      throw StateError('That version is the title itself; use Delete.');
+    }
+    try {
+      await _dio.delete<dynamic>('/Items/${version.id}');
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Your Jellyfin account isn\'t allowed to delete media.');
+      }
+      rethrow;
+    }
   }
 
   static Set<ManageAction> _manageActionsFor(MediaKind kind) {

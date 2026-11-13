@@ -1030,6 +1030,7 @@ void main() {
         await plex.manageActions(movie),
         ManageAction.values.toSet()
           ..remove(ManageAction.delete)
+          ..remove(ManageAction.deleteVersion)
           ..remove(ManageAction.removeFromPlaylist)
           ..remove(ManageAction.deletePlaylist));
     final matches = await plex.searchMatches(movie, title: 'Heat', year: 1995);
@@ -1193,6 +1194,77 @@ void main() {
     expect(dto['Genres'], ['Crime', 'Drama']);
     expect(dto['Studios'], ['S']); // the rest of the record is kept
     expect(dto['LockedFields'], containsAll(['Name', 'Overview', 'Genres']));
+  });
+
+  Dio fakePlexWithVersions(List<String> deletes, {required bool allow}) =>
+      Dio(BaseOptions(baseUrl: 'http://h'))
+        ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+          if (o.method == 'DELETE') deletes.add(o.path);
+          final data = switch (o.path) {
+            '/:/prefs' => {'MediaContainer': {'Setting': [
+                {'id': 'allowMediaDeletion', 'value': allow}]}},
+            '/library/metadata/42' => {'MediaContainer': {'Metadata': [
+                {'ratingKey': '42', 'type': 'movie', 'title': 'Heat',
+                 'librarySectionID': 1, 'Media': [
+                   {'id': 1, 'videoResolution': '1080', 'width': 1920,
+                    'height': 1080, 'Part': [{'id': 11}]},
+                   {'id': 2, 'videoResolution': '720', 'width': 1280,
+                    'height': 720, 'Part': [{'id': 12}]},
+                 ]}]}},
+            _ => {'MediaContainer': {}},
+          };
+          h.resolve(Response(
+              requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+        }));
+
+  test('Plex deletes one version only where deletion is allowed', () async {
+    final deletes = <String>[];
+    PlexBackend plex(bool allow) => PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: fakePlexWithVersions(deletes, allow: allow));
+    final on = plex(true);
+    final movie = await on.item('42');
+    expect(await on.manageActions(movie), contains(ManageAction.deleteVersion));
+    expect(on.deletableVersions(movie).map((v) => v.id), ['1', '2']);
+    await on.deleteVersion(movie, movie.versions[1]);
+    expect(deletes, ['/library/metadata/42/media/2']);
+
+    final off = plex(false);
+    expect(await off.manageActions(await off.item('42')),
+        isNot(contains(ManageAction.deleteVersion)));
+    final single = on.parse({'ratingKey': '7', 'type': 'movie', 'title': 'One',
+        'Media': [{'id': 9, 'Part': [{'id': 90}]}]});
+    expect(await on.manageActions(single),
+        isNot(contains(ManageAction.deleteVersion)));
+  });
+
+  test('Jellyfin offers only the extra versions and deletes that item',
+      () async {
+    final deletes = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        if (o.method == 'DELETE') deletes.add(o.path);
+        final data = o.path == '/Users/u'
+            ? {'Policy': {'IsAdministrator': true, 'EnableContentDeletion': true}}
+            : <String, dynamic>{};
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    final movie = jf.parse({'Id': 'm1', 'Name': 'Heat', 'Type': 'Movie',
+        'MediaSources': [
+          {'Id': 'm1', 'Name': '4K', 'Width': 3840, 'Height': 2160},
+          {'Id': 'alt1', 'Name': '1080p', 'Width': 1920, 'Height': 1080},
+        ]});
+    expect(await jf.manageActions(movie), contains(ManageAction.deleteVersion));
+    // The primary version is the movie itself: deleting it deletes the movie.
+    expect(jf.deletableVersions(movie).map((v) => v.id), ['alt1']);
+    await jf.deleteVersion(movie, jf.deletableVersions(movie).single);
+    expect(deletes, ['/Items/alt1']);
   });
 
   test('Jellyfin manage needs an admin and maps its calls', () async {
@@ -2074,6 +2146,64 @@ void main() {
     var onRow = identical(ctx, ronin);
     ctx?.visitAncestorElements((e) => !(onRow = onRow || identical(e, ronin)));
     expect(onRow, isTrue, reason: 'focus: ${FocusManager.instance.primaryFocus}');
+  });
+
+  testWidgets('TV: delete a version asks first, Cancel focused', (tester) async {
+    Artwork.network = false;
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final deletes = <String>[];
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: fakePlexWithVersions(deletes, allow: true));
+    // Real time: Dio's own timers never fire in the test's fake clock.
+    final movie = (await tester.runAsync(() => plex.item('42')))!;
+    final storage = await _storage(demo: false);
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        storageProvider.overrideWithValue(storage),
+        deviceIsTvProvider.overrideWithValue(true),
+        backendsProvider.overrideWithValue(<String, MediaBackend>{'p': plex}),
+      ],
+      retry: (_, _) => null,
+      child: MaterialApp(
+        home: Scaffold(body: Center(child: ManageButton(item: movie))),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete a version…'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Delete a version'), findsOneWidget);
+    final rows = find.descendant(
+        of: find.ancestor(
+            of: find.text('Delete a version'),
+            matching: find.byType(SingleChildScrollView)).first,
+        matching: find.byType(ListTile));
+    expect(rows, findsNWidgets(2));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+
+    // A stray OK on the confirmation cancels: Cancel has focus.
+    expect(find.text('Delete the 720p version of Heat?'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(deletes, isEmpty);
+    expect(find.text('Delete the 720p version of Heat?'), findsNothing);
+
+    await tester.tap(rows.at(1));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.pumpAndSettle();
+    expect(deletes, ['/library/metadata/42/media/2']);
+    expect(find.text('Deleted the 720p version'), findsOneWidget);
+    expect(find.text('Delete a version'), findsNothing); // panel closed
   });
 
   test('home or away is decided from the server address', () {
