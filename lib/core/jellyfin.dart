@@ -300,6 +300,7 @@ class JellyfinBackend extends MediaBackend {
       played: asBool(user['Played']),
       unplayedCount: asInt(user['UnplayedItemCount']),
       childCount: asInt(m['ChildCount']) ?? asInt(m['RecursiveItemCount']),
+      playlistEntryId: m['PlaylistItemId'] as String?,
       poster: poster,
       thumb: thumb,
       backdrop: backdrop,
@@ -1034,7 +1035,7 @@ class JellyfinBackend extends MediaBackend {
   @override
   Future<Set<ManageAction>> manageActions(MediaItem item) async {
     // A user's own playlists are theirs to delete; no admin needed.
-    if (item.kind == MediaKind.playlist) return const {ManageAction.deletePlaylist};
+    if (item.kind == MediaKind.playlist) return MediaBackend.playlistActions(item);
     if (!await _admin()) return const {};
     final actions = _manageActionsFor(item.kind);
     if (actions.isEmpty || !await _canDelete()) return actions;
@@ -1061,6 +1062,22 @@ class JellyfinBackend extends MediaBackend {
       MediaKind.episode => const {ManageAction.edit, ManageAction.refresh},
       _ => const {},
     };
+  }
+
+  @override
+  Future<void> removeFromPlaylist(MediaItem playlist, MediaItem entry) async {
+    final entryId = MediaBackend.entryIdOf(entry);
+    try {
+      await _dio.delete<dynamic>('/Playlists/${playlist.id}/Items',
+          queryParameters: {'entryIds': entryId});
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Jellyfin refused to change this playlist. Only its owner can.');
+      }
+      rethrow;
+    }
   }
 
   @override

@@ -344,6 +344,8 @@ class MediaItem {
     this.externalIds = const {},
     this.external = false,
     this.libraryId,
+    this.playlistEntryId,
+    this.smart = false,
   });
 
   final String serverId;
@@ -399,6 +401,14 @@ class MediaItem {
   /// keep hidden libraries out of merged shelves and search.
   final String? libraryId;
 
+  /// This item's entry in the playlist it was read from (Plex
+  /// `playlistItemID`, Jellyfin `PlaylistItemId`). Not the item's own id:
+  /// the same video can be in a playlist twice. Null outside playlists.
+  final String? playlistEntryId;
+
+  /// A smart playlist, filled by a rule; items can't be removed by hand.
+  final bool smart;
+
   ItemRef get ref => (serverId: serverId, id: id, kind: kind);
 
   double get progress {
@@ -443,6 +453,7 @@ class MediaItem {
     bool? isFavorite,
     List<Marker>? markers,
     List<MediaVersion>? versions,
+    String? playlistEntryId,
   }) =>
       MediaItem(
         serverId: serverId,
@@ -480,6 +491,8 @@ class MediaItem {
         externalIds: externalIds,
         external: external,
         libraryId: libraryId,
+        playlistEntryId: playlistEntryId ?? this.playlistEntryId,
+        smart: smart,
       );
 }
 
@@ -690,6 +703,7 @@ enum ManageAction {
   background('Change background…'),
   uploadBackground('Upload background…'),
   delete('Delete…'),
+  removeFromPlaylist('Remove from playlist…'),
   deletePlaylist('Delete playlist…');
 
   const ManageAction(this.label);

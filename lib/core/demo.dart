@@ -37,6 +37,9 @@ class DemoBackend extends MediaBackend {
   static final _userPlaylists = <MediaItem>[];
   static final _playlistAdds = <String, List<MediaItem>>{};
 
+  /// Entries taken out of a playlist: playlist id → entry ids.
+  static final _playlistRemoved = <String, Set<String>>{};
+
   static ImageRef _pic(String seed) =>
       ImageRef('https://picsum.photos/seed/marquee-$seed/{w}/{h}');
 
@@ -268,6 +271,7 @@ class DemoBackend extends MediaBackend {
         MediaKind.artist || MediaKind.album || MediaKind.track => 'music',
         _ => null,
       },
+      playlistEntryId: i.playlistEntryId,
     );
   }
 
@@ -385,15 +389,34 @@ class DemoBackend extends MediaBackend {
   @override
   Future<List<MediaItem>> playlists() async => [
         _playlist,
-        ..._userPlaylists.map(_withCount),
-      ].where((p) => !_deleted.contains(p.id)).toList();
+        ..._userPlaylists,
+      ].where((p) => !_deleted.contains(p.id)).map(_withCount).toList();
 
   MediaItem _withCount(MediaItem p) => MediaItem(
       serverId: p.serverId,
       id: p.id,
       kind: MediaKind.playlist,
       title: p.title,
-      childCount: (_playlistAdds[p.id] ?? const []).length);
+      childCount: _entries(p.id).length);
+
+  /// A playlist's entries. Each entry id is its position in the playlist as
+  /// built (sample items, then adds), so removing one never renumbers the
+  /// others and the same item can appear twice.
+  List<MediaItem> _entries(String playlistId) {
+    final removed = _playlistRemoved[playlistId] ?? const {};
+    final all = [
+      if (playlistId == _playlist.id) ...[
+        ..._movies.skip(8).take(3),
+        ..._allEpisodes.take(2),
+      ],
+      ...?_playlistAdds[playlistId],
+    ];
+    return [
+      for (final (n, i) in all.indexed)
+        if (!removed.contains('$n') && !_gone(i))
+          _live(i).copyWith(playlistEntryId: '$n'),
+    ];
+  }
 
   @override
   Future<List<MediaItem>> folders(Library library) async => [
@@ -411,13 +434,7 @@ class DemoBackend extends MediaBackend {
         MediaKind.season => _episodes[parent.id] ?? const [],
         MediaKind.album => _tracks[parent.id] ?? const [],
         MediaKind.collection => _movies.take(6),
-        MediaKind.playlist => [
-            if (parent.id == _playlist.id) ...[
-              ..._movies.skip(8).take(3),
-              ..._allEpisodes.take(2),
-            ],
-            ...?_playlistAdds[parent.id],
-          ],
+        MediaKind.playlist => _entries(parent.id),
         MediaKind.folder => parent.id == 'f-shows'
             ? _shows.take(4)
             : parent.id == 'f-music'
@@ -430,7 +447,7 @@ class DemoBackend extends MediaBackend {
   Future<MediaItem> item(String id, {MediaKind? kind}) async {
     if (id == _collection.id) return _collection;
     if (_deleted.contains(id)) throw StateError('That item was deleted');
-    if (id == _playlist.id) return _playlist;
+    if (id == _playlist.id) return _withCount(_playlist);
     for (final p in _userPlaylists) {
       if (p.id == id) return _withCount(p);
     }
@@ -481,7 +498,7 @@ class DemoBackend extends MediaBackend {
 
   @override
   Future<Set<ManageAction>> manageActions(MediaItem item) async {
-    if (item.kind == MediaKind.playlist) return const {ManageAction.deletePlaylist};
+    if (item.kind == MediaKind.playlist) return MediaBackend.playlistActions(item);
     final actions = switch (item.kind) {
       MediaKind.movie || MediaKind.show => const {
           ManageAction.edit,
@@ -512,6 +529,11 @@ class DemoBackend extends MediaBackend {
   @override
   Future<void> deletePlaylist(MediaItem playlist) async {
     _deleted.add(playlist.id);
+  }
+
+  @override
+  Future<void> removeFromPlaylist(MediaItem playlist, MediaItem entry) async {
+    (_playlistRemoved[playlist.id] ??= {}).add(MediaBackend.entryIdOf(entry));
   }
 
   @override

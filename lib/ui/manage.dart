@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../core/backend.dart';
 import '../core/models.dart';
 import '../core/providers.dart';
 import 'theme.dart';
@@ -54,6 +55,7 @@ class ManageButton extends ConsumerWidget {
         ManageAction.background => Icons.wallpaper_rounded,
         ManageAction.uploadBackground => Icons.add_photo_alternate_outlined,
         ManageAction.delete => Icons.delete_forever_outlined,
+        ManageAction.removeFromPlaylist => Icons.remove_circle_outline_rounded,
         ManageAction.deletePlaylist => Icons.playlist_remove_rounded,
       };
 
@@ -101,6 +103,10 @@ class ManageButton extends ConsumerWidget {
                 kind: a == ManageAction.upload
                     ? ArtworkKind.poster
                     : ArtworkKind.background));
+      case ManageAction.removeFromPlaylist:
+        await showPanel<void>(context,
+            width: 460,
+            builder: (_) => _RemoveFromPlaylistPanel(playlist: item));
       case ManageAction.match:
         await showPanel<void>(context,
             width: 460, builder: (_) => _MatchPanel(item: item));
@@ -953,6 +959,196 @@ class _ArtworkPanelState extends ConsumerState<_ArtworkPanel> {
               });
             },
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Remove from playlist
+// ---------------------------------------------------------------------------
+
+/// The playlist's videos; OK takes one out straight away (nothing is lost:
+/// Add to playlist puts it back). Focus stays in the list so several can go.
+class _RemoveFromPlaylistPanel extends ConsumerStatefulWidget {
+  const _RemoveFromPlaylistPanel({required this.playlist});
+  final MediaItem playlist;
+
+  @override
+  ConsumerState<_RemoveFromPlaylistPanel> createState() =>
+      _RemoveFromPlaylistPanelState();
+}
+
+class _RemoveFromPlaylistPanelState
+    extends ConsumerState<_RemoveFromPlaylistPanel> {
+  List<MediaItem>? _entries;
+  Object? _error;
+  String? _removing;
+  final _nodes = <String, FocusNode>{};
+
+  MediaBackend? get _backend =>
+      ref.read(backendsProvider)[widget.playlist.serverId];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final list = await _backend!.children(widget.playlist);
+      if (mounted) setState(() => _entries = list);
+    } catch (e) {
+      if (mounted) setState(() => _error = e);
+    }
+  }
+
+  FocusNode _node(MediaItem e) => _nodes[e.playlistEntryId ?? e.id] ??=
+      FocusNode(debugLabel: 'playlist entry ${e.title}');
+
+  @override
+  void dispose() {
+    for (final n in _nodes.values) {
+      n.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _remove(MediaItem entry) async {
+    final backend = _backend;
+    final entries = _entries;
+    // Rows stay enabled while a request runs (a disabled row drops the
+    // remote's focus); a second OK meanwhile is ignored here instead.
+    if (backend == null || entries == null || _removing != null) return;
+    final container = ProviderScope.containerOf(context, listen: false);
+    final messenger = ScaffoldMessenger.of(context);
+    final at = entries.indexOf(entry);
+    setState(() {
+      _removing = entry.playlistEntryId;
+      _error = null;
+    });
+    try {
+      await backend.removeFromPlaylist(widget.playlist, entry);
+    } catch (e) {
+      // A snackbar shows however far the list is scrolled, and even if the
+      // panel was closed before the server answered.
+      (messenger..hideCurrentSnackBar())
+          .showSnackBar(SnackBar(content: Text(friendlyError(e))));
+      if (mounted) {
+        setState(() => _removing = null);
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => _node(entry).requestFocus());
+      }
+      return;
+    }
+    (messenger..hideCurrentSnackBar())
+        .showSnackBar(SnackBar(content: Text('Removed ${entry.title}')));
+    reloadItem(container, widget.playlist);
+    container.invalidate(playlistsProvider(widget.playlist.serverId));
+    if (!mounted) return;
+    final left = [...entries]..removeAt(at);
+    setState(() {
+      _entries = left;
+      _removing = null;
+    });
+    // Keep the remote in the list: the next video, or the one before.
+    if (left.isNotEmpty) {
+      final next = left[at.clamp(0, left.length - 1)];
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _node(next).requestFocus());
+    }
+    _nodes.remove(entry.playlistEntryId ?? entry.id)?.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = _entries;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _PanelTitle('Remove from playlist', subtitle: widget.playlist.title),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(friendlyError(_error!),
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.error)),
+            ),
+          if (entries == null && _error == null)
+            const Padding(padding: EdgeInsets.all(32), child: Loading())
+          else if (entries != null && entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('This playlist is empty.',
+                  style: TextStyle(color: Palette.muted)),
+            )
+          else if (entries != null)
+            // Eager rows: a lazy list never builds off-screen autofocus.
+            for (final (i, e) in entries.indexed)
+              Pressable(
+                key: ValueKey(e.playlistEntryId ?? e.id),
+                focusNode: _node(e),
+                autofocus: i == 0,
+                grow: 1,
+                onTap: () => _remove(e),
+                builder: (context, focused, hovered) => Container(
+                  margin: const EdgeInsets.symmetric(vertical: 3),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: focused || hovered ? Palette.surfaceHigh : null,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: focused ? Colors.white : Colors.transparent,
+                        width: 2),
+                  ),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 96,
+                        child: AspectRatio(
+                          aspectRatio: 16 / 9,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(6),
+                            child: Artwork(
+                              image: e.thumb ?? e.backdrop ?? e.poster,
+                              aspect: 16 / 9,
+                              seed: e.title,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(e.cardTitle,
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            if (e.cardSubtitle case final sub?)
+                              Text(sub,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      color: Palette.muted, fontSize: 13)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _removing == e.playlistEntryId
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : Icon(Icons.remove_circle_outline_rounded,
+                              color: focused ? Colors.white : Palette.muted),
+                    ],
+                  ),
+                ),
+              ),
         ],
       ),
     );

@@ -343,6 +343,8 @@ class PlexBackend extends MediaBackend {
           : (leaf != null && leaf > 0 && viewedLeaf >= leaf),
       unplayedCount: leaf == null ? null : (leaf - viewedLeaf),
       childCount: asInt(m['childCount']) ?? leaf,
+      playlistEntryId: m['playlistItemID']?.toString(),
+      smart: asBool(m['smart']),
       poster: poster,
       thumb: thumb,
       backdrop: _img(m['art'] ?? m['grandparentArt']),
@@ -857,7 +859,7 @@ class PlexBackend extends MediaBackend {
   @override
   Future<Set<ManageAction>> manageActions(MediaItem item) async {
     if (item.external) return const {};
-    if (item.kind == MediaKind.playlist) return const {ManageAction.deletePlaylist};
+    if (item.kind == MediaKind.playlist) return MediaBackend.playlistActions(item);
     final actions = _manageActionsFor(item.kind);
     if (actions.isEmpty || !await _canDelete()) return actions;
     return {...actions, ManageAction.delete};
@@ -867,6 +869,7 @@ class PlexBackend extends MediaBackend {
     return switch (kind) {
       MediaKind.movie || MediaKind.show => ManageAction.values.toSet()
         ..remove(ManageAction.delete)
+        ..remove(ManageAction.removeFromPlaylist)
         ..remove(ManageAction.deletePlaylist),
       MediaKind.season => const {
           ManageAction.edit,
@@ -910,6 +913,21 @@ class PlexBackend extends MediaBackend {
             'summary.locked': 1,
           },
         ));
+  }
+
+  @override
+  Future<void> removeFromPlaylist(MediaItem playlist, MediaItem entry) async {
+    final entryId = MediaBackend.entryIdOf(entry);
+    try {
+      await _dio.delete<dynamic>('/playlists/${playlist.id}/items/$entryId');
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Plex refused to change this playlist. Only its owner can.');
+      }
+      rethrow;
+    }
   }
 
   @override

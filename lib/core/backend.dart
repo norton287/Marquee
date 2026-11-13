@@ -183,5 +183,22 @@ abstract class MediaBackend {
   /// playlists, so this needs no owner or administrator rights.
   Future<void> deletePlaylist(MediaItem playlist) async {}
 
+  /// Takes one entry ([MediaItem.playlistEntryId], from [children] of the
+  /// playlist) out of [playlist]. The media stays. Any user, own playlists.
+  Future<void> removeFromPlaylist(MediaItem playlist, MediaItem entry) =>
+      throw UnsupportedError('This server can\'t remove playlist items.');
+
+  /// Manage actions every server offers on a playlist: removing needs a
+  /// hand-made playlist with something in it.
+  static Set<ManageAction> playlistActions(MediaItem playlist) =>
+      playlist.smart || playlist.childCount == 0
+          ? const {ManageAction.deletePlaylist}
+          : const {ManageAction.removeFromPlaylist, ManageAction.deletePlaylist};
+
+  /// The entry id to remove, or a user-ready error.
+  static String entryIdOf(MediaItem entry) =>
+      entry.playlistEntryId ??
+      (throw StateError("Can't remove this item from the playlist."));
+
   void dispose() {}
 }

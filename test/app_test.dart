@@ -890,6 +890,7 @@ void main() {
         await plex.manageActions(movie),
         ManageAction.values.toSet()
           ..remove(ManageAction.delete)
+          ..remove(ManageAction.removeFromPlaylist)
           ..remove(ManageAction.deletePlaylist));
     final matches = await plex.searchMatches(movie, title: 'Heat', year: 1995);
     expect(calls.last, contains('/library/metadata/42/matches'));
@@ -918,6 +919,77 @@ void main() {
         '{uri: server://mach/com.plexapp.plugins.library/library/metadata/42}');
     await plex.createPlaylist('Friday', movie);
     expect(calls.last, startsWith('POST /playlists {type: video, title: Friday, smart: 0'));
+  });
+
+  test('Plex removes a playlist entry by its playlistItemID', () async {
+    final calls = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add('${o.method} ${o.path}');
+        final data = o.path == '/playlists/9/items'
+            ? {'MediaContainer': {'Metadata': [
+                // The same video twice: only the chosen entry may go.
+                {'ratingKey': '42', 'playlistItemID': 540, 'type': 'movie', 'title': 'Heat'},
+                {'ratingKey': '42', 'playlistItemID': 541, 'type': 'movie', 'title': 'Heat'},
+              ]}}
+            : {'MediaContainer': {}};
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't', machineId: 'mach'),
+        dio: dio);
+    final playlist = plex.parse(
+        {'ratingKey': '9', 'type': 'playlist', 'title': 'Mine', 'leafCount': 2});
+    expect(await plex.manageActions(playlist),
+        {ManageAction.removeFromPlaylist, ManageAction.deletePlaylist});
+
+    final entries = await plex.children(playlist);
+    expect(entries.map((e) => e.playlistEntryId), ['540', '541']);
+    await plex.removeFromPlaylist(playlist, entries[1]);
+    expect(calls.last, 'DELETE /playlists/9/items/541');
+
+    // Smart playlists are filled by a rule; empty ones have nothing to remove.
+    final smart = plex.parse({'ratingKey': '8', 'type': 'playlist',
+        'title': 'Rule', 'smart': true, 'leafCount': 3});
+    expect(smart.smart, isTrue);
+    expect(await plex.manageActions(smart), {ManageAction.deletePlaylist});
+    final empty = plex.parse(
+        {'ratingKey': '7', 'type': 'playlist', 'title': 'Empty', 'leafCount': 0});
+    expect(await plex.manageActions(empty), {ManageAction.deletePlaylist});
+
+    // An item that wasn't read from a playlist has no entry to remove.
+    final loose = plex.parse({'ratingKey': '42', 'type': 'movie', 'title': 'Heat'});
+    await expectLater(plex.removeFromPlaylist(playlist, loose), throwsStateError);
+  });
+
+  test('Jellyfin removes a playlist entry by its PlaylistItemId', () async {
+    final calls = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add('${o.method} ${o.path} ${o.queryParameters}');
+        final data = o.path == '/Playlists/p1/Items'
+            ? {'Items': [
+                {'Id': 'm1', 'Name': 'Heat', 'Type': 'Movie', 'PlaylistItemId': 'e1'},
+                {'Id': 'm1', 'Name': 'Heat', 'Type': 'Movie', 'PlaylistItemId': 'e2'},
+              ]}
+            : <String, dynamic>{};
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    final playlist = jf.parse(
+        {'Id': 'p1', 'Name': 'Mine', 'Type': 'Playlist', 'ChildCount': 2});
+    expect(await jf.manageActions(playlist),
+        {ManageAction.removeFromPlaylist, ManageAction.deletePlaylist});
+    final entries = await jf.children(playlist);
+    expect(entries.map((e) => e.playlistEntryId), ['e1', 'e2']);
+    await jf.removeFromPlaylist(playlist, entries[1]);
+    expect(calls.last, 'DELETE /Playlists/p1/Items {entryIds: e2}');
   });
 
   test('Jellyfin manage needs an admin and maps its calls', () async {
@@ -1493,8 +1565,10 @@ void main() {
     const jfList = MediaItem(serverId: 'j', id: 'pl1',
         kind: MediaKind.playlist, title: 'Mine');
 
-    expect(await plex.manageActions(plexList), {ManageAction.deletePlaylist});
-    expect(await jf.manageActions(jfList), {ManageAction.deletePlaylist});
+    // Item count unknown is not empty, so removing is offered too.
+    const both = {ManageAction.removeFromPlaylist, ManageAction.deletePlaylist};
+    expect(await plex.manageActions(plexList), both);
+    expect(await jf.manageActions(jfList), both);
     await plex.deletePlaylist(plexList);
     expect(calls.last, 'DELETE /playlists/9');
     await jf.deletePlaylist(jfList);
@@ -1516,7 +1590,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Manage'));
     await tester.pumpAndSettle();
-    // On a playlist, deleting the playlist is the only action.
+    // On a playlist, only the playlist itself can be managed.
+    expect(find.text('Remove from playlist…'), findsOneWidget);
     expect(find.text('Delete playlist…'), findsOneWidget);
     expect(find.text('Delete…'), findsNothing);
     expect(find.text('Refresh metadata'), findsNothing);
@@ -1531,6 +1606,154 @@ void main() {
     expect(find.text('Road trip'), findsNothing); // gone from Libraries
     expect(find.text('Friday Night'), findsOneWidget); // others untouched
     expect(await demo.search('Wild Meridian'), isNotEmpty); // media kept
+  });
+
+  testWidgets('TV: remove from playlist takes out the focused video',
+      (tester) async {
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final demo = container.read(backendsProvider)['demo']!;
+    final orbit = (await demo.search('A Quiet Orbit')).first;
+    final copper = (await demo.search('Copper Sky')).first;
+    final blue = (await demo.search('Blue Hour')).first;
+    await demo.createPlaylist('Cleanup', orbit);
+    final cleanup = (await demo.playlists()).firstWhere((p) => p.title == 'Cleanup');
+    await demo.addToPlaylist(cleanup, copper);
+    await demo.addToPlaylist(cleanup, blue);
+    container.invalidate(playlistsProvider);
+
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    // Late on the TV page: bring it on screen before tapping.
+    await tester.ensureVisible(find.text('Cleanup'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cleanup'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove from playlist…'));
+    await tester.pumpAndSettle();
+
+    final panel = find.ancestor(
+        of: find.text('Remove from playlist'),
+        matching: find.byType(SingleChildScrollView));
+    final rows = find.descendant(of: panel.first, matching: find.byType(Pressable));
+    String focusedTitle() {
+      final ctx = FocusManager.instance.primaryFocus?.context;
+      for (var i = 0; i < rows.evaluate().length; i++) {
+        final row = tester.element(rows.at(i));
+        var inRow = identical(ctx, row);
+        ctx?.visitAncestorElements((e) => !(inRow = inRow || identical(e, row)));
+        if (inRow) {
+          return tester.widget<Text>(find.descendant(
+                  of: rows.at(i), matching: find.byType(Text)).first).data!;
+        }
+      }
+      return 'focus outside the rows';
+    }
+
+    expect(rows, findsNWidgets(3));
+    expect(focusedTitle(), 'A Quiet Orbit');
+
+    // OK on the middle one removes it at once (no confirmation); the panel
+    // stays open and focus takes the video that moved up into its place.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(focusedTitle(), 'Copper Sky');
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(find.text('Removed Copper Sky'), findsOneWidget);
+    expect(rows, findsNWidgets(2));
+    expect(focusedTitle(), 'Blue Hour');
+
+    // Removing the last row moves focus back to the one before it.
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(focusedTitle(), 'A Quiet Orbit');
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(find.text('This playlist is empty.'), findsOneWidget);
+
+    // The page behind updates; the media itself stays.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('Copper Sky'), findsNothing);
+    expect(find.text('Blue Hour'), findsNothing);
+    expect(await demo.search('Copper Sky'), isNotEmpty);
+  });
+
+  testWidgets('TV: a refused removal keeps the row, its focus and says why',
+      (tester) async {
+    Artwork.network = false;
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        if (o.method == 'DELETE') {
+          // A real server takes a moment: the rows rebuild while it runs.
+          Future<void>.delayed(const Duration(milliseconds: 300), () =>
+              h.reject(DioException(
+                  requestOptions: o,
+                  response: Response(requestOptions: o, statusCode: 403))));
+          return;
+        }
+        final data = switch (o.path) {
+          '/playlists/9' => {'MediaContainer': {'Metadata': [
+              {'ratingKey': '9', 'type': 'playlist', 'title': 'Shared',
+               'leafCount': 2}]}},
+          '/playlists/9/items' => {'MediaContainer': {'Metadata': [
+              {'ratingKey': '1', 'playlistItemID': 10, 'type': 'movie', 'title': 'Heat'},
+              {'ratingKey': '2', 'playlistItemID': 11, 'type': 'movie', 'title': 'Ronin'},
+            ]}},
+          _ => {'MediaContainer': {}},
+        };
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't', machineId: 'm'),
+        dio: dio);
+    final playlist = plex.parse(
+        {'ratingKey': '9', 'type': 'playlist', 'title': 'Shared', 'leafCount': 2});
+    final storage = await _storage(demo: false);
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        storageProvider.overrideWithValue(storage),
+        deviceIsTvProvider.overrideWithValue(true),
+        backendsProvider.overrideWithValue(<String, MediaBackend>{'p': plex}),
+      ],
+      retry: (_, _) => null,
+      child: MaterialApp(
+        home: Scaffold(body: Center(child: ManageButton(item: playlist))),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove from playlist…'));
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+
+    // Told why, in a snackbar that shows however far the list is scrolled.
+    expect(find.descendant(of: find.byType(SnackBar),
+        matching: find.textContaining('Only its owner can')), findsOneWidget);
+    final panel = find.ancestor(
+        of: find.text('Remove from playlist'),
+        matching: find.byType(SingleChildScrollView));
+    final rows = find.descendant(of: panel.first, matching: find.byType(Pressable));
+    expect(rows, findsNWidgets(2));
+    // The remote is still on the row it pressed.
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    final ronin = tester.element(rows.at(1));
+    var onRow = identical(ctx, ronin);
+    ctx?.visitAncestorElements((e) => !(onRow = onRow || identical(e, ronin)));
+    expect(onRow, isTrue, reason: 'focus: ${FocusManager.instance.primaryFocus}');
   });
 
   test('home or away is decided from the server address', () {
