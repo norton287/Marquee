@@ -1027,6 +1027,32 @@ void main() {
     await tester.pump(const Duration(seconds: 11));
   });
 
+  testWidgets('TV: change poster panel focuses a full-size poster', (tester) async {
+    await openDemoMovie(tester, 'Blue Hour', tv: true);
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Change poster…'));
+    await tester.pumpAndSettle();
+    final panel = find.ancestor(
+        of: find.text('Change poster'),
+        matching: find.byType(SingleChildScrollView));
+    final focus = FocusManager.instance.primaryFocus;
+    final panelWidget = tester.widget(panel.first);
+    var inPanel = false, inPressable = false;
+    focus!.context!.visitAncestorElements((e) {
+      if (e.widget is Pressable) inPressable = true;
+      if (identical(e.widget, panelWidget)) inPanel = true;
+      return !inPanel;
+    });
+    expect(inPanel && inPressable, isTrue);
+
+    // Each choice is a real 2:3 poster, not a strip: Artwork's aspect only
+    // picks the image size, so the panel must give the tile its height.
+    final tile = tester.getSize(
+        find.descendant(of: panel.first, matching: find.byType(Pressable)).first);
+    expect(tile.height, closeTo(tile.width * 3 / 2, 1));
+  });
+
   testWidgets('Add to playlist creates a playlist with the item',
       (tester) async {
     await openDemoMovie(tester, 'Low Sun');

@@ -912,10 +912,17 @@ class _ArtworkPanelState extends ConsumerState<_ArtworkPanel> {
                                   focused: focused,
                                   hovered: hovered,
                                   radius: 8,
-                                  child: Artwork(
-                                    image: o.image,
-                                    aspect: poster ? 2 / 3 : 16 / 9,
-                                    seed: o.id,
+                                  // Artwork's aspect only picks the image
+                                  // size; the tile needs its own height or
+                                  // the image gets an unbounded one and
+                                  // nothing is painted (blank panel on TV).
+                                  child: AspectRatio(
+                                    aspectRatio: poster ? 2 / 3 : 16 / 9,
+                                    child: Artwork(
+                                      image: o.image,
+                                      aspect: poster ? 2 / 3 : 16 / 9,
+                                      seed: o.id,
+                                    ),
                                   ),
                                 ),
                                 if (o.selected || _setting == o.id)
