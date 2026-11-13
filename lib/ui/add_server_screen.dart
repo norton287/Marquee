@@ -11,6 +11,7 @@ import '../core/jellyfin.dart';
 import '../core/models.dart';
 import '../core/plex.dart';
 import '../core/providers.dart';
+import 'music.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -176,23 +177,78 @@ class PlexAvatar extends StatelessWidget {
 }
 
 /// Opens the "Who's watching?" dialog to switch the active Plex Home profile.
+/// Without [server] (the Home button, the rail), several signed-in Plex
+/// accounts are first offered in "Which Plex account?".
 Future<void> showPlexProfileDialog(
   BuildContext context,
   WidgetRef ref, {
   ServerConfig? server,
 }) async {
-  final target = server ??
-      ref
-          .read(serversProvider)
-          .where((s) => s.kind == ServerKind.plex)
-          .firstOrNull;
-  if (target == null) return;
+  var target = server;
+  if (target == null) {
+    final accounts = plexAccounts(ref.read(serversProvider));
+    if (accounts.length > 1) {
+      final current = profileServer(
+          ref.read(serversProvider), ref.read(settingsProvider).profileServerId);
+      target = await showDialog<ServerConfig>(
+        context: context,
+        builder: (_) => _PlexAccountDialog(accounts: accounts, current: current),
+      );
+      if (target == null) return;
+    } else {
+      target = accounts.firstOrNull?.first;
+    }
+  }
+  if (target == null || !context.mounted) return;
   final homeToken = target.homeToken ?? target.accountToken;
   if (homeToken == null || homeToken.isEmpty) return;
   await showDialog<void>(
     context: context,
-    builder: (_) => _PlexProfileDialog(server: target, homeToken: homeToken),
+    builder: (_) => _PlexProfileDialog(server: target!, homeToken: homeToken),
   );
+}
+
+/// One row per signed-in Plex account; returns a server of the chosen one.
+class _PlexAccountDialog extends StatelessWidget {
+  const _PlexAccountDialog({required this.accounts, required this.current});
+  final List<List<ServerConfig>> accounts;
+  final ServerConfig? current;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Which Plex account?'),
+      contentPadding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final g in accounts)
+              ListTile(
+                // The account in use (the remote starts there).
+                autofocus: g.any((s) => s.id == current?.id),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+                focusColor: Palette.surfaceHigh,
+                leading: PlexAvatar(
+                    name: g.first.userName ?? g.first.name,
+                    thumb: g.first.userThumb),
+                title: Text(g.first.userName ?? 'Plex account'),
+                subtitle: Text('Plex · ${g.map((s) => s.name).join(', ')}'),
+                onTap: () => Navigator.pop(context, g.first),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
+  }
 }
 
 class _PlexProfileDialog extends ConsumerStatefulWidget {
@@ -255,11 +311,26 @@ class _PlexProfileDialogState extends ConsumerState<_PlexProfileDialog> {
       _error = null;
     });
     try {
+      // Everything the steps after the switch need is read now: Back can
+      // close this dialog while switching, and `ref` dies with it.
+      final settings = ref.read(settingsProvider.notifier);
+      final music = ref.read(musicProvider.notifier);
+      final queue = ref.read(musicProvider).queue;
+      final serverId = widget.server.id;
+      final switched = {
+        for (final g in plexAccounts(ref.read(serversProvider)))
+          if (g.any((s) => s.id == serverId)) ...g.map((s) => s.id),
+      };
       await ref.read(serversProvider.notifier).switchPlexProfile(
             homeToken: widget.homeToken,
             user: u,
             pin: pin,
           );
+      // The Home button now shows this account.
+      settings.change((s) => s.copyWith(profileServerId: serverId));
+      // Queued music from these servers streams with the old profile's
+      // token: stop it rather than keep playing as someone else.
+      if (musicFromServers(queue, switched)) await music.stop();
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) setState(() => _error = e);

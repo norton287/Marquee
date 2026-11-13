@@ -133,6 +133,31 @@ MediaBackend createBackend(ServerConfig s) => switch (s.kind) {
       ServerKind.demo => DemoBackend(s),
     };
 
+/// Signed-in Plex accounts: servers grouped by the token that switches their
+/// Home profile (`homeToken`, or `accountToken` for older saves), in order of
+/// first appearance. Servers with neither aren't an account.
+List<List<ServerConfig>> plexAccounts(List<ServerConfig> servers) {
+  final groups = <String, List<ServerConfig>>{};
+  for (final s in servers) {
+    final key = s.kind == ServerKind.plex ? (s.homeToken ?? s.accountToken) : null;
+    if (key == null || key.isEmpty) continue;
+    (groups[key] ??= []).add(s);
+  }
+  return groups.values.toList();
+}
+
+/// The server whose profile the Home button shows: the first server of the
+/// account containing [profileServerId] (the one switched last), else of the
+/// first account. Null without a Plex account.
+ServerConfig? profileServer(
+    List<ServerConfig> servers, String? profileServerId) {
+  final accounts = plexAccounts(servers);
+  for (final g in accounts) {
+    if (g.any((s) => s.id == profileServerId)) return g.first;
+  }
+  return accounts.firstOrNull?.first;
+}
+
 final backendsProvider = Provider<Map<String, MediaBackend>>((ref) {
   // Only rebuilds when the hidden set itself changes (copyWith keeps the
   // same map otherwise), and every shelf then refetches without it.

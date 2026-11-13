@@ -138,6 +138,11 @@ class MusicController extends Notifier<MusicState> {
 final musicProvider =
     NotifierProvider<MusicController, MusicState>(MusicController.new);
 
+/// Whether the music queue plays anything from [serverIds]: after a Plex
+/// profile switch those streams still carry the old profile's token.
+bool musicFromServers(List<MediaItem> queue, Set<String> serverIds) =>
+    queue.any((t) => serverIds.contains(t.serverId));
+
 /// Slim bar above the navigation while music is queued.
 class MiniPlayer extends ConsumerWidget {
   const MiniPlayer({super.key});

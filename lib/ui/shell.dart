@@ -175,12 +175,9 @@ class _SideNav extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final plexServer = ref
-        .watch(serversProvider)
-        .where((s) =>
-            s.kind == ServerKind.plex &&
-            (s.homeToken ?? s.accountToken) != null)
-        .firstOrNull;
+    // The account switched last (or the first): see [profileServer].
+    final plexServer = profileServer(ref.watch(serversProvider),
+        ref.watch(settingsProvider.select((s) => s.profileServerId)));
     return Container(
       width: expanded ? 216 : (tv ? AppLayout.tvRailWidth : 84),
       decoration: const BoxDecoration(
@@ -206,7 +203,7 @@ class _SideNav extends ConsumerWidget {
                   server: plexServer,
                   expanded: expanded,
                   onTap: () =>
-                      showPlexProfileDialog(context, ref, server: plexServer),
+                      showPlexProfileDialog(context, ref),
                 ),
                 const SizedBox(height: 6),
               ],

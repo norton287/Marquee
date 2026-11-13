@@ -25,6 +25,7 @@ class AppSettings {
     this.hiddenLibraries = const {},
     this.skipBackSeconds = 10,
     this.skipForwardSeconds = 30,
+    this.profileServerId,
   });
 
   /// Choices offered for [skipBackSeconds] and [skipForwardSeconds].
@@ -64,6 +65,10 @@ class AppSettings {
   /// rewind / fast-forward, ←/→ with the controls hidden, double-tap.
   final int skipBackSeconds;
   final int skipForwardSeconds;
+
+  /// A server of the Plex account whose profile was switched last: the
+  /// Home profile button shows that account. A server id, never a token.
+  final String? profileServerId;
 
   /// Library ids the user hid, per server id.
   final Map<String, Set<String>> hiddenLibraries;
@@ -106,6 +111,7 @@ class AppSettings {
     Map<String, Set<String>>? hiddenLibraries,
     int? skipBackSeconds,
     int? skipForwardSeconds,
+    Object? profileServerId = _keep,
   }) =>
       AppSettings(
         maxBitrateKbps: maxBitrateKbps == _keep
@@ -133,6 +139,9 @@ class AppSettings {
         hiddenLibraries: hiddenLibraries ?? this.hiddenLibraries,
         skipBackSeconds: skipBackSeconds ?? this.skipBackSeconds,
         skipForwardSeconds: skipForwardSeconds ?? this.skipForwardSeconds,
+        profileServerId: profileServerId == _keep
+            ? this.profileServerId
+            : profileServerId as String?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -148,6 +157,7 @@ class AppSettings {
         'seerrUrl': seerrUrl,
         'skipBackSeconds': skipBackSeconds,
         'skipForwardSeconds': skipForwardSeconds,
+        'profileServerId': profileServerId,
         'hiddenLibraries': {
           for (final e in hiddenLibraries.entries) e.key: e.value.toList(),
         },
@@ -182,6 +192,7 @@ class AppSettings {
         seerrCookie: secrets['seerrCookie'] as String?,
         skipBackSeconds: _skip(j['skipBackSeconds'], 10),
         skipForwardSeconds: _skip(j['skipForwardSeconds'], 30),
+        profileServerId: j['profileServerId'] as String?,
         hiddenLibraries: {
           for (final e in ((j['hiddenLibraries'] as Map?) ?? const {}).entries)
             '${e.key}': {...((e.value as List?) ?? const []).map((v) => '$v')},

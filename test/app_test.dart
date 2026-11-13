@@ -17,6 +17,7 @@ import 'package:marquee/core/storage.dart';
 import 'package:marquee/ui/add_server_screen.dart';
 import 'package:marquee/ui/libraries_screen.dart';
 import 'package:marquee/ui/manage.dart';
+import 'package:marquee/ui/music.dart';
 import 'package:marquee/ui/player/player_widgets.dart';
 import 'package:marquee/ui/widgets.dart';
 
@@ -255,6 +256,107 @@ void main() {
     // Tokens never land in the plain server list.
     expect(await store.read('servers'), isNot(contains('secret')));
     expect(DemoBackend.demoId, 'demo');
+  });
+
+  test('plex accounts group by home token and remember the last switched',
+      () async {
+    const a = ServerConfig(id: 'a', kind: ServerKind.plex, name: 'A',
+        baseUrl: 'http://a', homeToken: 'h1', accountToken: 'u1');
+    const b = ServerConfig(id: 'b', kind: ServerKind.plex, name: 'B',
+        baseUrl: 'http://b', homeToken: 'h1', accountToken: 'u1');
+    const c = ServerConfig(id: 'c', kind: ServerKind.plex, name: 'C',
+        baseUrl: 'http://c', accountToken: 'h2'); // old save: no homeToken
+    const bare = ServerConfig(id: 'd', kind: ServerKind.plex, name: 'D',
+        baseUrl: 'http://d');
+    const servers = [demoServer, a, bare, b, c];
+
+    expect(plexAccounts(servers).map((g) => g.map((s) => s.id).toList()),
+        [['a', 'b'], ['c']]);
+    expect(profileServer(servers, 'c')?.id, 'c');
+    expect(profileServer(servers, 'b')?.id, 'a'); // that account's first server
+    expect(profileServer(servers, 'gone')?.id, 'a'); // removed: first account
+    expect(profileServer(servers, null)?.id, 'a');
+    expect(profileServer(const [demoServer, bare], null), isNull);
+
+    final store = MemoryStore();
+    final s1 = AppStorage(store);
+    await s1.load();
+    await s1.saveSettings(const AppSettings(profileServerId: 'c'));
+    final s2 = AppStorage(store);
+    await s2.load();
+    expect(s2.settings.profileServerId, 'c');
+    expect(s2.settings.copyWith(autoPlayNext: false).profileServerId, 'c');
+  });
+
+  Future<void> pumpPlexAccounts(WidgetTester tester, List<ServerConfig> servers) async {
+    Artwork.network = false;
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final storage = await _storage(demo: false);
+    await storage.saveServers([demoServer, ...servers]);
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        storageProvider.overrideWithValue(storage),
+        deviceIsTvProvider.overrideWithValue(true),
+      ],
+      retry: (_, _) => null,
+      child: const MarqueeApp(),
+    ));
+    await tester.pumpAndSettle();
+  }
+
+  const john = ServerConfig(id: 'pj', kind: ServerKind.plex, name: 'Den',
+      baseUrl: 'http://127.0.0.1:9', homeToken: 'h1', accountToken: 'u1',
+      userName: 'John');
+  const sarah = ServerConfig(id: 'ps', kind: ServerKind.plex, name: 'Garage',
+      baseUrl: 'http://127.0.0.1:9', homeToken: 'h2', accountToken: 'u2',
+      userName: 'Sarah');
+
+  testWidgets('TV: profile item asks which Plex account when there are two',
+      (tester) async {
+    await pumpPlexAccounts(tester, const [john, sarah]);
+    await tester.tap(find.text('John').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Which Plex account?'), findsOneWidget);
+    final dialog = find.byType(Dialog);
+    final rows = find.descendant(of: dialog, matching: find.byType(ListTile));
+    expect(rows, findsNWidgets(2));
+    expect(find.descendant(of: dialog, matching: find.text('Plex · Garage')),
+        findsOneWidget);
+    bool focusedIn(Finder f) {
+      final ctx = FocusManager.instance.primaryFocus?.context;
+      final target = tester.element(f);
+      var hit = identical(ctx, target);
+      ctx?.visitAncestorElements((e) => !(hit = hit || identical(e, target)));
+      return hit;
+    }
+    expect(focusedIn(rows.at(0)), isTrue, reason: 'current account focused');
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(focusedIn(rows.at(1)), isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(find.text('Which Plex account?'), findsNothing);
+    expect(find.text("Who's watching?"), findsOneWidget);
+  });
+
+  testWidgets('one Plex account skips the account chooser', (tester) async {
+    await pumpPlexAccounts(tester, const [john]);
+    await tester.tap(find.text('John').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Which Plex account?'), findsNothing);
+    expect(find.text("Who's watching?"), findsOneWidget);
+  });
+
+  test('music stops only for the switched account\'s servers', () {
+    const t = MediaItem(serverId: 'pj', id: '1', kind: MediaKind.track, title: 'T');
+    const other = MediaItem(serverId: 'demo', id: '2', kind: MediaKind.track, title: 'U');
+    expect(musicFromServers(const [other, t], {'pj', 'pk'}), isTrue);
+    expect(musicFromServers(const [other], {'pj'}), isFalse);
+    expect(musicFromServers(const [], {'pj'}), isFalse);
   });
 
   test('Plex Home profile survives storage and keeps tokens secret', () async {

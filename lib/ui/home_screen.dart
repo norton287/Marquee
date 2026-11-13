@@ -145,12 +145,9 @@ class _Hero extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l = AppLayout.of(context);
     final top = MediaQuery.paddingOf(context).top;
-    final plexServer = ref
-        .watch(serversProvider)
-        .where((s) =>
-            s.kind == ServerKind.plex &&
-            (s.homeToken ?? s.accountToken) != null)
-        .firstOrNull;
+    // The account switched last (or the first): see [profileServer].
+    final plexServer = profileServer(ref.watch(serversProvider),
+        ref.watch(settingsProvider.select((s) => s.profileServerId)));
     final i = item;
     if (i == null) {
       // No hero: a compact header keeps the page from starting abruptly.
@@ -168,8 +165,7 @@ class _Hero extends ConsumerWidget {
                   if (plexServer != null)
                     _ProfilePill(
                       server: plexServer,
-                      onTap: () => showPlexProfileDialog(context, ref,
-                          server: plexServer),
+                      onTap: () => showPlexProfileDialog(context, ref),
                     ),
                 ],
               ),
@@ -232,8 +228,7 @@ class _Hero extends ConsumerWidget {
                   if (plexServer != null)
                     _ProfilePill(
                       server: plexServer,
-                      onTap: () => showPlexProfileDialog(context, ref,
-                          server: plexServer),
+                      onTap: () => showPlexProfileDialog(context, ref),
                     ),
                 ],
               ),
