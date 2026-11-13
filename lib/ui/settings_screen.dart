@@ -6,6 +6,7 @@ import '../core/backend.dart';
 import '../core/models.dart';
 import '../core/providers.dart';
 import '../core/seerr.dart';
+import '../core/storage.dart';
 import 'add_server_screen.dart';
 import 'libraries_screen.dart';
 import 'theme.dart';
@@ -175,6 +176,30 @@ class SettingsScreen extends ConsumerWidget {
                     value: settings.autoSkipIntro,
                     onChanged: (v) =>
                         notifier.change((s) => s.copyWith(autoSkipIntro: v)),
+                  ),
+                  _Choice<int>(
+                    title: 'Skip back',
+                    subtitle: 'Back button, remote rewind and ← while '
+                        'the controls are hidden.',
+                    value: settings.skipBackSeconds,
+                    options: [
+                      for (final n in AppSettings.skipOptions)
+                        (n, '$n seconds')
+                    ],
+                    onChanged: (v) => notifier
+                        .change((s) => s.copyWith(skipBackSeconds: v)),
+                  ),
+                  _Choice<int>(
+                    title: 'Skip forward',
+                    subtitle: 'Forward button, remote fast-forward and → '
+                        'while the controls are hidden.',
+                    value: settings.skipForwardSeconds,
+                    options: [
+                      for (final n in AppSettings.skipOptions)
+                        (n, '$n seconds')
+                    ],
+                    onChanged: (v) => notifier
+                        .change((s) => s.copyWith(skipForwardSeconds: v)),
                   ),
                 ]),
                 const _Heading('Requests'),

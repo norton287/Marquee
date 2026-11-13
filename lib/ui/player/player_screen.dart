@@ -552,6 +552,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _seekBy(Duration delta) => _seekTo(_position.value + delta);
 
+  /// Skip lengths from Settings, read at the moment of the skip.
+  int get _backSeconds => ref.read(settingsProvider).skipBackSeconds;
+  int get _forwardSeconds => ref.read(settingsProvider).skipForwardSeconds;
+  void _skipBack() => _seekBy(Duration(seconds: -_backSeconds));
+  void _skipForward() => _seekBy(Duration(seconds: _forwardSeconds));
+
   int get _chapterIndex {
     var index = -1;
     for (var i = 0; i < _item.chapters.length; i++) {
@@ -647,12 +653,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.mediaFastForward) {
-      _seekBy(const Duration(seconds: 30));
+      _skipForward();
       _peekBar();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.mediaRewind) {
-      _seekBy(const Duration(seconds: -10));
+      _skipBack();
       _peekBar();
       return KeyEventResult.handled;
     }
@@ -685,12 +691,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       return KeyEventResult.ignored;
     }
     if (key == LogicalKeyboardKey.arrowLeft) {
-      _seekBy(const Duration(seconds: -10));
+      _skipBack();
       _peekBar();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowRight) {
-      _seekBy(const Duration(seconds: 10));
+      _skipForward();
       _peekBar();
       return KeyEventResult.handled;
     }
@@ -861,8 +867,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     ? (d) {
                         final left = d.localPosition.dx <
                             MediaQuery.sizeOf(context).width / 2;
-                        _seekBy(Duration(seconds: left ? -10 : 10));
-                        _showFlash(left ? '−10 s' : '+10 s');
+                        left ? _skipBack() : _skipForward();
+                        _showFlash(left
+                            ? '−$_backSeconds s'
+                            : '+$_forwardSeconds s');
                       }
                     : null,
                 onDoubleTap: _isMobile
@@ -1027,6 +1035,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Widget _overlay() {
+    // Watched so the buttons relabel if Settings change mid-playback.
+    final skip = ref.watch(settingsProvider.select(
+        (s) => (back: s.skipBackSeconds, forward: s.skipForwardSeconds)));
     final source = _source;
     final chapters = _item.chapters;
     final bottomBar = Padding(
@@ -1041,6 +1052,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             chapters: [for (final c in chapters) c.start],
             onSeek: _seekTo,
             onInteract: _armHide,
+            step: Duration(seconds: skip.forward),
+            backStep: Duration(seconds: skip.back),
           ),
           if (_controls)
             Row(
@@ -1212,11 +1225,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         PlayerButton(
-                          icon: Icons.replay_10_rounded,
-                          tooltip: 'Back 10 seconds',
+                          icon: Icons.replay_rounded,
+                          iconWidget: SkipIcon(
+                              seconds: skip.back, forward: false, size: 34),
+                          tooltip: 'Back ${skip.back} seconds',
                           size: 34,
-                          onPressed: () =>
-                              _seekBy(const Duration(seconds: -10)),
+                          onPressed: _skipBack,
                         ),
                         const SizedBox(width: 28),
                         PlayerButton(
@@ -1231,11 +1245,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                         ),
                         const SizedBox(width: 28),
                         PlayerButton(
-                          icon: Icons.forward_30_rounded,
-                          tooltip: 'Forward 30 seconds',
+                          icon: Icons.replay_rounded,
+                          iconWidget: SkipIcon(
+                              seconds: skip.forward, forward: true, size: 34),
+                          tooltip: 'Forward ${skip.forward} seconds',
                           size: 34,
-                          onPressed: () =>
-                              _seekBy(const Duration(seconds: 30)),
+                          onPressed: _skipForward,
                         ),
                       ],
                     ),

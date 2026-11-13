@@ -17,6 +17,7 @@ class SeekBar extends StatefulWidget {
     this.chapters = const [],
     this.onInteract,
     this.step = const Duration(seconds: 10),
+    this.backStep,
   });
 
   final ValueListenable<Duration> position;
@@ -27,7 +28,9 @@ class SeekBar extends StatefulWidget {
 
   /// Called on any interaction so the controls can stay visible.
   final VoidCallback? onInteract;
+  /// Arrow-key step forward; [backStep] (defaults to [step]) going back.
   final Duration step;
+  final Duration? backStep;
 
   @override
   State<SeekBar> createState() => _SeekBarState();
@@ -50,7 +53,8 @@ class _SeekBarState extends State<SeekBar> {
     };
     if (dir == 0) return KeyEventResult.ignored;
     widget.onInteract?.call();
-    final target = widget.position.value + widget.step * dir;
+    final target = widget.position.value +
+        (dir < 0 ? (widget.backStep ?? widget.step) : widget.step) * dir;
     widget.onSeek(target < Duration.zero
         ? Duration.zero
         : (target > widget.duration ? widget.duration : target));
@@ -222,8 +226,12 @@ class PlayerButton extends StatelessWidget {
     this.filled = false,
     this.focusNode,
     this.autofocus = false,
+    this.iconWidget,
   });
   final IconData icon;
+
+  /// Drawn instead of [icon] when set (e.g. a [SkipIcon]).
+  final Widget? iconWidget;
   final String tooltip;
   final VoidCallback? onPressed;
   final double size;
@@ -252,7 +260,61 @@ class PlayerButton extends StatelessWidget {
                 ? const BorderSide(color: Colors.white, width: 2.5)
                 : null),
       ),
-      icon: Icon(icon),
+      icon: iconWidget ?? Icon(icon),
+    );
+  }
+}
+
+/// Circular-arrow skip icon showing [seconds]. Uses Material's numbered
+/// icons where they exist (5, 10, 30) and draws the number otherwise.
+class SkipIcon extends StatelessWidget {
+  const SkipIcon({
+    super.key,
+    required this.seconds,
+    required this.forward,
+    this.size = 34,
+  });
+  final int seconds;
+  final bool forward;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final numbered = switch ((forward, seconds)) {
+      (false, 5) => Icons.replay_5_rounded,
+      (false, 10) => Icons.replay_10_rounded,
+      (false, 30) => Icons.replay_30_rounded,
+      (true, 5) => Icons.forward_5_rounded,
+      (true, 10) => Icons.forward_10_rounded,
+      (true, 30) => Icons.forward_30_rounded,
+      _ => null,
+    };
+    if (numbered != null) return Icon(numbered, size: size);
+    final color = IconTheme.of(context).color;
+    return SizedBox.square(
+      dimension: size,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // replay_rounded is the bare arrow; mirrored it points forward.
+          Transform.flip(
+            flipX: forward,
+            child: Icon(Icons.replay_rounded, size: size),
+          ),
+          Padding(
+            padding: EdgeInsets.only(top: size * 0.12),
+            child: Text(
+              '$seconds',
+              style: TextStyle(
+                color: color,
+                fontSize: size * 0.3,
+                fontWeight: FontWeight.w800,
+                height: 1,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

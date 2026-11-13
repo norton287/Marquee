@@ -21,7 +21,12 @@ class AppSettings {
     this.seerrApiKey,
     this.seerrCookie,
     this.hiddenLibraries = const {},
+    this.skipBackSeconds = 10,
+    this.skipForwardSeconds = 30,
   });
+
+  /// Choices offered for [skipBackSeconds] and [skipForwardSeconds].
+  static const skipOptions = [5, 10, 15, 20, 30, 45, 60];
 
   /// null = original quality.
   final int? maxBitrateKbps;
@@ -40,6 +45,11 @@ class AppSettings {
   final String? seerrUrl;
   final String? seerrApiKey;
   final String? seerrCookie;
+
+  /// How far the player jumps back / forward: on-screen buttons, remote
+  /// rewind / fast-forward, ←/→ with the controls hidden, double-tap.
+  final int skipBackSeconds;
+  final int skipForwardSeconds;
 
   /// Library ids the user hid, per server id.
   final Map<String, Set<String>> hiddenLibraries;
@@ -78,6 +88,8 @@ class AppSettings {
     Object? seerrApiKey = _keep,
     Object? seerrCookie = _keep,
     Map<String, Set<String>>? hiddenLibraries,
+    int? skipBackSeconds,
+    int? skipForwardSeconds,
   }) =>
       AppSettings(
         maxBitrateKbps: maxBitrateKbps == _keep
@@ -99,6 +111,8 @@ class AppSettings {
         seerrCookie:
             seerrCookie == _keep ? this.seerrCookie : seerrCookie as String?,
         hiddenLibraries: hiddenLibraries ?? this.hiddenLibraries,
+        skipBackSeconds: skipBackSeconds ?? this.skipBackSeconds,
+        skipForwardSeconds: skipForwardSeconds ?? this.skipForwardSeconds,
       );
 
   Map<String, dynamic> toJson() => {
@@ -110,6 +124,8 @@ class AppSettings {
         'tvMode': tvMode,
         'trueBlack': trueBlack,
         'seerrUrl': seerrUrl,
+        'skipBackSeconds': skipBackSeconds,
+        'skipForwardSeconds': skipForwardSeconds,
         'hiddenLibraries': {
           for (final e in hiddenLibraries.entries) e.key: e.value.toList(),
         },
@@ -117,6 +133,12 @@ class AppSettings {
 
   Map<String, dynamic> secrets() =>
       {'seerrApiKey': seerrApiKey, 'seerrCookie': seerrCookie};
+
+  /// A saved skip length, or [fallback] if it's missing or not one we offer.
+  static int _skip(Object? v, int fallback) {
+    final s = asInt(v);
+    return s != null && skipOptions.contains(s) ? s : fallback;
+  }
 
   factory AppSettings.fromJson(
           Map<String, dynamic> j, Map<String, dynamic> secrets) =>
@@ -131,6 +153,8 @@ class AppSettings {
         seerrUrl: j['seerrUrl'] as String?,
         seerrApiKey: secrets['seerrApiKey'] as String?,
         seerrCookie: secrets['seerrCookie'] as String?,
+        skipBackSeconds: _skip(j['skipBackSeconds'], 10),
+        skipForwardSeconds: _skip(j['skipForwardSeconds'], 30),
         hiddenLibraries: {
           for (final e in ((j['hiddenLibraries'] as Map?) ?? const {}).entries)
             '${e.key}': {...((e.value as List?) ?? const []).map((v) => '$v')},
