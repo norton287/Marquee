@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:marquee/app.dart';
 import 'package:marquee/core/backend.dart';
 import 'package:marquee/core/demo.dart';
@@ -2417,6 +2418,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(asked, 'Server address');
     expect(find.text('http://192.168.1.50:41234/K7QXPM'), findsOneWidget);
+    // Scan instead of typing: the QR code holds the same address.
+    expect(tester.widget<QrImageView>(find.byType(QrImageView)).semanticsLabel,
+        'http://192.168.1.50:41234/K7QXPM');
 
     value.complete('nas:8096');
     await tester.pumpAndSettle();

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/phone_input.dart';
 import '../core/providers.dart';
@@ -145,9 +146,28 @@ class _PhoneInputDialogState extends State<_PhoneInputDialog> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'On a phone on the same Wi-Fi, open this '
-                    'address in the browser:',
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      // Dark modules on white: phone cameras need the
+                      // contrast (and the quiet zone) to read it.
+                      Container(
+                        color: Colors.white,
+                        padding: const EdgeInsets.all(8),
+                        child: QrImageView(
+                          data: session.url,
+                          size: 150,
+                          padding: EdgeInsets.zero,
+                          backgroundColor: Colors.white,
+                          semanticsLabel: session.url,
+                        ),
+                      ),
+                      const SizedBox(width: 18),
+                      const Expanded(
+                        child: Text('Scan this with a phone on the same '
+                            'Wi-Fi, or open this address in its browser:'),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 14),
                   // Plain text: a selectable one takes the remote's focus and keeps it.
