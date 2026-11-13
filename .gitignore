@@ -48,3 +48,6 @@ app.*.map.json
 .widget_preview/
 tool/media/
 tool/server.log
+
+# Internal reference document (not published)
+BIBLE.md
