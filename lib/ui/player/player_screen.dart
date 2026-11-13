@@ -68,6 +68,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _firstLoad = true;
   bool _fallbackTried = false;
 
+  /// Transcode even if the file fits under [_maxBitrate]: direct play
+  /// failed, or the user pressed "Try transcoding".
+  bool _forceTranscode = false;
+
   /// An audio/subtitle, quality or chapter panel is up. The controls stay put
   /// meanwhile: hiding them pulls focus back to the player, which would take
   /// it out of the panel and leave the remote seeking the video instead.
@@ -127,7 +131,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         (i) => i.id == _item.id && i.serverId == _item.serverId);
     _versionId = widget.args.versionId;
     _container = ProviderScope.containerOf(context, listen: false);
-    _maxBitrate = ref.read(settingsProvider).maxBitrateKbps;
+    // Home or away maximum, by how this server is reached.
+    _maxBitrate = ref
+        .read(settingsProvider)
+        .maxBitrateFor(local: _backend?.isLocal ?? true);
     _tv = ref.read(tvProvider);
     _player = Player(
       configuration: const PlayerConfiguration(
@@ -229,10 +236,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         unawaited(_loadExtras(backend, _item));
       }
       final settings = ref.read(settingsProvider);
-      final transcoding = _maxBitrate != null;
+      // A limit or a forced transcode means the server may pick the tracks;
+      // apply the language preferences up front so nothing unwanted gets
+      // burned in. (A file that fits still direct plays; then the player
+      // applies them instead.)
+      final transcoding = _maxBitrate != null || _forceTranscode;
       final v = _version;
-      // When the server picks the tracks (transcoding), apply the language
-      // preferences up front so nothing unwanted gets burned in.
       final audioId = _audioId ??
           (transcoding && settings.audioLanguage != null
               ? v?.audio
@@ -259,6 +268,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           maxBitrateKbps: _maxBitrate,
           audioStreamId: audioId,
           subtitleStreamId: subtitleId,
+          forceTranscode: _forceTranscode,
+          sdrOnly: !settings.allowHdr,
         ),
       );
       if (!mounted || gen != _generation) return;
@@ -343,10 +354,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final source = _source;
     if (source != null &&
         source.method == PlayMethod.directPlay &&
-        _maxBitrate == null &&
+        !_forceTranscode &&
         !_fallbackTried) {
       _fallbackTried = true;
-      _maxBitrate = 20000;
+      // Keep the quality limit; a file under it would just direct play
+      // (and fail) again, so the transcode has to be forced.
+      _forceTranscode = true;
       _showFlash('Direct play failed — transcoding instead');
       _load(at: _position.value);
     } else {
@@ -922,7 +935,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Widget _errorView() {
-    final direct = _maxBitrate == null;
+    final direct =
+        !_forceTranscode && _source?.method != PlayMethod.transcode;
     return ColoredBox(
       color: Colors.black87,
       child: Center(
@@ -956,7 +970,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     if (direct)
                       OutlinedButton(
                         onPressed: () {
-                          _maxBitrate = 8000;
+                          _forceTranscode = true;
                           _load(at: _position.value);
                         },
                         child: const Text('Try transcoding'),
@@ -1421,6 +1435,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 onTap: () => _pick(() {
                   if (q.kbps == _maxBitrate) return;
                   _maxBitrate = q.kbps;
+                  _forceTranscode = false;
                   _fallbackTried = q.kbps != null;
                   _load(at: _position.value);
                 }),

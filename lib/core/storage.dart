@@ -11,8 +11,10 @@ import 'models.dart';
 class AppSettings {
   const AppSettings({
     this.maxBitrateKbps,
+    this.remoteMaxBitrateKbps,
     this.autoPlayNext = true,
     this.autoSkipIntro = false,
+    this.allowHdr = true,
     this.audioLanguage,
     this.subtitleLanguage,
     this.tvMode = 'auto',
@@ -28,10 +30,22 @@ class AppSettings {
   /// Choices offered for [skipBackSeconds] and [skipForwardSeconds].
   static const skipOptions = [5, 10, 15, 20, 30, 45, 60];
 
-  /// null = original quality.
+  /// Maximum streaming quality on the home network; null = original (no
+  /// limit). Files at or under the limit play untouched.
   final int? maxBitrateKbps;
+
+  /// Maximum streaming quality when the server is reached over the internet.
+  final int? remoteMaxBitrateKbps;
+
+  /// The maximum that applies to a server at home ([local]) or away.
+  int? maxBitrateFor({required bool local}) =>
+      local ? maxBitrateKbps : remoteMaxBitrateKbps;
   final bool autoPlayNext;
   final bool autoSkipIntro;
+
+  /// Off: HDR / Dolby Vision and above-1080p videos never direct play; the
+  /// server converts them to 1080p SDR (lighter to stream and decode).
+  final bool allowHdr;
 
   /// ISO 639 codes such as 'eng'. null = whatever the file marks as default.
   final String? audioLanguage;
@@ -78,8 +92,10 @@ class AppSettings {
 
   AppSettings copyWith({
     Object? maxBitrateKbps = _keep,
+    Object? remoteMaxBitrateKbps = _keep,
     bool? autoPlayNext,
     bool? autoSkipIntro,
+    bool? allowHdr,
     Object? audioLanguage = _keep,
     Object? subtitleLanguage = _keep,
     String? tvMode,
@@ -95,8 +111,12 @@ class AppSettings {
         maxBitrateKbps: maxBitrateKbps == _keep
             ? this.maxBitrateKbps
             : maxBitrateKbps as int?,
+        remoteMaxBitrateKbps: remoteMaxBitrateKbps == _keep
+            ? this.remoteMaxBitrateKbps
+            : remoteMaxBitrateKbps as int?,
         autoPlayNext: autoPlayNext ?? this.autoPlayNext,
         autoSkipIntro: autoSkipIntro ?? this.autoSkipIntro,
+        allowHdr: allowHdr ?? this.allowHdr,
         audioLanguage: audioLanguage == _keep
             ? this.audioLanguage
             : audioLanguage as String?,
@@ -117,8 +137,10 @@ class AppSettings {
 
   Map<String, dynamic> toJson() => {
         'maxBitrateKbps': maxBitrateKbps,
+        'remoteMaxBitrateKbps': remoteMaxBitrateKbps,
         'autoPlayNext': autoPlayNext,
         'autoSkipIntro': autoSkipIntro,
+        'allowHdr': allowHdr,
         'audioLanguage': audioLanguage,
         'subtitleLanguage': subtitleLanguage,
         'tvMode': tvMode,
@@ -144,8 +166,13 @@ class AppSettings {
           Map<String, dynamic> j, Map<String, dynamic> secrets) =>
       AppSettings(
         maxBitrateKbps: asInt(j['maxBitrateKbps']),
+        // Saved before home/away existed: the one choice applied everywhere.
+        remoteMaxBitrateKbps: j.containsKey('remoteMaxBitrateKbps')
+            ? asInt(j['remoteMaxBitrateKbps'])
+            : asInt(j['maxBitrateKbps']),
         autoPlayNext: j['autoPlayNext'] as bool? ?? true,
         autoSkipIntro: j['autoSkipIntro'] as bool? ?? false,
+        allowHdr: j['allowHdr'] as bool? ?? true,
         audioLanguage: j['audioLanguage'] as String?,
         subtitleLanguage: j['subtitleLanguage'] as String?,
         tvMode: j['tvMode'] as String? ?? 'auto',

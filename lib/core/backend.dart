@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'models.dart';
+import 'network.dart';
 
 /// Identity this app presents to servers. Filled in once at startup.
 class ClientInfo {
@@ -44,6 +45,9 @@ class BackendException implements Exception {
 abstract class MediaBackend {
   ServerConfig get config;
   String get serverId => config.id;
+
+  /// Reached on the home network (decides home vs away streaming quality).
+  bool get isLocal => isLocalAddress(config.baseUrl);
 
   /// Libraries the user hid in Settings. Set once when the backend is created;
   /// toggling a library creates fresh backends, so this never changes under
@@ -174,6 +178,10 @@ abstract class MediaBackend {
   /// Permanently deletes [item]'s files from the server's disk. Only offered
   /// (via [manageActions]) where the server allows deletion.
   Future<void> deleteItem(MediaItem item) async {}
+
+  /// Deletes a playlist (not the media in it). Users may delete their own
+  /// playlists, so this needs no owner or administrator rights.
+  Future<void> deletePlaylist(MediaItem playlist) async {}
 
   void dispose() {}
 }

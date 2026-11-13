@@ -383,8 +383,10 @@ class DemoBackend extends MediaBackend {
           : const [];
 
   @override
-  Future<List<MediaItem>> playlists() async =>
-      [_playlist, ..._userPlaylists.map(_withCount)];
+  Future<List<MediaItem>> playlists() async => [
+        _playlist,
+        ..._userPlaylists.map(_withCount),
+      ].where((p) => !_deleted.contains(p.id)).toList();
 
   MediaItem _withCount(MediaItem p) => MediaItem(
       serverId: p.serverId,
@@ -427,6 +429,7 @@ class DemoBackend extends MediaBackend {
   @override
   Future<MediaItem> item(String id, {MediaKind? kind}) async {
     if (id == _collection.id) return _collection;
+    if (_deleted.contains(id)) throw StateError('That item was deleted');
     if (id == _playlist.id) return _playlist;
     for (final p in _userPlaylists) {
       if (p.id == id) return _withCount(p);
@@ -478,6 +481,7 @@ class DemoBackend extends MediaBackend {
 
   @override
   Future<Set<ManageAction>> manageActions(MediaItem item) async {
+    if (item.kind == MediaKind.playlist) return const {ManageAction.deletePlaylist};
     final actions = switch (item.kind) {
       MediaKind.movie || MediaKind.show => const {
           ManageAction.edit,
@@ -503,6 +507,11 @@ class DemoBackend extends MediaBackend {
   @override
   Future<void> deleteItem(MediaItem item) async {
     _deleted.add(item.id);
+  }
+
+  @override
+  Future<void> deletePlaylist(MediaItem playlist) async {
+    _deleted.add(playlist.id);
   }
 
   @override
@@ -623,15 +632,25 @@ class DemoBackend extends MediaBackend {
 
   @override
   Future<PlaybackSource> playback(
-          MediaItem item, PlaybackRequest request) async =>
-      PlaybackSource(
-        url: item.kind.isAudio ? _audio : _video,
-        method: request.maxBitrateKbps == null
-            ? PlayMethod.directPlay
-            : PlayMethod.transcode,
-        sessionId: 'demo',
-        version: item.versions.firstOrNull,
-      );
+      MediaItem item, PlaybackRequest request) async {
+    final v = item.versions.firstOrNull;
+    final cap = request.maxBitrateKbps;
+    final fits = (cap == null ||
+            (v?.bitrateKbps != null && v!.bitrateKbps! <= cap)) &&
+        !(request.sdrOnly && (v?.beyondHd ?? false));
+    return PlaybackSource(
+      url: item.kind.isAudio ? _audio : _video,
+      method: request.forceTranscode || !fits
+          ? PlayMethod.transcode
+          : PlayMethod.directPlay,
+      sessionId: 'demo',
+      version: v,
+    );
+  }
+
+  /// The sample library is always "at home".
+  @override
+  bool get isLocal => true;
 
   @override
   Future<void> reportProgress(MediaItem item, PlaybackSource source,

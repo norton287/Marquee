@@ -797,7 +797,7 @@ class JellyfinBackend extends MediaBackend {
 
   /// libmpv plays practically everything, so the profile asks for direct play
   /// of any container and only describes what to transcode *to*.
-  Map<String, dynamic> _deviceProfile(int maxBitrate) => {
+  Map<String, dynamic> _deviceProfile(int maxBitrate, {bool sdrOnly = false}) => {
         'Name': ClientInfo.product,
         'MaxStreamingBitrate': maxBitrate,
         'MaxStaticBitrate': maxBitrate,
@@ -835,7 +835,34 @@ class JellyfinBackend extends MediaBackend {
           ])
             {'Format': f, 'Method': 'Embed'},
         ],
-        'CodecProfiles': <dynamic>[],
+        // HD only: the server won't direct play HDR / Dolby Vision or
+        // anything over 1080p, and converts it to 1080p SDR instead.
+        'CodecProfiles': [
+          if (sdrOnly)
+            {
+              'Type': 'Video',
+              'Conditions': [
+                {
+                  'Condition': 'EqualsAny',
+                  'Property': 'VideoRangeType',
+                  'Value': 'SDR',
+                  'IsRequired': false,
+                },
+                {
+                  'Condition': 'LessThanEqual',
+                  'Property': 'Width',
+                  'Value': '1920',
+                  'IsRequired': false,
+                },
+                {
+                  'Condition': 'LessThanEqual',
+                  'Property': 'Height',
+                  'Value': '1080',
+                  'IsRequired': false,
+                },
+              ],
+            },
+        ],
         'ContainerProfiles': <dynamic>[],
       };
 
@@ -851,14 +878,18 @@ class JellyfinBackend extends MediaBackend {
         mediaSourceId: item.id,
       );
     }
-    final original = request.maxBitrateKbps == null;
-    final maxBitrate = original ? 400000000 : request.maxBitrateKbps! * 1000;
+    // The limit is a maximum: the server only direct plays files under it
+    // (MaxStreamingBitrate / MaxStaticBitrate), so direct play stays allowed
+    // unless a transcode is forced.
+    final force = request.forceTranscode;
+    final cap = request.maxBitrateKbps ?? (force ? 20000 : null);
+    final maxBitrate = cap == null ? 400000000 : cap * 1000;
     final r = await _dio.post<Map<String, dynamic>>(
       '/Items/${item.id}/PlaybackInfo',
       queryParameters: {'userId': _uid},
       data: {
         'UserId': _uid,
-        'DeviceProfile': _deviceProfile(maxBitrate),
+        'DeviceProfile': _deviceProfile(maxBitrate, sdrOnly: request.sdrOnly),
         'MaxStreamingBitrate': maxBitrate,
         'MediaSourceId': ?request.versionId,
         if (request.audioStreamId != null)
@@ -867,10 +898,10 @@ class JellyfinBackend extends MediaBackend {
           'SubtitleStreamIndex': request.subtitleStreamId!.isEmpty
               ? -1
               : int.tryParse(request.subtitleStreamId!),
-        'EnableDirectPlay': original,
-        'EnableDirectStream': original,
+        'EnableDirectPlay': !force,
+        'EnableDirectStream': !force,
         'EnableTranscoding': true,
-        'AllowVideoStreamCopy': original,
+        'AllowVideoStreamCopy': !force,
         'AllowAudioStreamCopy': true,
         'AutoOpenLiveStream': true,
       },
@@ -886,7 +917,7 @@ class JellyfinBackend extends MediaBackend {
 
     final String url;
     final PlayMethod method;
-    if (original && asBool(src['SupportsDirectPlay'])) {
+    if (!force && asBool(src['SupportsDirectPlay'])) {
       url = '$_base/Videos/${item.id}/stream?static=true'
           '&mediaSourceId=${src['Id']}'
           '&deviceId=${Uri.encodeQueryComponent(ClientInfo.clientId)}'
@@ -894,7 +925,7 @@ class JellyfinBackend extends MediaBackend {
       method = PlayMethod.directPlay;
     } else if (transcodeUrl != null) {
       url = '$_base$transcodeUrl';
-      method = original && asBool(src['SupportsDirectStream'])
+      method = !force && asBool(src['SupportsDirectStream'])
           ? PlayMethod.directStream
           : PlayMethod.transcode;
     } else {
@@ -1002,6 +1033,8 @@ class JellyfinBackend extends MediaBackend {
 
   @override
   Future<Set<ManageAction>> manageActions(MediaItem item) async {
+    // A user's own playlists are theirs to delete; no admin needed.
+    if (item.kind == MediaKind.playlist) return const {ManageAction.deletePlaylist};
     if (!await _admin()) return const {};
     final actions = _manageActionsFor(item.kind);
     if (actions.isEmpty || !await _canDelete()) return actions;
@@ -1028,6 +1061,20 @@ class JellyfinBackend extends MediaBackend {
       MediaKind.episode => const {ManageAction.edit, ManageAction.refresh},
       _ => const {},
     };
+  }
+
+  @override
+  Future<void> deletePlaylist(MediaItem playlist) async {
+    try {
+      await _dio.delete<dynamic>('/Items/${playlist.id}');
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Jellyfin refused to delete this playlist. Only its owner can.');
+      }
+      rethrow;
+    }
   }
 
   @override

@@ -716,7 +716,13 @@ class PlexBackend extends MediaBackend {
     final v = full.versions[mediaIndex];
     final session = const Uuid().v4();
 
-    if (request.maxBitrateKbps == null || item.kind.isAudio) {
+    // The limit is a maximum: a file that already fits plays untouched.
+    final cap = request.maxBitrateKbps;
+    final fits = (cap == null ||
+            (v.bitrateKbps != null && v.bitrateKbps! <= cap)) &&
+        // HD only: HDR, Dolby Vision and 4K get converted to 1080p SDR.
+        !(request.sdrOnly && v.beyondHd);
+    if (item.kind.isAudio || (fits && !request.forceTranscode)) {
       return PlaybackSource(
         url: '$_base${v.partKey}?X-Plex-Token=$_token',
         method: PlayMethod.directPlay,
@@ -738,8 +744,12 @@ class PlexBackend extends MediaBackend {
         'allParts': 1,
       });
     }
-    final kbps = request.maxBitrateKbps!;
-    final res = kbps >= 30000
+    final kbps = request.sdrOnly && (cap == null || cap > 20000)
+        ? 20000
+        : (cap ?? 20000);
+    final res = request.sdrOnly && kbps >= 8000
+        ? '1920x1080'
+        : kbps >= 30000
         ? '3840x2160'
         : kbps >= 8000
             ? '1920x1080'
@@ -847,6 +857,7 @@ class PlexBackend extends MediaBackend {
   @override
   Future<Set<ManageAction>> manageActions(MediaItem item) async {
     if (item.external) return const {};
+    if (item.kind == MediaKind.playlist) return const {ManageAction.deletePlaylist};
     final actions = _manageActionsFor(item.kind);
     if (actions.isEmpty || !await _canDelete()) return actions;
     return {...actions, ManageAction.delete};
@@ -854,8 +865,9 @@ class PlexBackend extends MediaBackend {
 
   static Set<ManageAction> _manageActionsFor(MediaKind kind) {
     return switch (kind) {
-      MediaKind.movie || MediaKind.show =>
-        ManageAction.values.toSet()..remove(ManageAction.delete),
+      MediaKind.movie || MediaKind.show => ManageAction.values.toSet()
+        ..remove(ManageAction.delete)
+        ..remove(ManageAction.deletePlaylist),
       MediaKind.season => const {
           ManageAction.edit,
           ManageAction.refresh,
@@ -898,6 +910,20 @@ class PlexBackend extends MediaBackend {
             'summary.locked': 1,
           },
         ));
+  }
+
+  @override
+  Future<void> deletePlaylist(MediaItem playlist) async {
+    try {
+      await _dio.delete<dynamic>('/playlists/${playlist.id}');
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw const BackendException(
+            'Plex refused to delete this playlist. Only its owner can.');
+      }
+      rethrow;
+    }
   }
 
   @override

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../core/backend.dart';
 import '../core/models.dart';
+import '../core/network.dart';
 import '../core/providers.dart';
 import '../core/seerr.dart';
 import '../core/storage.dart';
@@ -11,6 +12,12 @@ import 'add_server_screen.dart';
 import 'libraries_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
+
+/// Streaming quality choices; null = no limit.
+final _qualityOptions = <(int?, String)>[
+  for (final q in QualityOption.all)
+    (q.kbps, q.kbps == null ? 'Original (no limit)' : q.label),
+];
 
 const _languages = <(String?, String)>[
   (null, 'Default'),
@@ -79,6 +86,11 @@ class SettingsScreen extends ConsumerWidget {
                         },
                         ?s.userName,
                         if (s.kind != ServerKind.demo) Uri.tryParse(s.baseUrl)?.host,
+                        // Which maximum quality applies (home or away).
+                        if (s.kind != ServerKind.demo)
+                          isLocalAddress(s.baseUrl)
+                              ? 'home network'
+                              : 'over the internet',
                       ].nonNulls.join(' · ')),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -135,16 +147,33 @@ class SettingsScreen extends ConsumerWidget {
                 const _Heading('Playback'),
                 _Card(children: [
                   _Choice<int?>(
-                    title: 'Video quality',
-                    subtitle:
-                        'Original plays the file untouched. Lower settings '
-                        'ask the server to transcode.',
+                    title: 'Maximum quality at home',
+                    subtitle: 'When the server is on your home network. '
+                        'Videos at or under this play untouched; bigger '
+                        'ones are converted down by the server.',
                     value: settings.maxBitrateKbps,
-                    options: [
-                      for (final q in QualityOption.all) (q.kbps, q.label)
-                    ],
+                    options: _qualityOptions,
                     onChanged: (v) =>
                         notifier.change((s) => s.copyWith(maxBitrateKbps: v)),
+                  ),
+                  _Choice<int?>(
+                    title: 'Maximum quality away from home',
+                    subtitle: 'When the server is reached over the internet. '
+                        'Lower it if streams buffer.',
+                    value: settings.remoteMaxBitrateKbps,
+                    options: _qualityOptions,
+                    onChanged: (v) => notifier
+                        .change((s) => s.copyWith(remoteMaxBitrateKbps: v)),
+                  ),
+                  SwitchListTile(
+                    title: const Text('Play HDR and 4K'),
+                    subtitle: const Text(
+                        'Turn off if HDR or 4K videos keep buffering. The '
+                        'server then converts them to 1080p SDR; turn on HDR '
+                        'tone mapping on the server so colours stay right.'),
+                    value: settings.allowHdr,
+                    onChanged: (v) =>
+                        notifier.change((s) => s.copyWith(allowHdr: v)),
                   ),
                   _Choice<String?>(
                     title: 'Audio language',

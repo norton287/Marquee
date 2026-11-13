@@ -246,6 +246,10 @@ class MediaVersion {
   List<MediaStreamInfo> get subtitles =>
       streams.where((s) => s.type == StreamType.subtitle).toList();
 
+  /// HDR / Dolby Vision, or bigger than 1080p: what "Play HDR and 4K" off
+  /// converts down.
+  bool get beyondHd => hdr != null || (width ?? 0) > 1920 || (height ?? 0) > 1088;
+
   String? get resolution {
     final w = width ?? 0, h = height ?? 0;
     if (w == 0 && h == 0) return null;
@@ -561,11 +565,22 @@ class PlaybackRequest {
     this.maxBitrateKbps,
     this.audioStreamId,
     this.subtitleStreamId,
+    this.forceTranscode = false,
+    this.sdrOnly = false,
   });
   final String? versionId;
 
-  /// null = original quality (direct play when possible).
+  /// The most the stream may use; null = no limit. A file at or under it
+  /// plays untouched (direct play); a bigger one is transcoded down.
   final int? maxBitrateKbps;
+
+  /// Transcode even if the file fits (direct play failed, or the user asked
+  /// for it). Without [maxBitrateKbps] the server picks 20 Mbps.
+  final bool forceTranscode;
+
+  /// HD only: HDR / Dolby Vision or above-1080p video must not direct play;
+  /// the server converts it to 1080p SDR.
+  final bool sdrOnly;
   final String? audioStreamId;
 
   /// '' = subtitles off.
@@ -674,7 +689,8 @@ enum ManageAction {
   upload('Upload poster…'),
   background('Change background…'),
   uploadBackground('Upload background…'),
-  delete('Delete…');
+  delete('Delete…'),
+  deletePlaylist('Delete playlist…');
 
   const ManageAction(this.label);
   final String label;

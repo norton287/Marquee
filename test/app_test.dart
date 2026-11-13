@@ -10,6 +10,7 @@ import 'package:marquee/core/backend.dart';
 import 'package:marquee/core/demo.dart';
 import 'package:marquee/core/jellyfin.dart';
 import 'package:marquee/core/models.dart';
+import 'package:marquee/core/network.dart';
 import 'package:marquee/core/plex.dart';
 import 'package:marquee/core/providers.dart';
 import 'package:marquee/core/storage.dart';
@@ -78,7 +79,7 @@ void main() {
         await tester.tap(find.text(tab).last);
         await tester.pumpAndSettle();
       }
-      expect(find.text('Video quality'), findsOneWidget);
+      expect(find.text('Maximum quality at home'), findsOneWidget);
     });
   }
 
@@ -496,7 +497,7 @@ void main() {
     await tester.pumpAndSettle();
     String? focused() => FocusManager.instance.primaryFocus?.debugLabel;
 
-    await tester.tap(find.text('Video quality'));
+    await tester.tap(find.text('Maximum quality at home'));
     await tester.pumpAndSettle();
     // Lands on the current choice ("Original" is first).
     expect(focused(), 'menu item 0');
@@ -848,9 +849,13 @@ void main() {
     final movie = plex.parse({'ratingKey': '42', 'type': 'movie',
         'title': 'Heat', 'librarySectionID': 1});
 
-    // This fake server doesn't allow deletion, so Delete isn't offered.
-    expect(await plex.manageActions(movie),
-        ManageAction.values.toSet()..remove(ManageAction.delete));
+    // This fake server doesn't allow deletion, so Delete isn't offered;
+    // Delete playlist is for playlists only.
+    expect(
+        await plex.manageActions(movie),
+        ManageAction.values.toSet()
+          ..remove(ManageAction.delete)
+          ..remove(ManageAction.deletePlaylist));
     final matches = await plex.searchMatches(movie, title: 'Heat', year: 1995);
     expect(calls.last, contains('/library/metadata/42/matches'));
     expect(calls.last, contains('agent: tv.plex.agents.movie'));
@@ -1396,6 +1401,289 @@ void main() {
     expect(
         await container.read(backendsProvider)['demo']!.search('Blue Hour'),
         isNotEmpty);
+  });
+
+  test('Delete playlist: offered to any user, with the right request',
+      () async {
+    final calls = <String>[];
+    Dio fake(String base) => Dio(BaseOptions(baseUrl: base))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add('${o.method} ${o.path}');
+        // Not an admin, and Plex doesn't allow media deletion.
+        h.resolve(Response(requestOptions: o, statusCode: 200, data: {
+          'Policy': {'IsAdministrator': false},
+          'MediaContainer': {
+            'Setting': [
+              {'id': 'allowMediaDeletion', 'value': false}
+            ]
+          },
+        }));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: fake('http://h'));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: fake('http://jf'));
+    const plexList = MediaItem(serverId: 'p', id: '9',
+        kind: MediaKind.playlist, title: 'Mine');
+    const jfList = MediaItem(serverId: 'j', id: 'pl1',
+        kind: MediaKind.playlist, title: 'Mine');
+
+    expect(await plex.manageActions(plexList), {ManageAction.deletePlaylist});
+    expect(await jf.manageActions(jfList), {ManageAction.deletePlaylist});
+    await plex.deletePlaylist(plexList);
+    expect(calls.last, 'DELETE /playlists/9');
+    await jf.deletePlaylist(jfList);
+    expect(calls.last, 'DELETE /Items/pl1');
+  });
+
+  testWidgets('a playlist can be deleted from its page', (tester) async {
+    await _pump(tester, const Size(1440, 900));
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final demo = container.read(backendsProvider)['demo']!;
+    final movie = (await demo.search('Wild Meridian')).first;
+    await demo.createPlaylist('Road trip', movie);
+    container.invalidate(playlistsProvider);
+
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Road trip'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    // On a playlist, deleting the playlist is the only action.
+    expect(find.text('Delete playlist…'), findsOneWidget);
+    expect(find.text('Delete…'), findsNothing);
+    expect(find.text('Refresh metadata'), findsNothing);
+    await tester.tap(find.text('Delete playlist…'));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete the playlist "Road trip"?'), findsOneWidget);
+    expect(find.textContaining('stays in your libraries'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Deleted Road trip'), findsOneWidget);
+    expect(find.text('Road trip'), findsNothing); // gone from Libraries
+    expect(find.text('Friday Night'), findsOneWidget); // others untouched
+    expect(await demo.search('Wild Meridian'), isNotEmpty); // media kept
+  });
+
+  test('home or away is decided from the server address', () {
+    for (final home in [
+      'http://192.168.1.20:32400', 'http://10.0.0.5:8096',
+      'https://172.20.1.2:8920', 'http://localhost:8096', 'http://nas:8096',
+      'http://media.local:8096', 'http://100.101.1.2:32400',
+      'https://192-168-1-10.abc123def.plex.direct:32400',
+      'http://[fd00::1]:8096',
+    ]) {
+      expect(isLocalAddress(home), isTrue, reason: home);
+    }
+    for (final away in [
+      'https://jellyfin.example.com', 'http://203.0.113.9:32400',
+      'https://203-0-113-9.abc123def.plex.direct:32400',
+      'https://172.32.0.1', 'http://[2001:db8::1]:8096',
+    ]) {
+      expect(isLocalAddress(away), isFalse, reason: away);
+    }
+  });
+
+  test('home/away quality: old saves apply one choice to both', () {
+    final old = AppSettings.fromJson({'maxBitrateKbps': 8000}, const {});
+    expect((old.maxBitrateKbps, old.remoteMaxBitrateKbps), (8000, 8000));
+    final both = AppSettings.fromJson(
+        {'maxBitrateKbps': null, 'remoteMaxBitrateKbps': 4000}, const {});
+    expect(both.maxBitrateFor(local: true), isNull);
+    expect(both.maxBitrateFor(local: false), 4000);
+    final round = AppSettings.fromJson(
+        const AppSettings(remoteMaxBitrateKbps: 2000).toJson(), const {});
+    expect((round.maxBitrateKbps, round.remoteMaxBitrateKbps), (null, 2000));
+  });
+
+  test('Plex treats the quality as a maximum', () async {
+    final plex = PlexBackend(const ServerConfig(id: 'p', kind: ServerKind.plex,
+        name: 'P', baseUrl: 'http://h', token: 't'));
+    final movie = plex.parse({
+      'ratingKey': '42', 'type': 'movie', 'title': 'Heat',
+      'Media': [
+        {'id': 1, 'bitrate': 6000, 'Part': [
+          {'id': 5, 'key': '/library/parts/5/file.mkv',
+           'Stream': [{'id': 9, 'streamType': 1, 'codec': 'h264'}]}
+        ]}
+      ],
+    });
+    Future<PlaybackSource> play(PlaybackRequest r) => plex.playback(movie, r);
+
+    final fits = await play(const PlaybackRequest(maxBitrateKbps: 8000));
+    expect(fits.method, PlayMethod.directPlay);
+    final tooBig = await play(const PlaybackRequest(maxBitrateKbps: 4000));
+    expect(tooBig.method, PlayMethod.transcode);
+    expect(Uri.parse(tooBig.url).queryParameters['maxVideoBitrate'], '4000');
+    final forced = await play(const PlaybackRequest(forceTranscode: true));
+    expect(forced.method, PlayMethod.transcode);
+    expect(Uri.parse(forced.url).queryParameters['maxVideoBitrate'], '20000');
+    plex.dispose();
+  });
+
+  test('Jellyfin keeps direct play allowed under a maximum', () async {
+    final bodies = <Map<String, dynamic>>[];
+    var serverSaysDirect = true;
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        bodies.add(o.data as Map<String, dynamic>);
+        h.resolve(Response(requestOptions: o, statusCode: 200, data: {
+          'PlaySessionId': 's',
+          'MediaSources': [
+            {'Id': 'm1', 'SupportsDirectPlay': serverSaysDirect,
+             'SupportsDirectStream': false,
+             'TranscodingUrl': '/videos/m1/master.m3u8?x=1'}
+          ],
+        }));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const movie = MediaItem(serverId: 'j', id: 'm1', kind: MediaKind.movie,
+        title: 'Heat');
+
+    final under = await jf.playback(movie, const PlaybackRequest(maxBitrateKbps: 8000));
+    expect(bodies.last['EnableDirectPlay'], isTrue);
+    expect(bodies.last['MaxStreamingBitrate'], 8000000);
+    expect(under.method, PlayMethod.directPlay);
+
+    serverSaysDirect = false; // file is over the limit
+    final over = await jf.playback(movie, const PlaybackRequest(maxBitrateKbps: 2000));
+    expect(over.method, PlayMethod.transcode);
+    expect(over.url, 'http://jf/videos/m1/master.m3u8?x=1');
+
+    serverSaysDirect = true;
+    final forced = await jf.playback(movie, const PlaybackRequest(forceTranscode: true));
+    expect(bodies.last['EnableDirectPlay'], isFalse);
+    expect(bodies.last['MaxStreamingBitrate'], 20000000);
+    expect(forced.method, PlayMethod.transcode);
+  });
+
+  testWidgets('away-from-home quality is its own setting', (tester) async {
+    await _pump(tester, const Size(1440, 900));
+    await tester.tap(find.text('Settings').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Maximum quality away from home'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('720p · 4 Mbps').last);
+    await tester.pumpAndSettle();
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final s = container.read(settingsProvider);
+    expect((s.maxBitrateKbps, s.remoteMaxBitrateKbps), (null, 4000));
+    expect(find.text('Original (no limit)'), findsOneWidget); // home unchanged
+  });
+
+  test('HD only: Plex converts HDR and 4K to 1080p, leaves HD alone',
+      () async {
+    final plex = PlexBackend(const ServerConfig(id: 'p', kind: ServerKind.plex,
+        name: 'P', baseUrl: 'http://h', token: 't'));
+    MediaItem movie(String id, {required int w, required int h,
+            bool dv = false, int kbps = 15000}) =>
+        plex.parse({
+          'ratingKey': id, 'type': 'movie', 'title': id,
+          'Media': [
+            {'id': 1, 'bitrate': kbps, 'width': w, 'height': h, 'Part': [
+              {'id': 5, 'key': '/library/parts/5/file.mkv', 'Stream': [
+                {'id': 9, 'streamType': 1, 'codec': 'hevc',
+                 'DOVIPresent': dv, if (!dv && w > 1920) 'colorTrc': 'smpte2084'}
+              ]}
+            ]}
+          ],
+        });
+    const hdOnly = PlaybackRequest(sdrOnly: true);
+    Map<String, String> q(PlaybackSource s) => Uri.parse(s.url).queryParameters;
+
+    final hd = await plex.playback(movie('hd', w: 1920, h: 1080), hdOnly);
+    expect(hd.method, PlayMethod.directPlay);
+
+    final dvHd = await plex.playback(movie('dv', w: 1920, h: 1080, dv: true), hdOnly);
+    expect(dvHd.method, PlayMethod.transcode);
+    expect(q(dvHd)['videoResolution'], '1920x1080');
+
+    final uhd = await plex.playback(
+        movie('uhd', w: 3840, h: 2160, kbps: 60000),
+        const PlaybackRequest(sdrOnly: true, maxBitrateKbps: 40000));
+    expect(uhd.method, PlayMethod.transcode);
+    expect((q(uhd)['videoResolution'], q(uhd)['maxVideoBitrate']),
+        ('1920x1080', '20000'));
+
+    // With HDR allowed, the same 4K file plays untouched under no limit.
+    final allowed = await plex.playback(
+        movie('uhd2', w: 3840, h: 2160, kbps: 60000), const PlaybackRequest());
+    expect(allowed.method, PlayMethod.directPlay);
+    plex.dispose();
+  });
+
+  test('HD only: Jellyfin profile limits direct play to SDR 1080p', () async {
+    final bodies = <Map<String, dynamic>>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        bodies.add(o.data as Map<String, dynamic>);
+        h.resolve(Response(requestOptions: o, statusCode: 200, data: {
+          'MediaSources': [
+            {'Id': 'm1', 'SupportsDirectPlay': true}
+          ],
+        }));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const movie = MediaItem(serverId: 'j', id: 'm1', kind: MediaKind.movie,
+        title: 'Heat');
+    List<dynamic> codecProfiles() =>
+        (bodies.last['DeviceProfile'] as Map)['CodecProfiles'] as List;
+
+    await jf.playback(movie, const PlaybackRequest());
+    expect(codecProfiles(), isEmpty);
+    await jf.playback(movie, const PlaybackRequest(sdrOnly: true));
+    final conditions = (codecProfiles().single as Map)['Conditions'] as List;
+    expect(
+        conditions.map((c) => '${c['Property']} ${c['Condition']} ${c['Value']}'),
+        ['VideoRangeType EqualsAny SDR', 'Width LessThanEqual 1920',
+         'Height LessThanEqual 1080']);
+  });
+
+  test('HD only: demo 4K converts; setting saves and defaults on', () async {
+    expect(const AppSettings().allowHdr, isTrue);
+    expect(AppSettings.fromJson(const {}, const {}).allowHdr, isTrue);
+    final off = AppSettings.fromJson(
+        const AppSettings(allowHdr: false).toJson(), const {});
+    expect(off.allowHdr, isFalse);
+
+    final demo = DemoBackend(demoServer);
+    final uhd = (await demo.search('The Long Tide')).first; // a 4K title
+    final full = await demo.item(uhd.id);
+    expect(full.versions.first.beyondHd, isTrue);
+    expect((await demo.playback(full, const PlaybackRequest())).method,
+        PlayMethod.directPlay);
+    expect(
+        (await demo.playback(full, const PlaybackRequest(sdrOnly: true)))
+            .method,
+        PlayMethod.transcode);
+  });
+
+  testWidgets('Play HDR and 4K can be turned off in Settings', (tester) async {
+    await _pump(tester, const Size(1440, 900));
+    await tester.tap(find.text('Settings').last);
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Play HDR and 4K'), 200,
+        scrollable: find.byType(Scrollable).last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Play HDR and 4K'));
+    await tester.pumpAndSettle();
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    expect(container.read(settingsProvider).allowHdr, isFalse);
   });
 
   test('backend errors reach the user verbatim', () {

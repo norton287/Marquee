@@ -54,6 +54,7 @@ class ManageButton extends ConsumerWidget {
         ManageAction.background => Icons.wallpaper_rounded,
         ManageAction.uploadBackground => Icons.add_photo_alternate_outlined,
         ManageAction.delete => Icons.delete_forever_outlined,
+        ManageAction.deletePlaylist => Icons.playlist_remove_rounded,
       };
 
   Future<void> _run(BuildContext context, WidgetRef ref, ManageAction a) async {
@@ -65,13 +66,17 @@ class ManageButton extends ConsumerWidget {
         (messenger..hideCurrentSnackBar()).showSnackBar(SnackBar(content: Text(text)));
 
     switch (a) {
-      case ManageAction.delete:
+      case ManageAction.delete || ManageAction.deletePlaylist:
         final router = GoRouter.of(context);
         final ok = await showDialog<bool>(
             context: context, builder: (_) => _DeleteDialog(item: item));
         if (ok != true) return;
         try {
-          await backend.deleteItem(item);
+          if (a == ManageAction.deletePlaylist) {
+            await backend.deletePlaylist(item);
+          } else {
+            await backend.deleteItem(item);
+          }
         } catch (e) {
           say(friendlyError(e));
           return;
@@ -161,6 +166,7 @@ class _DeleteDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final playlist = item.kind == MediaKind.playlist;
     final what = switch (item.kind) {
       MediaKind.show => 'every season and episode of this show',
       MediaKind.season => 'every episode in this season',
@@ -169,10 +175,19 @@ class _DeleteDialog extends StatelessWidget {
     };
     final error = Theme.of(context).colorScheme.error;
     return AlertDialog(
-      icon: Icon(Icons.delete_forever_outlined, color: error),
-      title: Text('Delete ${item.title}?'),
-      content: Text('This permanently deletes $what from the server\'s '
-          'disk. It can\'t be undone.'),
+      icon: Icon(
+          playlist
+              ? Icons.playlist_remove_rounded
+              : Icons.delete_forever_outlined,
+          color: error),
+      title: Text(playlist
+          ? 'Delete the playlist "${item.title}"?'
+          : 'Delete ${item.title}?'),
+      content: Text(playlist
+          ? 'This removes the playlist from the server. What\'s in it stays '
+              'in your libraries. It can\'t be undone.'
+          : 'This permanently deletes $what from the server\'s '
+              'disk. It can\'t be undone.'),
       actions: [
         TextButton(
           autofocus: true,
