@@ -32,6 +32,9 @@ class DemoBackend extends MediaBackend {
   static final _titles = <String, String>{};
   static final _deleted = <String>{};
   static final _overviews = <String, String>{};
+  static final _sortTitles = <String, String>{};
+  static final _years = <String, int>{};
+  static final _genreEdits = <String, List<String>>{};
   static final _posters = <String, ImageRef>{};
   static final _backdrops = <String, ImageRef>{};
   static final _userPlaylists = <MediaItem>[];
@@ -241,7 +244,7 @@ class DemoBackend extends MediaBackend {
       title: _titles[i.id] ?? i.title,
       overview: _overviews[i.id] ?? i.overview,
       tagline: i.tagline,
-      year: i.year,
+      year: _years[i.id] ?? i.year,
       duration: i.duration,
       viewOffset: _progress[i.id] ?? Duration.zero,
       played: played,
@@ -258,7 +261,7 @@ class DemoBackend extends MediaBackend {
       parentIndex: i.parentIndex,
       contentRating: i.contentRating,
       rating: i.rating,
-      genres: i.genres,
+      genres: _genreEdits[i.id] ?? i.genres,
       people: i.people,
       addedAt: i.addedAt,
       versions: i.versions,
@@ -272,6 +275,7 @@ class DemoBackend extends MediaBackend {
         _ => null,
       },
       playlistEntryId: i.playlistEntryId,
+      sortTitle: _sortTitles[i.id] ?? i.sortTitle,
     );
   }
 
@@ -538,9 +542,16 @@ class DemoBackend extends MediaBackend {
 
   @override
   Future<void> editDetails(MediaItem item,
-      {required String title, required String summary}) async {
+      {required String title,
+      required String summary,
+      String? sortTitle,
+      int? year,
+      List<String>? genres}) async {
     _titles[item.id] = title;
     _overviews[item.id] = summary;
+    if (sortTitle != null) _sortTitles[item.id] = sortTitle;
+    if (year != null) _years[item.id] = year;
+    if (genres != null) _genreEdits[item.id] = genres;
   }
 
   @override

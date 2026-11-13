@@ -344,6 +344,7 @@ class PlexBackend extends MediaBackend {
       unplayedCount: leaf == null ? null : (leaf - viewedLeaf),
       childCount: asInt(m['childCount']) ?? leaf,
       playlistEntryId: m['playlistItemID']?.toString(),
+      sortTitle: m['titleSort'] as String?,
       smart: asBool(m['smart']),
       poster: poster,
       thumb: thumb,
@@ -891,7 +892,16 @@ class PlexBackend extends MediaBackend {
 
   @override
   Future<void> editDetails(MediaItem item,
-      {required String title, required String summary}) {
+      {required String title,
+      required String summary,
+      String? sortTitle,
+      int? year,
+      List<String>? genres}) {
+    // Genres are tags: add the new ones, remove the dropped ones.
+    final added = genres?.where((g) => !item.genres.contains(g)).toList();
+    final removed = genres == null
+        ? null
+        : item.genres.where((g) => !genres.contains(g)).toList();
     final type = switch (item.kind) {
       MediaKind.movie => 1,
       MediaKind.show => 2,
@@ -911,6 +921,16 @@ class PlexBackend extends MediaBackend {
             'title.locked': 1,
             'summary.value': summary,
             'summary.locked': 1,
+            if (sortTitle != null) ...{
+              'titleSort.value': sortTitle,
+              'titleSort.locked': 1,
+            },
+            if (year != null) ...{'year.value': year, 'year.locked': 1},
+            if (genres != null) ...{
+              for (final (n, g) in added!.indexed) 'genre[$n].tag.tag': g,
+              if (removed!.isNotEmpty) 'genre[].tag.tag-': removed.join(','),
+              'genre.locked': 1,
+            },
           },
         ));
   }

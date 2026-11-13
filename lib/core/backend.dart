@@ -127,10 +127,16 @@ abstract class MediaBackend {
   /// that can tell the user isn't allowed to manage return empty up front.
   Future<Set<ManageAction>> manageActions(MediaItem item) async => const {};
 
-  /// Change [item]'s title and summary. Both are locked afterwards, as in
-  /// Plex's own editor, so a later metadata refresh keeps them.
+  /// Change [item]'s title and summary, and (movies and shows) its sort
+  /// title, year and genres; null leaves a field alone. Changed fields are
+  /// locked afterwards where the server can, as in Plex's own editor, so a
+  /// later metadata refresh keeps them.
   Future<void> editDetails(MediaItem item,
-      {required String title, required String summary}) async {}
+      {required String title,
+      required String summary,
+      String? sortTitle,
+      int? year,
+      List<String>? genres}) async {}
 
   /// Re-fetch [item]'s metadata from the server's agents. Returns once the
   /// server has accepted the request; the refresh itself runs in the

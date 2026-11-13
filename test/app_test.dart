@@ -1132,6 +1132,69 @@ void main() {
     expect(calls.last, 'DELETE /Playlists/p1/Items {entryIds: e2}');
   });
 
+  test('Plex edit sends sort title, year and genre changes with locks',
+      () async {
+    final calls = <Map<String, dynamic>>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        if (o.method == 'PUT') calls.add({'path': o.path, ...o.queryParameters});
+        h.resolve(Response(requestOptions: o, data: <String, dynamic>{}, statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    final movie = plex.parse({'ratingKey': '102035', 'type': 'movie',
+        'title': 'True Lies', 'year': 1994, 'librarySectionID': 1,
+        'Genre': [{'tag': 'Action'}, {'tag': 'Thriller'}, {'tag': 'Comedy'}]});
+
+    await plex.editDetails(movie, title: 'True Lies', summary: '',
+        sortTitle: 'Lies, True', year: 1995, genres: ['Action', 'Drama']);
+    final q = calls.single;
+    expect(q['path'], '/library/sections/1/all');
+    expect(q['titleSort.value'], 'Lies, True');
+    expect(q['titleSort.locked'], 1);
+    expect(q['year.value'], 1995);
+    expect(q['year.locked'], 1);
+    expect(q['genre[0].tag.tag'], 'Drama'); // only the new one is added
+    expect(q['genre[].tag.tag-'], 'Thriller,Comedy'); // dropped ones removed
+    expect(q['genre.locked'], 1);
+
+    // Fields left alone aren't sent (or locked).
+    calls.clear();
+    await plex.editDetails(movie, title: 'True Lies', summary: '');
+    expect(calls.single.keys.where((k) => k.startsWith('genre') ||
+        k.startsWith('year') || k.startsWith('titleSort')), isEmpty);
+  });
+
+  test('Jellyfin edit sets sort name, year and genres in the whole record',
+      () async {
+    Object? posted;
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        if (o.method == 'POST') posted = o.data;
+        final data = o.method == 'GET'
+            ? {'Id': 'm1', 'Name': 'Heat', 'Overview': 'x', 'Studios': ['S'],
+               'Genres': ['Crime'], 'ProductionYear': 1995, 'LockedFields': []}
+            : <String, dynamic>{};
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    final movie = jf.parse({'Id': 'm1', 'Name': 'Heat', 'Type': 'Movie'});
+    await jf.editDetails(movie, title: 'Heat', summary: 'x',
+        sortTitle: 'Heat (1995)', year: 1996, genres: ['Crime', 'Drama']);
+    final dto = posted! as Map;
+    expect(dto['ForcedSortName'], 'Heat (1995)');
+    expect(dto['ProductionYear'], 1996);
+    expect(dto['Genres'], ['Crime', 'Drama']);
+    expect(dto['Studios'], ['S']); // the rest of the record is kept
+    expect(dto['LockedFields'], containsAll(['Name', 'Overview', 'Genres']));
+  });
+
   test('Jellyfin manage needs an admin and maps its calls', () async {
     var admin = false;
     final calls = <(String, String, Object?)>[];
@@ -1263,6 +1326,40 @@ void main() {
     final tile = tester.getSize(
         find.descendant(of: panel.first, matching: find.byType(Pressable)).first);
     expect(tile.height, closeTo(tile.width * 3 / 2, 1));
+  });
+
+  testWidgets('Edit details changes sort title, year and genres',
+      (tester) async {
+    await openDemoMovie(tester, 'North of Nowhere');
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit details…'));
+    await tester.pumpAndSettle();
+    TextField field(String label) => tester.widget<TextField>(find.ancestor(
+        of: find.text(label), matching: find.byType(TextField)));
+    expect(field('Sort title').controller!.text, '');
+    expect(field('Year').controller!.text, '2024');
+    expect(field('Genres').controller!.text, 'Comedy, Adventure');
+
+    await tester.enterText(find.widgetWithText(TextField, 'Year'), 'nineteen');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Enter the year as four digits.'), findsOneWidget);
+
+    await tester.enterText(find.widgetWithText(TextField, 'Year'), '1999');
+    await tester.enterText(find.widgetWithText(TextField, 'Genres'), 'Noir,  Drama ,');
+    await tester.enterText(find.widgetWithText(TextField, 'Sort title'), 'Nowhere, North of');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Saved changes to North of Nowhere'), findsOneWidget);
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final demo = container.read(backendsProvider)['demo']!;
+    final saved = (await demo.search('North of Nowhere')).first;
+    expect(saved.year, 1999);
+    expect(saved.genres, ['Noir', 'Drama']);
+    expect(saved.sortTitle, 'Nowhere, North of');
   });
 
   testWidgets('Add to playlist creates a playlist with the item',

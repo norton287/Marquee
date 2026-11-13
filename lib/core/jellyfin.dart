@@ -301,6 +301,7 @@ class JellyfinBackend extends MediaBackend {
       unplayedCount: asInt(user['UnplayedItemCount']),
       childCount: asInt(m['ChildCount']) ?? asInt(m['RecursiveItemCount']),
       playlistEntryId: m['PlaylistItemId'] as String?,
+      sortTitle: m['ForcedSortName'] as String?,
       poster: poster,
       thumb: thumb,
       backdrop: backdrop,
@@ -1145,7 +1146,11 @@ class JellyfinBackend extends MediaBackend {
   /// two fields, lock them, and send everything back.
   @override
   Future<void> editDetails(MediaItem item,
-      {required String title, required String summary}) {
+      {required String title,
+      required String summary,
+      String? sortTitle,
+      int? year,
+      List<String>? genres}) {
     return _manage(() async {
       final r = await _dio.get<Map<String, dynamic>>('/Items/${item.id}',
           queryParameters: {'userId': _uid});
@@ -1154,11 +1159,17 @@ class JellyfinBackend extends MediaBackend {
         ...((dto['LockedFields'] as List?) ?? const []).map((f) => '$f'),
         'Name',
         'Overview',
+        // Jellyfin has no lock for the sort name or year; a normal refresh
+        // doesn't replace values that are already set.
+        if (genres != null) 'Genres',
       };
       dto
         ..['Name'] = title
         ..['Overview'] = summary
         ..['LockedFields'] = locked.toList();
+      if (sortTitle != null) dto['ForcedSortName'] = sortTitle;
+      if (year != null) dto['ProductionYear'] = year;
+      if (genres != null) dto['Genres'] = genres;
       await _dio.post<dynamic>('/Items/${item.id}', data: dto);
     });
   }

@@ -345,6 +345,7 @@ class MediaItem {
     this.external = false,
     this.libraryId,
     this.playlistEntryId,
+    this.sortTitle,
     this.smart = false,
   });
 
@@ -405,6 +406,10 @@ class MediaItem {
   /// `playlistItemID`, Jellyfin `PlaylistItemId`). Not the item's own id:
   /// the same video can be in a playlist twice. Null outside playlists.
   final String? playlistEntryId;
+
+  /// The title the server sorts by when it differs from [title] (Plex
+  /// `titleSort`, Jellyfin `ForcedSortName`); null when it's the title.
+  final String? sortTitle;
 
   /// A smart playlist, filled by a rule; items can't be removed by hand.
   final bool smart;
@@ -492,6 +497,7 @@ class MediaItem {
         external: external,
         libraryId: libraryId,
         playlistEntryId: playlistEntryId ?? this.playlistEntryId,
+        sortTitle: sortTitle,
         smart: smart,
       );
 }

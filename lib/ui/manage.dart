@@ -502,24 +502,65 @@ class _EditPanelState extends ConsumerState<_EditPanel> {
   late final _title = TextEditingController(text: widget.item.title);
   late final _summary =
       TextEditingController(text: widget.item.overview ?? '');
+  late final _sortTitle =
+      TextEditingController(text: widget.item.sortTitle ?? '');
+  late final _year =
+      TextEditingController(text: widget.item.year?.toString() ?? '');
+  late final _genres =
+      TextEditingController(text: widget.item.genres.join(', '));
   bool _saving = false;
   Object? _error;
+
+  /// Sort title, year and genres belong to movies and shows only.
+  bool get _full =>
+      widget.item.kind == MediaKind.movie || widget.item.kind == MediaKind.show;
 
   @override
   void dispose() {
     _title.dispose();
     _summary.dispose();
+    _sortTitle.dispose();
+    _year.dispose();
+    _genres.dispose();
     super.dispose();
   }
 
   Future<void> _save() async {
+    final item = widget.item;
     final title = _title.text.trim();
     final summary = _summary.text.trim();
     if (title.isEmpty) {
       setState(() => _error = const FormatException('The title can\'t be empty'));
       return;
     }
-    if (title == widget.item.title && summary == (widget.item.overview ?? '')) {
+    // Only changed fields are sent, so only they get locked.
+    String? sortTitle;
+    int? year;
+    List<String>? genres;
+    if (_full) {
+      final sort = _sortTitle.text.trim();
+      if (sort != (item.sortTitle ?? '')) sortTitle = sort;
+      final yearText = _year.text.trim();
+      if (yearText.isNotEmpty) {
+        final y = int.tryParse(yearText);
+        if (y == null || y < 1800 || y > 2200) {
+          setState(() => _error =
+              const FormatException('Enter the year as four digits.'));
+          return;
+        }
+        if (y != item.year) year = y;
+      }
+      final g = [
+        for (final part in _genres.text.split(','))
+          if (part.trim().isNotEmpty) part.trim(),
+      ];
+      if (g.join('\n') != item.genres.join('\n')) genres = g;
+    }
+    if (title == item.title &&
+        summary == (item.overview ?? '') &&
+        sortTitle == null &&
+        year == null &&
+        genres == null) {
       Navigator.pop(context);
       return;
     }
@@ -531,7 +572,12 @@ class _EditPanelState extends ConsumerState<_EditPanel> {
       _error = null;
     });
     try {
-      await backend.editDetails(widget.item, title: title, summary: summary);
+      await backend.editDetails(widget.item,
+          title: title,
+          summary: summary,
+          sortTitle: sortTitle,
+          year: year,
+          genres: genres);
       reloadItem(container, widget.item);
       if (!mounted) return;
       final messenger = ScaffoldMessenger.of(context);
@@ -587,6 +633,40 @@ class _EditPanelState extends ConsumerState<_EditPanel> {
                         labelText: 'Summary', alignLabelWithHint: true),
                   ),
                 ),
+                if (_full) ...[
+                  const SizedBox(height: 14),
+                  _RemoteTextField(
+                    child: TextField(
+                      controller: _sortTitle,
+                      enabled: !_saving,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(
+                          labelText: 'Sort title',
+                          helperText: 'Leave empty to sort by the title.'),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _RemoteTextField(
+                    child: TextField(
+                      controller: _year,
+                      enabled: !_saving,
+                      keyboardType: TextInputType.number,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(labelText: 'Year'),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _RemoteTextField(
+                    child: TextField(
+                      controller: _genres,
+                      enabled: !_saving,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: const InputDecoration(
+                          labelText: 'Genres',
+                          helperText: 'Separate with commas.'),
+                    ),
+                  ),
+                ],
                 if (_error != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
