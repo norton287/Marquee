@@ -578,6 +578,16 @@ void main() {
     expect((await jf.similar(movie)).map((i) => i.id), ['a', 'c']);
     expect(calls.last, '/Items ids=a,b,c parentId=kids');
     expect((await jf.children(box)).map((i) => i.id), ['a']);
+
+    // A big collection is checked in batches (a URL can't hold 300 ids).
+    final big = [for (var n = 0; n < 250; n++) jf.parse(
+        {'Id': 'x$n', 'Name': 'x$n', 'Type': 'Movie'})];
+    calls.clear();
+    final kept = await jf.dropHiddenForTest(big);
+    expect(kept, hasLength(250));
+    final lookups = calls.where((c) => c.startsWith('/Items ids='));
+    expect(lookups, hasLength(3));
+    expect(lookups.every((c) => c.split(',').length <= 100), isTrue);
   });
 
   test('Jellyfin scopes queries to visible libraries when some are hidden',
@@ -1157,9 +1167,18 @@ void main() {
     expect(q['titleSort.locked'], 1);
     expect(q['year.value'], 1995);
     expect(q['year.locked'], 1);
-    expect(q['genre[0].tag.tag'], 'Drama'); // only the new one is added
-    expect(q['genre[].tag.tag-'], 'Thriller,Comedy'); // dropped ones removed
+    // The list is set as a whole (Plex replaces it); dropped ones removed.
+    expect(q['genre[0].tag.tag'], 'Action');
+    expect(q['genre[1].tag.tag'], 'Drama');
+    expect(q['genre[].tag.tag-'], 'Thriller,Comedy');
     expect(q['genre.locked'], 1);
+
+    // A case-only fix isn't also "removed" (Plex matches tags ignoring case).
+    calls.clear();
+    await plex.editDetails(movie, title: 'True Lies', summary: '',
+        genres: ['ACTION', 'Thriller', 'Comedy']);
+    expect(calls.single['genre[0].tag.tag'], 'ACTION');
+    expect(calls.single.containsKey('genre[].tag.tag-'), isFalse);
 
     // Fields left alone aren't sent (or locked).
     calls.clear();
@@ -1196,10 +1215,19 @@ void main() {
     expect(dto['LockedFields'], containsAll(['Name', 'Overview', 'Genres']));
   });
 
-  Dio fakePlexWithVersions(List<String> deletes, {required bool allow}) =>
+  Dio fakePlexWithVersions(List<String> deletes,
+          {required bool allow, bool refuse = false}) =>
       Dio(BaseOptions(baseUrl: 'http://h'))
         ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
           if (o.method == 'DELETE') deletes.add(o.path);
+          if (o.method == 'DELETE' && refuse) {
+            // Slow, then refused: the rows rebuild while it runs.
+            Future<void>.delayed(const Duration(milliseconds: 300), () =>
+                h.reject(DioException(
+                    requestOptions: o,
+                    response: Response(requestOptions: o, statusCode: 403))));
+            return;
+          }
           final data = switch (o.path) {
             '/:/prefs' => {'MediaContainer': {'Setting': [
                 {'id': 'allowMediaDeletion', 'value': allow}]}},
@@ -1239,7 +1267,7 @@ void main() {
         isNot(contains(ManageAction.deleteVersion)));
   });
 
-  test('Jellyfin offers only the extra versions and deletes that item',
+  test('Jellyfin never offers deleting a single version',
       () async {
     final deletes = <String>[];
     final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
@@ -1260,11 +1288,13 @@ void main() {
           {'Id': 'm1', 'Name': '4K', 'Width': 3840, 'Height': 2160},
           {'Id': 'alt1', 'Name': '1080p', 'Width': 1920, 'Height': 1080},
         ]});
-    expect(await jf.manageActions(movie), contains(ManageAction.deleteVersion));
-    // The primary version is the movie itself: deleting it deletes the movie.
-    expect(jf.deletableVersions(movie).map((v) => v.id), ['alt1']);
-    await jf.deleteVersion(movie, jf.deletableVersions(movie).single);
-    expect(deletes, ['/Items/alt1']);
+    // Deleting any version item deletes the movie's whole folder on the
+    // server (every version), so Jellyfin can't delete just one.
+    final actions = await jf.manageActions(movie);
+    expect(actions, contains(ManageAction.delete));
+    expect(actions, isNot(contains(ManageAction.deleteVersion)));
+    expect(jf.deletableVersions(movie), isEmpty);
+    expect(deletes, isEmpty);
   });
 
   test('Jellyfin manage needs an admin and maps its calls', () async {
@@ -1417,6 +1447,11 @@ void main() {
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
     expect(find.text('Enter the year as four digits.'), findsOneWidget);
+
+    await tester.enterText(find.widgetWithText(TextField, 'Year'), '');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text("The year can't be removed, only changed."), findsOneWidget);
 
     await tester.enterText(find.widgetWithText(TextField, 'Year'), '1999');
     await tester.enterText(find.widgetWithText(TextField, 'Genres'), 'Noir,  Drama ,');
@@ -2204,6 +2239,54 @@ void main() {
     expect(deletes, ['/library/metadata/42/media/2']);
     expect(find.text('Deleted the 720p version'), findsOneWidget);
     expect(find.text('Delete a version'), findsNothing); // panel closed
+  });
+
+  testWidgets('TV: a refused version delete keeps the remote on its row',
+      (tester) async {
+    Artwork.network = false;
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final deletes = <String>[];
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: fakePlexWithVersions(deletes, allow: true, refuse: true));
+    final movie = (await tester.runAsync(() => plex.item('42')))!;
+    final storage = await _storage(demo: false);
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        storageProvider.overrideWithValue(storage),
+        deviceIsTvProvider.overrideWithValue(true),
+        backendsProvider.overrideWithValue(<String, MediaBackend>{'p': plex}),
+      ],
+      retry: (_, _) => null,
+      child: MaterialApp(
+        home: Scaffold(body: Center(child: ManageButton(item: movie))),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete a version…'));
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select); // first version
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.pumpAndSettle();
+
+    expect(deletes, ['/library/metadata/42/media/1']);
+    expect(find.textContaining('must allow media deletion'), findsOneWidget);
+    final rows = find.descendant(
+        of: find.ancestor(
+            of: find.text('Delete a version'),
+            matching: find.byType(SingleChildScrollView)).first,
+        matching: find.byType(ListTile));
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    final first = tester.element(rows.at(0));
+    var onRow = identical(ctx, first);
+    ctx?.visitAncestorElements((e) => !(onRow = onRow || identical(e, first)));
+    expect(onRow, isTrue, reason: 'focus: ${FocusManager.instance.primaryFocus}');
   });
 
   test('home or away is decided from the server address', () {

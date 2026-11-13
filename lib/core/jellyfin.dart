@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import 'backend.dart';
@@ -493,27 +493,36 @@ class JellyfinBackend extends MediaBackend {
   /// fails the items are kept, so a row never goes blank.
   Future<List<MediaItem>> _dropHidden(List<MediaItem> items) async {
     if (hiddenLibraries.isEmpty || items.isEmpty) return items;
-    final ids = items.map((i) => i.id).toSet().join(',');
-    try {
-      final inHidden = await Future.wait(hiddenLibraries.map((lib) => _dio
-          .get<Map<String, dynamic>>('/Items', queryParameters: {
+    // Batches of 100 ids keep each URL well under server/proxy limits
+    // (~8 KB); a big collection would otherwise fail and show everything.
+    final all = items.map((i) => i.id).toSet().toList();
+    final batches = [
+      for (var n = 0; n < all.length; n += 100)
+        all.sublist(n, n + 100 > all.length ? all.length : n + 100).join(','),
+    ];
+    final hidden = <String>{};
+    await Future.wait([
+      for (final lib in hiddenLibraries)
+        for (final ids in batches)
+          _dio.get<Map<String, dynamic>>('/Items', queryParameters: {
             'userId': _uid,
             'ids': ids,
             'parentId': lib,
             'recursive': true,
             'enableImages': false,
             'enableUserData': false,
-          })));
-      final hidden = {
-        for (final r in inHidden)
-          for (final i in (r.data?['Items'] as List?) ?? const [])
-            '${(i as Map)['Id']}',
-      };
-      return items.where((i) => !hidden.contains(i.id)).toList();
-    } on DioException {
-      return items;
-    }
+          }).then((r) {
+            for (final i in (r.data?['Items'] as List?) ?? const []) {
+              hidden.add('${(i as Map)['Id']}');
+            }
+          }, onError: (_) {}), // a failed batch keeps its items
+    ]);
+    return items.where((i) => !hidden.contains(i.id)).toList();
   }
+
+  @visibleForTesting
+  Future<List<MediaItem>> dropHiddenForTest(List<MediaItem> items) =>
+      _dropHidden(items);
 
   static bool _hasVideo(Library l) => l.kind != LibraryKind.music;
   static bool _hasShows(Library l) =>
@@ -1080,30 +1089,6 @@ class JellyfinBackend extends MediaBackend {
     };
   }
 
-  /// Extra versions are items of their own; the primary one has the item's
-  /// id, and deleting it would delete the whole title.
-  @override
-  List<MediaVersion> deletableVersions(MediaItem item) => item.versions.length > 1
-      ? item.versions.where((v) => v.id != item.id).toList()
-      : const [];
-
-  @override
-  Future<void> deleteVersion(MediaItem item, MediaVersion version) async {
-    if (version.id == item.id) {
-      throw StateError('That version is the title itself; use Delete.');
-    }
-    try {
-      await _dio.delete<dynamic>('/Items/${version.id}');
-    } on DioException catch (e) {
-      final code = e.response?.statusCode;
-      if (code == 401 || code == 403) {
-        throw const BackendException(
-            'Your Jellyfin account isn\'t allowed to delete media.');
-      }
-      rethrow;
-    }
-  }
-
   static Set<ManageAction> _manageActionsFor(MediaKind kind) {
     return switch (kind) {
       MediaKind.movie || MediaKind.show => const {
@@ -1125,6 +1110,12 @@ class JellyfinBackend extends MediaBackend {
       _ => const {},
     };
   }
+
+  /// Never on Jellyfin: deleting any version's item deletes the movie's
+  /// whole folder on the server (`GetDeletePaths` → containing folder), so
+  /// every version would go. jellyfin-web doesn't offer it either.
+  @override
+  List<MediaVersion> deletableVersions(MediaItem item) => const [];
 
   @override
   Future<void> removeFromPlaylist(MediaItem playlist, MediaItem entry) async {

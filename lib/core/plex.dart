@@ -902,11 +902,13 @@ class PlexBackend extends MediaBackend {
       String? sortTitle,
       int? year,
       List<String>? genres}) {
-    // Genres are tags: add the new ones, remove the dropped ones.
-    final added = genres?.where((g) => !item.genres.contains(g)).toList();
+    // Genres are tags. `genre[n].tag.tag` sets the whole list (as Plex's
+    // editor and python-plexapi send it), and the dropped ones are removed.
+    // Plex matches tags ignoring case, so a case-only fix isn't "dropped".
+    final kept = {...?genres?.map((g) => g.toLowerCase())};
     final removed = genres == null
         ? null
-        : item.genres.where((g) => !genres.contains(g)).toList();
+        : item.genres.where((g) => !kept.contains(g.toLowerCase())).toList();
     final type = switch (item.kind) {
       MediaKind.movie => 1,
       MediaKind.show => 2,
@@ -932,7 +934,7 @@ class PlexBackend extends MediaBackend {
             },
             if (year != null) ...{'year.value': year, 'year.locked': 1},
             if (genres != null) ...{
-              for (final (n, g) in added!.indexed) 'genre[$n].tag.tag': g,
+              for (final (n, g) in genres.indexed) 'genre[$n].tag.tag': g,
               if (removed!.isNotEmpty) 'genre[].tag.tag-': removed.join(','),
               'genre.locked': 1,
             },

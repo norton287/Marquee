@@ -545,6 +545,11 @@ class _EditPanelState extends ConsumerState<_EditPanel> {
       final sort = _sortTitle.text.trim();
       if (sort != (item.sortTitle ?? '')) sortTitle = sort;
       final yearText = _year.text.trim();
+      if (yearText.isEmpty && item.year != null) {
+        setState(() => _error = const FormatException(
+            "The year can't be removed, only changed."));
+        return;
+      }
       if (yearText.isNotEmpty) {
         final y = int.tryParse(yearText);
         if (y == null || y < 1800 || y > 2200) {
@@ -1069,6 +1074,9 @@ class _DeleteVersionPanelState extends ConsumerState<_DeleteVersionPanel> {
   Object? _error;
 
   Future<void> _delete(MediaVersion v) async {
+    // Rows stay enabled while deleting (a disabled row drops the remote's
+    // focus); a second OK meanwhile is ignored here instead.
+    if (_deleting != null) return;
     final item = widget.item;
     final ok = await showDialog<bool>(
       context: context,
@@ -1157,7 +1165,7 @@ class _DeleteVersionPanelState extends ConsumerState<_DeleteVersionPanel> {
                       height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : null,
-              onTap: _deleting == null ? () => _delete(v) : null,
+              onTap: () => _delete(v),
             ),
         ],
       ),
