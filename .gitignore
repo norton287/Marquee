@@ -51,3 +51,6 @@ tool/server.log
 
 # Internal reference document (not published)
 BIBLE.md
+
+# Local release build script (not published)
+build-release.sh
