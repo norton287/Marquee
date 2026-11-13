@@ -633,32 +633,9 @@ class JellyfinBackend extends MediaBackend {
       final parents = visibleMovieLibs.length == movieLibs.length
           ? <String?>[null]
           : [for (final l in visibleMovieLibs) l.id];
-      final responses = await Future.wait(parents.map((p) =>
-          _dio.get<List<dynamic>>('/Movies/Recommendations', queryParameters: {
-            'userId': _uid,
-            'categoryLimit': 6,
-            'itemLimit': 16,
-            'fields': _listFields,
-            'parentId': ?p,
-          })));
-      for (final raw in responses.expand((r) => r.data ?? const [])) {
-        final c = raw as Map<String, dynamic>;
-        final items = _parseList(c['Items']);
-        if (items.isEmpty) continue;
-        final base = c['BaselineItemName'];
-        out.add(Shelf(
-          switch (c['RecommendationType']) {
-            'SimilarToRecentlyPlayed' => 'Because you watched $base',
-            'SimilarToLikedItem' => 'Because you liked $base',
-            'HasDirectorFromRecentlyPlayed' ||
-            'HasLikedDirector' =>
-              'Directed by $base',
-            'HasActorFromRecentlyPlayed' || 'HasLikedActor' => 'Starring $base',
-            _ => 'Recommended',
-          },
-          items,
-        ));
-      }
+      final lists = await Future.wait(
+          parents.map((p) => _movieRecommendations(p, categories: 6)));
+      out.addAll(lists.expand((l) => l));
     } on DioException {
       // Recommendations are optional.
     }
@@ -677,6 +654,97 @@ class JellyfinBackend extends MediaBackend {
       }
     }
     return out;
+  }
+
+  /// "Because you watched …" style rows, optionally for one library.
+  Future<List<Shelf>> _movieRecommendations(String? parentId,
+      {required int categories}) async {
+    final r = await _dio.get<List<dynamic>>('/Movies/Recommendations',
+        queryParameters: {
+          'userId': _uid,
+          'categoryLimit': categories,
+          'itemLimit': 16,
+          'fields': _listFields,
+          'parentId': ?parentId,
+        });
+    return [
+      for (final raw in r.data ?? const [])
+        if (_parseList((raw as Map)['Items']) case final items
+            when items.isNotEmpty)
+          Shelf(
+            switch (raw['RecommendationType']) {
+              'SimilarToRecentlyPlayed' =>
+                'Because you watched ${raw['BaselineItemName']}',
+              'SimilarToLikedItem' =>
+                'Because you liked ${raw['BaselineItemName']}',
+              'HasDirectorFromRecentlyPlayed' ||
+              'HasLikedDirector' =>
+                'Directed by ${raw['BaselineItemName']}',
+              'HasActorFromRecentlyPlayed' ||
+              'HasLikedActor' =>
+                'Starring ${raw['BaselineItemName']}',
+              _ => 'Recommended',
+            },
+            items,
+          ),
+    ];
+  }
+
+  @override
+  Future<List<Shelf>> recommended(Library library) async {
+    final shows = library.kind == LibraryKind.shows;
+    final id = library.id;
+    // Each row is optional: one failing (an older server, a plugin missing)
+    // must not blank the tab.
+    Future<List<MediaItem>> row(Future<List<MediaItem>> f) async {
+      try {
+        return await f;
+      } on DioException {
+        return const [];
+      }
+    }
+
+    final results = await Future.wait([
+      row(_list('/UserItems/Resume', {
+        'parentId': id,
+        'mediaTypes': 'Video',
+        'limit': 16,
+        'enableUserData': true,
+      })),
+      if (shows)
+        row(_list('/Shows/NextUp', {
+          'parentId': id,
+          'limit': 16,
+          'enableResumable': false,
+          'enableRewatching': false,
+        })),
+      row(_list('/Items/Latest', {'parentId': id, 'limit': 16})),
+      row(_list('/Items', {
+        'parentId': id,
+        'recursive': true,
+        'includeItemTypes': shows ? 'Series' : 'Movie',
+        'filters': 'IsUnplayed',
+        'sortBy': 'CommunityRating,SortName',
+        'sortOrder': 'Descending',
+        'limit': 16,
+      })),
+    ]);
+    var i = 0;
+    final out = <Shelf>[
+      Shelf('Continue watching', results[i++], landscape: true),
+      if (shows) Shelf('Next up', results[i++], landscape: true),
+      Shelf('Recently added', results[i++]),
+      Shelf(shows ? 'Top rated shows' : 'Top rated movies', results[i++]),
+    ];
+    if (library.kind == LibraryKind.movies) {
+      try {
+        // After "Recently added", like Jellyfin's own Suggestions tab.
+        out.insertAll(3, await _movieRecommendations(id, categories: 4));
+      } on DioException {
+        // Recommendations are optional.
+      }
+    }
+    return out.where((s) => s.items.isNotEmpty).toList();
   }
 
   @override

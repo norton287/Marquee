@@ -688,12 +688,21 @@ class MediaSliverGrid extends StatelessWidget {
       CardShape.landscape => l.landscapeWidth,
       CardShape.square => l.squareWidth,
     };
-    final gap = l.shelfGap + 2;
+    // TVs get a fixed column count so cards scale with the screen: most
+    // render at 2x (a 1080p panel is ~960 logical px wide), where the fixed
+    // shelf widths only fit three posters across and one row down.
+    final gap = l.tv ? 14.0 : l.shelfGap + 2;
+    final tvCols = switch (s) {
+      CardShape.poster => 7,
+      CardShape.square => 6,
+      CardShape.landscape => 4,
+    };
     return SliverPadding(
       padding: EdgeInsets.fromLTRB(l.gutter, 12, l.gutter, 32),
       sliver: SliverLayoutBuilder(builder: (context, c) {
-        final cols =
-            ((c.crossAxisExtent + gap) / (target + gap)).floor().clamp(2, 12);
+        final cols = l.tv
+            ? tvCols
+            : ((c.crossAxisExtent + gap) / (target + gap)).floor().clamp(2, 12);
         final w = (c.crossAxisExtent - gap * (cols - 1)) / cols;
         return SliverGrid.builder(
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(

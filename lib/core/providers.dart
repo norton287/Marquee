@@ -231,6 +231,12 @@ final collectionsProvider =
   return b.visible(await b.collections(null));
 });
 
+final libraryRecommendedProvider =
+    FutureProvider.family<List<Shelf>, LibraryRef>((ref, key) async {
+  final lib = await ref.watch(libraryProvider(key).future);
+  return ref.backend(key.serverId).recommended(lib);
+});
+
 final libraryCollectionsProvider =
     FutureProvider.family<List<MediaItem>, LibraryRef>((ref, key) async {
   final lib = await ref.watch(libraryProvider(key).future);

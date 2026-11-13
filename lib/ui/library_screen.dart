@@ -7,10 +7,14 @@ import 'libraries_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-enum _Tab { browse, artists, collections, folders }
+enum _Tab { recommended, browse, artists, collections, folders }
 
-/// One library: a paged grid with sorting and an unwatched filter, plus
-/// collections and the raw folder tree.
+bool _isVideo(LibraryKind k) =>
+    k == LibraryKind.movies || k == LibraryKind.shows;
+
+/// One library: Recommended rows (movies and TV, the default there), a paged
+/// grid with sorting and an unwatched filter, collections and the raw folder
+/// tree.
 class LibraryScreen extends ConsumerStatefulWidget {
   const LibraryScreen({super.key, required this.libraryRef});
   final LibraryRef libraryRef;
@@ -24,7 +28,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   final _scroll = ScrollController();
   final _items = <MediaItem>[];
   LibraryQuery _query = const LibraryQuery();
-  _Tab _tab = _Tab.browse;
+  /// The tab the user picked; until then, the library kind decides.
+  _Tab? _picked;
   Library? _library;
   int _total = 0;
   bool _loading = false;
@@ -46,6 +51,14 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     super.dispose();
   }
 
+  _Tab _tabFor(LibraryKind? kind) =>
+      _picked ??
+      (kind != null && _isVideo(kind) ? _Tab.recommended : _Tab.browse);
+
+  _Tab get _tab => _tabFor(_library?.kind);
+
+  bool get _paged => _tab == _Tab.browse || _tab == _Tab.artists;
+
   bool get _done => _library != null && _items.length >= _total;
 
   Future<void> _reload() async {
@@ -61,13 +74,17 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
   Future<void> _loadMore() async {
     if (_loading || (_done && _items.isNotEmpty) || _error != null) return;
-    if (_tab == _Tab.collections || _tab == _Tab.folders) return;
     final gen = _generation;
     setState(() => _loading = true);
     try {
       final Library lib = _library ??
           await ref.read(libraryProvider(widget.libraryRef).future);
       _library = lib;
+      // The other tabs come from providers; only the grid pages by hand.
+      if (!_paged) {
+        if (mounted) setState(() => _loading = false);
+        return;
+      }
       final page = await ref
           .read(backendsProvider)[lib.serverId]!
           .libraryItems(lib,
@@ -96,7 +113,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
   void _setTab(_Tab t) {
     if (t == _tab) return;
-    _tab = t;
+    _picked = t;
     _query = _query.copyWith(
         view: t == _Tab.artists ? LibraryView.artists : LibraryView.items);
     _reload();
@@ -108,13 +125,15 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     final lib = _library ??
         ref.watch(libraryProvider(widget.libraryRef)).value;
     final kind = lib?.kind ?? LibraryKind.other;
+    final tab = _tabFor(lib?.kind);
     final tabs = <(_Tab, String)>[
+      if (_isVideo(kind)) (_Tab.recommended, 'Recommended'),
       (_Tab.browse, kind == LibraryKind.music ? 'Albums' : 'All'),
       if (kind == LibraryKind.music) (_Tab.artists, 'Artists'),
       if (kind != LibraryKind.other) (_Tab.collections, 'Collections'),
       if (kind != LibraryKind.other) (_Tab.folders, 'Folders'),
     ];
-    final paged = _tab == _Tab.browse || _tab == _Tab.artists;
+    final paged = tab == _Tab.browse || tab == _Tab.artists;
 
     return Scaffold(
       appBar: AppBar(
@@ -141,11 +160,11 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               padding: EdgeInsets.fromLTRB(l.gutter, 4, l.gutter, 4),
               child: Row(
                 children: [
-                  for (final (tab, label) in tabs) ...[
+                  for (final (t, label) in tabs) ...[
                     ChoiceChip(
                       label: Text(label),
-                      selected: _tab == tab,
-                      onSelected: (_) => _setTab(tab),
+                      selected: t == tab,
+                      onSelected: (_) => _setTab(t),
                     ),
                     const SizedBox(width: 8),
                   ],
@@ -167,12 +186,18 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               ),
             ),
           ),
-          if (_tab == _Tab.collections)
+          if (tab == _Tab.recommended)
+            _RecommendedRows(
+              value: ref.watch(libraryRecommendedProvider(widget.libraryRef)),
+              onRetry: () => ref
+                  .invalidate(libraryRecommendedProvider(widget.libraryRef)),
+            )
+          else if (tab == _Tab.collections)
             _ProviderGrid(
               value: ref.watch(libraryCollectionsProvider(widget.libraryRef)),
               empty: 'No collections in this library',
             )
-          else if (_tab == _Tab.folders)
+          else if (tab == _Tab.folders)
             _ProviderGrid(
               value: ref.watch(libraryFoldersProvider(widget.libraryRef)),
               empty: 'This library has no folders to browse',
@@ -204,6 +229,49 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// The Recommended tab: the server's rows for this library.
+class _RecommendedRows extends StatelessWidget {
+  const _RecommendedRows({required this.value, required this.onRetry});
+  final AsyncValue<List<Shelf>> value;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final tv = AppLayout.of(context).tv;
+    return value.when(
+      loading: () => SliverList.list(children: const [
+        ShelfSkeleton(title: '', shape: CardShape.landscape),
+        ShelfSkeleton(title: '', shape: CardShape.poster),
+      ]),
+      error: (e, _) => SliverFillRemaining(
+          hasScrollBody: false,
+          child: MessageView.error(e, onRetry: onRetry)),
+      data: (shelves) => shelves.isEmpty
+          ? const SliverFillRemaining(
+              hasScrollBody: false,
+              child: MessageView(
+                icon: Icons.auto_awesome_outlined,
+                title: 'Nothing to recommend yet',
+                body: 'Watch something from this library and suggestions '
+                    'will show up here.',
+              ),
+            )
+          : SliverList.list(children: [
+              for (var i = 0; i < shelves.length; i++)
+                MediaShelf(
+                  title: shelves[i].title,
+                  items: shelves[i].items,
+                  shape: shelves[i].landscape ? CardShape.landscape : null,
+                  // Wide rows are continue watching / next up: play them.
+                  playOnTap: shelves[i].landscape,
+                  autofocusFirst: tv && i == 0,
+                ),
+              const SizedBox(height: 24),
+            ]),
     );
   }
 }

@@ -88,6 +88,13 @@ abstract class MediaBackend {
   Future<MediaItem> item(String id, {MediaKind? kind});
   Future<List<MediaItem>> similar(MediaItem item);
   Future<List<Shelf>> discover();
+
+  /// The Recommended tab of one movie or TV library: rows such as continue
+  /// watching, recently added and "because you watched". The default is just
+  /// the library's recently added row.
+  Future<List<Shelf>> recommended(Library library) async =>
+      [Shelf('Recently added', await recentlyAdded(library))];
+
   Future<List<MediaItem>> search(String query);
   Future<MediaItem?> nextEpisode(MediaItem episode);
   Future<List<Marker>> markers(MediaItem item);

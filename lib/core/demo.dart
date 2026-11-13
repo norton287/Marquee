@@ -418,6 +418,27 @@ class DemoBackend extends MediaBackend {
       ];
 
   @override
+  Future<List<Shelf>> recommended(Library library) async {
+    final shows = library.kind == LibraryKind.shows;
+    final pool = _liveAll(_of(library));
+    final inProgress = _liveAll(_everything.where((i) =>
+        _progress.containsKey(i.id) &&
+        !_played.contains(i.id) &&
+        (shows ? i.kind == MediaKind.episode : i.kind == MediaKind.movie)));
+    final genre = _genres[1];
+    return [
+      Shelf('Continue watching', inProgress, landscape: true),
+      if (shows) Shelf('Next up', await nextUp(), landscape: true),
+      Shelf('Recently added', pool.take(12).toList()),
+      Shelf(shows ? 'Top rated shows' : 'Top rated movies',
+          [...pool]..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0))),
+      if (!shows)
+        Shelf('More $genre',
+            pool.where((i) => i.genres.contains(genre)).toList()),
+    ].where((s) => s.items.isNotEmpty).toList();
+  }
+
+  @override
   Future<List<MediaItem>> search(String query) async {
     final q = query.toLowerCase();
     return _liveAll([..._movies, ..._shows, ..._albums].where((i) =>

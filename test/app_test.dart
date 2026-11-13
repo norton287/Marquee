@@ -85,6 +85,9 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('TV Shows'));
     await tester.pumpAndSettle();
+    // TV libraries open on Recommended; the show grid is under All.
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Signal Fire'));
     await tester.pumpAndSettle();
     expect(find.text('Season 1'), findsOneWidget);
@@ -546,6 +549,116 @@ void main() {
             .findAncestorWidgetOfExactType<OptionTile>()!
             .label,
         'Track 34');
+  });
+
+  testWidgets('video libraries open on Recommended', (tester) async {
+    await _pump(tester, const Size(1440, 900));
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Movies').last);
+    await tester.pumpAndSettle();
+    final chip = tester.widget<ChoiceChip>(
+        find.widgetWithText(ChoiceChip, 'Recommended'));
+    expect(chip.selected, isTrue);
+    expect(find.text('Recently added'), findsOneWidget);
+    expect(find.text('Top rated movies'), findsOneWidget);
+    // Sorting and the unwatched filter belong to the All grid.
+    expect(find.text('Unwatched'), findsNothing);
+
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
+    expect(find.text('Unwatched'), findsOneWidget);
+    expect(find.text('Recently added'), findsNothing);
+  });
+
+  test('Plex library hubs become Recommended rows', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        expect(o.path, '/hubs/sections/3');
+        h.resolve(Response(requestOptions: o, statusCode: 200, data: {
+          'MediaContainer': {
+            'Hub': [
+              {
+                'hubIdentifier': 'movie.inprogress.3',
+                'title': 'Continue Watching',
+                'Metadata': [
+                  {'ratingKey': '1', 'type': 'movie', 'title': 'A'}
+                ],
+              },
+              {'hubIdentifier': 'movie.empty', 'title': 'Empty'},
+              {
+                'hubIdentifier': 'movie.recentlyadded.3',
+                'title': 'Recently Added Movies',
+                'Metadata': [
+                  {'ratingKey': '2', 'type': 'movie', 'title': 'B'}
+                ],
+              },
+            ],
+          },
+        }));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    final rows = await plex.recommended(const Library(
+        serverId: 'p', id: '3', title: 'Movies', kind: LibraryKind.movies));
+    expect(rows.map((r) => r.title),
+        ['Continue Watching', 'Recently Added Movies']);
+    expect(rows.map((r) => r.landscape), [true, false]);
+  });
+
+  test('Jellyfin builds Recommended rows scoped to the library', () async {
+    final paths = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        paths.add(o.path);
+        expect(o.queryParameters['parentId'], 'tv');
+        final empty = o.path == '/Items/Latest';
+        h.resolve(Response(requestOptions: o, statusCode: 200, data: {
+          'Items': [
+            if (!empty) {'Id': 'x', 'Type': 'Series', 'Name': 'X'},
+          ],
+        }));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    final rows = await jf.recommended(const Library(
+        serverId: 'j', id: 'tv', title: 'TV', kind: LibraryKind.shows));
+    expect(paths, containsAll(['/UserItems/Resume', '/Shows/NextUp', '/Items']));
+    // The empty "Recently added" row is dropped.
+    expect(rows.map((r) => r.title),
+        ['Continue watching', 'Next up', 'Top rated shows']);
+    expect(rows.map((r) => r.landscape), [true, true, false]);
+  });
+
+  testWidgets('TV library grid fits seven posters across', (tester) async {
+    // A 1080p TV at the usual 2x density: 960x540 logical pixels.
+    tester.view.devicePixelRatio = 2;
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    tester.view.devicePixelRatio = 2;
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Movies').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
+
+    final cards = find.byType(MediaCard);
+    final tops = [
+      for (final e in cards.evaluate()) tester.getTopLeft(find.byWidget(e.widget)).dy
+    ];
+    final firstRow = tops.where((t) => t == tops.first).length;
+    expect(firstRow, 7);
+    // At least two full rows fit on the screen.
+    final rowTops = tops.toSet().toList()..sort();
+    expect(rowTops.length, greaterThanOrEqualTo(2));
+    final secondRowBottom =
+        tester.getBottomLeft(find.byWidget(cards.evaluate().elementAt(7).widget)).dy;
+    expect(secondRowBottom, lessThanOrEqualTo(540));
   });
 
   test('backend errors reach the user verbatim', () {

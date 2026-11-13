@@ -643,6 +643,34 @@ class PlexBackend extends MediaBackend {
     return out;
   }
 
+  /// The library's own hubs, as on the Recommended tab of Plex's apps.
+  @override
+  Future<List<Shelf>> recommended(Library library) async {
+    final c = await _get('/hubs/sections/${library.id}', {
+      'count': 16,
+      'includeLibraryPlaylists': 0,
+      'includeStations': 0,
+      'includeRecentChannels': 0,
+    });
+    final out = <Shelf>[];
+    for (final raw in (c['Hub'] as List?) ?? const []) {
+      final h = raw as Map<String, dynamic>;
+      final items = _items(h)
+          .where((i) => i.kind != MediaKind.folder && i.kind != MediaKind.unknown)
+          .toList();
+      if (items.isEmpty) continue;
+      final id = '${h['hubIdentifier']}';
+      out.add(Shelf(
+        '${h['title']}',
+        items,
+        landscape: id.contains('inprogress') ||
+            id.contains('ondeck') ||
+            id.contains('continue'),
+      ));
+    }
+    return out;
+  }
+
   @override
   Future<List<MediaItem>> search(String query) async {
     final c = await _get('/hubs/search',
