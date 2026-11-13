@@ -661,6 +661,41 @@ void main() {
     expect(secondRowBottom, lessThanOrEqualTo(540));
   });
 
+  testWidgets('TV shelves use the same compact cards as grids',
+      (tester) async {
+    // 1080p TV at 2x: 960 logical px wide. Content = 960 - rail - gutters.
+    tester.view.devicePixelRatio = 2;
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    tester.view.devicePixelRatio = 2;
+    await tester.pumpAndSettle();
+    const content = 960 - 104 - 48 * 2;
+    const poster = (content - 14 * 6) / 7; // ~96.6, was 176
+    const wide = (content - 14 * 3) / 4; // ~179.5, was 340
+
+    final widths = {
+      for (final e in find.byType(MediaCard).evaluate())
+        (e.widget as MediaCard).shape:
+            tester.getSize(find.byWidget(e.widget)).width,
+    };
+    expect(widths[CardShape.landscape], closeTo(wide, 0.5));
+    // "New in Movies" is further down the page.
+    await tester.scrollUntilVisible(find.text('New in Movies'), 200,
+        scrollable: find.byType(Scrollable).first);
+    final posterCard = find.byWidgetPredicate(
+        (w) => w is MediaCard && w.shape == CardShape.poster);
+    expect(tester.getSize(posterCard.first).width, closeTo(poster, 0.5));
+
+    // A grid poster in a library is exactly the same size.
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Movies').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(MediaCard).first).width,
+        closeTo(poster, 0.5));
+  });
+
   test('backend errors reach the user verbatim', () {
     expect(friendlyError(const BackendException('That PIN wasn\'t right.')),
         'That PIN wasn\'t right.');

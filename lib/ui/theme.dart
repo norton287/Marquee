@@ -184,10 +184,31 @@ class AppLayout extends InheritedWidget {
   bool get sideNav => !phone;
 
   double get gutter => tv ? 48 : (phone ? 16 : (tablet ? 24 : 36));
-  double get posterWidth => tv ? 176 : (phone ? 116 : (tablet ? 140 : 156));
-  double get landscapeWidth => tv ? 340 : (phone ? 248 : (tablet ? 280 : 304));
-  double get squareWidth => tv ? 190 : (phone ? 132 : 156);
-  double get shelfGap => tv ? 20 : (phone ? 10 : 14);
+  double get posterWidth =>
+      tv ? tvCardWidth(tvPosterColumns) : (phone ? 116 : (tablet ? 140 : 156));
+  double get landscapeWidth => tv
+      ? tvCardWidth(tvLandscapeColumns)
+      : (phone ? 248 : (tablet ? 280 : 304));
+  double get squareWidth =>
+      tv ? tvCardWidth(tvSquareColumns) : (phone ? 132 : 156);
+  double get shelfGap => tv ? 14 : (phone ? 10 : 14);
+
+  /// Width of the side rail on TV (see `_SideNav` in shell.dart).
+  static const tvRailWidth = 104.0;
+
+  /// On TV, cards are a fraction of the screen rather than fixed pixels:
+  /// most TVs render at 2x (a 1080p panel is ~960 logical px wide), where
+  /// fixed widths showed only three posters across. Shelves and grids share
+  /// these column counts, so a card is the same size everywhere.
+  static const tvPosterColumns = 7;
+  static const tvSquareColumns = 6;
+  static const tvLandscapeColumns = 4;
+
+  /// The card width that fits [columns] across the TV content area.
+  double tvCardWidth(int columns) {
+    final content = width - tvRailWidth - gutter * 2;
+    return ((content - shelfGap * (columns - 1)) / columns).clamp(80.0, 600.0);
+  }
 
   static AppLayout of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<AppLayout>()!;

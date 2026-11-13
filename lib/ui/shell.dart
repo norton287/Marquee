@@ -182,7 +182,7 @@ class _SideNav extends ConsumerWidget {
             (s.homeToken ?? s.accountToken) != null)
         .firstOrNull;
     return Container(
-      width: expanded ? 216 : (tv ? 104 : 84),
+      width: expanded ? 216 : (tv ? AppLayout.tvRailWidth : 84),
       decoration: const BoxDecoration(
         border: Border(right: BorderSide(color: Palette.outline)),
       ),
