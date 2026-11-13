@@ -5,6 +5,7 @@ import '../core/models.dart';
 import '../core/providers.dart';
 import '../core/seerr.dart';
 import 'explore_screen.dart';
+import 'phone_input.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -79,7 +80,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               padding: EdgeInsets.fromLTRB(l.gutter, 16, l.gutter, 6),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 720),
-                child: TextField(
+                child: RemoteTextField(
+                  child: TextField(
                   controller: _controller,
                   autofocus: !l.tv && widget.initialQuery == null && !l.phone,
                   textInputAction: TextInputAction.search,
@@ -88,7 +90,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                     hintText: 'Movies, shows, music, people…',
                     prefixIcon: const Icon(Icons.search_rounded),
                     suffixIcon: _query.isEmpty
-                        ? null
+                        ? phoneTypeButton(context, _controller,
+                            label: 'Search',
+                            onText: (v) => setState(() => _query = v))
                         : IconButton(
                             tooltip: 'Clear',
                             icon: const Icon(Icons.close_rounded),
@@ -99,7 +103,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                           ),
                   ),
                   onChanged: (v) => setState(() => _query = v),
-                ),
+                )),
               ),
             ),
             Expanded(

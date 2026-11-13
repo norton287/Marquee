@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/backend.dart';
@@ -994,6 +995,69 @@ class _SelectMenuState extends State<SelectMenu> {
           ),
       ],
       builder: (context, _, _) => widget.builder(context, _button, _toggle),
+    );
+  }
+}
+
+/// Wraps a [TextField] so a TV remote can leave it: a text field keeps every
+/// arrow key for its caret, so without this the D-pad is stuck inside.
+/// ↑/↓ leave a one-line field ([multiline]: only from its first/last line).
+/// On TV, → at the end of the text and ← at its start move on too, which is
+/// how the remote reaches a field's suffix button (📱 type on your phone).
+class RemoteTextField extends StatelessWidget {
+  const RemoteTextField({super.key, required this.child, this.multiline});
+  final Widget child;
+
+  /// For a multi-line field: ↑/↓ only leave it from the first / last line,
+  /// so a keyboard can still move between lines.
+  final TextEditingController? multiline;
+
+  TextEditingController? get _controller =>
+      multiline ?? (child is TextField ? (child as TextField).controller : null);
+
+  bool _atEdge(TraversalDirection dir) {
+    final c = _controller;
+    if (c == null) return true;
+    final caret = c.selection.isValid ? c.selection.extentOffset : c.text.length;
+    final at = caret.clamp(0, c.text.length);
+    return switch (dir) {
+      TraversalDirection.up =>
+        multiline == null || !c.text.substring(0, at).contains('\n'),
+      TraversalDirection.down =>
+        multiline == null || !c.text.substring(at).contains('\n'),
+      TraversalDirection.left => c.selection.isCollapsed && at == 0,
+      TraversalDirection.right =>
+        c.selection.isCollapsed && at == c.text.length,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tv = ProviderScope.containerOf(context, listen: false).read(tvProvider);
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (node, event) {
+        if (event is KeyUpEvent) return KeyEventResult.ignored;
+        final dir = switch (event.logicalKey) {
+          LogicalKeyboardKey.arrowDown => TraversalDirection.down,
+          LogicalKeyboardKey.arrowUp => TraversalDirection.up,
+          LogicalKeyboardKey.arrowLeft when tv => TraversalDirection.left,
+          LogicalKeyboardKey.arrowRight when tv => TraversalDirection.right,
+          _ => null,
+        };
+        // Only while the text itself has focus (not the suffix button).
+        final primary = FocusManager.instance.primaryFocus;
+        final inText = primary?.context?.widget is Focus &&
+            (primary!.context!.widget as Focus).debugLabel == 'EditableText';
+        if (dir == null || !inText || !_atEdge(dir)) {
+          return KeyEventResult.ignored;
+        }
+        return primary.focusInDirection(dir)
+            ? KeyEventResult.handled
+            : KeyEventResult.ignored;
+      },
+      child: child,
     );
   }
 }

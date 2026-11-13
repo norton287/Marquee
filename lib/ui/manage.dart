@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../core/backend.dart';
 import '../core/models.dart';
 import '../core/providers.dart';
+import 'phone_input.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -216,43 +217,6 @@ class _DeleteDialog extends StatelessWidget {
   }
 }
 
-/// Wraps a text field so ↑/↓ on a remote move focus out of it. Text fields
-/// normally keep the arrow keys, which traps a D-pad inside the field.
-class _RemoteTextField extends StatelessWidget {
-  const _RemoteTextField({required this.child, this.multiline});
-  final Widget child;
-
-  /// For a multi-line field: ↑/↓ only leave it from the first / last line,
-  /// so a keyboard can still move between lines.
-  final TextEditingController? multiline;
-
-  bool _atEdge(TraversalDirection dir) {
-    final c = multiline;
-    if (c == null) return true;
-    final caret = c.selection.isValid ? c.selection.extentOffset : 0;
-    return dir == TraversalDirection.up
-        ? !c.text.substring(0, caret.clamp(0, c.text.length)).contains('\n')
-        : !c.text.substring(caret.clamp(0, c.text.length)).contains('\n');
-  }
-
-  @override
-  Widget build(BuildContext context) => Focus(
-        canRequestFocus: false,
-        skipTraversal: true,
-        onKeyEvent: (node, event) {
-          if (event is KeyUpEvent) return KeyEventResult.ignored;
-          final dir = switch (event.logicalKey) {
-            LogicalKeyboardKey.arrowDown => TraversalDirection.down,
-            LogicalKeyboardKey.arrowUp => TraversalDirection.up,
-            _ => null,
-          };
-          if (dir == null || !_atEdge(dir)) return KeyEventResult.ignored;
-          FocusManager.instance.primaryFocus?.focusInDirection(dir);
-          return KeyEventResult.handled;
-        },
-        child: child,
-      );
-}
 
 class _PanelTitle extends StatelessWidget {
   const _PanelTitle(this.title, {this.subtitle});
@@ -453,14 +417,17 @@ class _UploadPanelState extends ConsumerState<_UploadPanel> {
                 const SizedBox(height: 24),
                 const Text('FROM A LINK', style: heading),
                 const SizedBox(height: 8),
-                _RemoteTextField(
+                RemoteTextField(
                   child: TextField(
                     controller: _url,
                     enabled: !_busy,
                     keyboardType: TextInputType.url,
                     textInputAction: TextInputAction.done,
-                    decoration: const InputDecoration(
-                        hintText: 'https://…/image.jpg'),
+                    decoration: InputDecoration(
+                        hintText: 'https://…/image.jpg',
+                        suffixIcon: phoneTypeButton(context, _url,
+                            label: 'Image link',
+                            onText: (_) => setState(() {}))),
                     onChanged: (_) => setState(() {}),
                     onSubmitted: (_) =>
                         _urlOk ? _upload(url: _url.text.trim()) : null,
@@ -618,18 +585,21 @@ class _EditPanelState extends ConsumerState<_EditPanel> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _RemoteTextField(
+                RemoteTextField(
                   child: TextField(
                     controller: _title,
                     autofocus: true,
                     enabled: !_saving,
                     textCapitalization: TextCapitalization.words,
                     textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(labelText: 'Title'),
+                    decoration: InputDecoration(
+                        labelText: 'Title',
+                        suffixIcon:
+                            phoneTypeButton(context, _title, label: 'Title')),
                   ),
                 ),
                 const SizedBox(height: 14),
-                _RemoteTextField(
+                RemoteTextField(
                   multiline: _summary,
                   child: TextField(
                     controller: _summary,
@@ -638,24 +608,29 @@ class _EditPanelState extends ConsumerState<_EditPanel> {
                     maxLines: 10,
                     textCapitalization: TextCapitalization.sentences,
                     keyboardType: TextInputType.multiline,
-                    decoration: const InputDecoration(
-                        labelText: 'Summary', alignLabelWithHint: true),
+                    decoration: InputDecoration(
+                        labelText: 'Summary',
+                        alignLabelWithHint: true,
+                        suffixIcon: phoneTypeButton(context, _summary,
+                            label: 'Summary', multiline: true)),
                   ),
                 ),
                 if (_full) ...[
                   const SizedBox(height: 14),
-                  _RemoteTextField(
+                  RemoteTextField(
                     child: TextField(
                       controller: _sortTitle,
                       enabled: !_saving,
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                           labelText: 'Sort title',
-                          helperText: 'Leave empty to sort by the title.'),
+                          helperText: 'Leave empty to sort by the title.',
+                          suffixIcon: phoneTypeButton(context, _sortTitle,
+                              label: 'Sort title')),
                     ),
                   ),
                   const SizedBox(height: 14),
-                  _RemoteTextField(
+                  RemoteTextField(
                     child: TextField(
                       controller: _year,
                       enabled: !_saving,
@@ -665,14 +640,16 @@ class _EditPanelState extends ConsumerState<_EditPanel> {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  _RemoteTextField(
+                  RemoteTextField(
                     child: TextField(
                       controller: _genres,
                       enabled: !_saving,
                       textCapitalization: TextCapitalization.words,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                           labelText: 'Genres',
-                          helperText: 'Separate with commas.'),
+                          helperText: 'Separate with commas.',
+                          suffixIcon: phoneTypeButton(context, _genres,
+                              label: 'Genres')),
                     ),
                   ),
                 ],
@@ -808,10 +785,13 @@ class _MatchPanelState extends ConsumerState<_MatchPanel> {
             child: Row(
               children: [
                 Expanded(
-                  child: _RemoteTextField(
+                  child: RemoteTextField(
                     child: TextField(
                       controller: _title,
-                      decoration: const InputDecoration(labelText: 'Title'),
+                      decoration: InputDecoration(
+                        labelText: 'Title',
+                        suffixIcon:
+                            phoneTypeButton(context, _title, label: 'Title')),
                       textInputAction: TextInputAction.search,
                       onSubmitted: (_) => _search(),
                     ),
@@ -820,7 +800,7 @@ class _MatchPanelState extends ConsumerState<_MatchPanel> {
                 const SizedBox(width: 10),
                 SizedBox(
                   width: 84,
-                  child: _RemoteTextField(
+                  child: RemoteTextField(
                     child: TextField(
                       controller: _year,
                       decoration: const InputDecoration(labelText: 'Year'),
@@ -1519,12 +1499,15 @@ class _NewPlaylistDialogState extends State<_NewPlaylistDialog> {
   @override
   Widget build(BuildContext context) => AlertDialog(
         title: const Text('New playlist'),
-        content: _RemoteTextField(
+        content: RemoteTextField(
           child: TextField(
             controller: _name,
             autofocus: true,
             textCapitalization: TextCapitalization.sentences,
-            decoration: const InputDecoration(hintText: 'Playlist name'),
+            decoration: InputDecoration(
+                hintText: 'Playlist name',
+                suffixIcon:
+                    phoneTypeButton(context, _name, label: 'Playlist name')),
             onSubmitted: (v) => Navigator.pop(context, v),
           ),
         ),

@@ -9,6 +9,7 @@ import '../core/providers.dart';
 import '../core/seerr.dart';
 import '../core/storage.dart';
 import 'add_server_screen.dart';
+import 'phone_input.dart';
 import 'libraries_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -512,14 +513,17 @@ class _SeerrDialogState extends ConsumerState<_SeerrDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TextField(
+              RemoteTextField(
+                child: TextField(
                 controller: _url,
                 autofocus: true,
                 autocorrect: false,
                 keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
-                    hintText: 'Address, e.g. 192.168.1.20:5055'),
-              ),
+                decoration: InputDecoration(
+                    hintText: 'Address, e.g. 192.168.1.20:5055',
+                    suffixIcon: phoneTypeButton(context, _url,
+                        label: 'Seerr address')),
+              )),
               const SizedBox(height: 14),
               Wrap(
                 spacing: 8,
@@ -540,22 +544,29 @@ class _SeerrDialogState extends ConsumerState<_SeerrDialog> {
               ),
               const SizedBox(height: 14),
               if (_mode == 'jellyfin' || _mode == 'local') ...[
-                TextField(
+                RemoteTextField(
+                  child: TextField(
                   controller: _user,
                   autocorrect: false,
                   decoration: InputDecoration(
-                      hintText: _mode == 'local' ? 'Email' : 'Username'),
-                ),
+                      hintText: _mode == 'local' ? 'Email' : 'Username',
+                      suffixIcon: phoneTypeButton(context, _user,
+                          label: _mode == 'local' ? 'Email' : 'Username')),
+                )),
                 const SizedBox(height: 10),
               ],
               if (_mode != 'plex')
-                TextField(
+                RemoteTextField(
+                  child: TextField(
                   controller: _secret,
                   obscureText: true,
                   decoration: InputDecoration(
-                      hintText: _mode == 'key' ? 'API key' : 'Password'),
+                      hintText: _mode == 'key' ? 'API key' : 'Password',
+                      suffixIcon: phoneTypeButton(context, _secret,
+                          label: _mode == 'key' ? 'API key' : 'Password',
+                          obscure: _mode != 'key')),
                   onSubmitted: (_) => _connect(),
-                )
+                ))
               else
                 const Text(
                   'Signs in to Seerr with the Plex account already linked '

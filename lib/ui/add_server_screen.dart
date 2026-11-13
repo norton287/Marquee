@@ -12,6 +12,7 @@ import '../core/models.dart';
 import '../core/plex.dart';
 import '../core/providers.dart';
 import 'music.dart';
+import 'phone_input.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -1003,18 +1004,21 @@ class _JellyfinFlowState extends ConsumerState<_JellyfinFlow> {
             style: TextStyle(color: Palette.muted),
           ),
           const SizedBox(height: 20),
-          TextField(
+          RemoteTextField(
+            child: TextField(
             controller: _address,
             autofocus: true,
             autocorrect: false,
             keyboardType: TextInputType.url,
             textInputAction: TextInputAction.go,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: '192.168.1.20:8096 or jellyfin.example.com',
-              prefixIcon: Icon(Icons.dns_outlined),
+              prefixIcon: const Icon(Icons.dns_outlined),
+              suffixIcon: phoneTypeButton(context, _address,
+                  label: 'Server address'),
             ),
             onSubmitted: (_) => _locate(),
-          ),
+          )),
           const SizedBox(height: 16),
           FilledButton(
             onPressed: _busy ? null : _locate,
@@ -1071,29 +1075,34 @@ class _JellyfinFlowState extends ConsumerState<_JellyfinFlow> {
             child: const Text('Use a password instead'),
           ),
         ] else ...[
-          TextField(
+          RemoteTextField(
+            child: TextField(
             controller: _user,
             autofocus: true,
             autocorrect: false,
             textInputAction: TextInputAction.next,
             autofillHints: const [AutofillHints.username],
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: 'Username',
-              prefixIcon: Icon(Icons.person_outline),
+              prefixIcon: const Icon(Icons.person_outline),
+              suffixIcon: phoneTypeButton(context, _user, label: 'Username'),
             ),
-          ),
+          )),
           const SizedBox(height: 10),
-          TextField(
+          RemoteTextField(
+            child: TextField(
             controller: _password,
             obscureText: true,
             textInputAction: TextInputAction.done,
             autofillHints: const [AutofillHints.password],
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: 'Password',
-              prefixIcon: Icon(Icons.lock_outline),
+              prefixIcon: const Icon(Icons.lock_outline),
+              suffixIcon: phoneTypeButton(context, _password,
+                  label: 'Password', obscure: true),
             ),
             onSubmitted: (_) => _signIn(),
-          ),
+          )),
           const SizedBox(height: 16),
           FilledButton(
             onPressed: _busy ? null : _signIn,

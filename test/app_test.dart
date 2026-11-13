@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +13,7 @@ import 'package:marquee/core/demo.dart';
 import 'package:marquee/core/jellyfin.dart';
 import 'package:marquee/core/models.dart';
 import 'package:marquee/core/network.dart';
+import 'package:marquee/core/phone_input.dart';
 import 'package:marquee/core/plex.dart';
 import 'package:marquee/core/providers.dart';
 import 'package:marquee/core/storage.dart';
@@ -18,6 +21,7 @@ import 'package:marquee/ui/add_server_screen.dart';
 import 'package:marquee/ui/libraries_screen.dart';
 import 'package:marquee/ui/manage.dart';
 import 'package:marquee/ui/music.dart';
+import 'package:marquee/ui/phone_input.dart';
 import 'package:marquee/ui/player/player_widgets.dart';
 import 'package:marquee/ui/widgets.dart';
 
@@ -2289,6 +2293,174 @@ void main() {
     expect(onRow, isTrue, reason: 'focus: ${FocusManager.instance.primaryFocus}');
   });
 
+  test('phone input session takes one answer, then stops', () async {
+    final session = await PhoneInputSession.start(
+        label: 'Password', obscure: true, host: InternetAddress.loopbackIPv4);
+    expect(session.url, matches(RegExp(r'^http://127\.0\.0\.1:\d+/[A-Z2-9]{6}$')));
+    // flutter_test stubs HttpClient (every request → 400); use a real one.
+    final client =
+        HttpOverrides.runWithHttpOverrides(HttpClient.new, _RealHttp());
+    addTearDown(() => client.close(force: true));
+    Future<(int, String)> get(String url) async {
+      final r = await (await client.getUrl(Uri.parse(url))).close();
+      return (r.statusCode, await r.transform(utf8.decoder).join());
+    }
+
+    final (code, page) = await get(session.url);
+    expect(code, 200);
+    expect(page, contains('Password'));
+    expect(page, contains('type="password"')); // dots on the phone too
+    expect((await get('${Uri.parse(session.url).origin}/WRONG2')).$1, 404);
+
+    final post = await client.postUrl(Uri.parse(session.url));
+    post.headers.contentType = ContentType(
+        'application', 'x-www-form-urlencoded', charset: 'utf-8');
+    post.write('v=${Uri.encodeQueryComponent('p@ss wörd')}');
+    final res = await post.close();
+    expect(res.statusCode, 200);
+    await res.drain<void>();
+    expect(await session.value, 'p@ss wörd');
+    // One answer only: the TV stops listening.
+    // (a refused or dropped connection, depending on timing).
+    await expectLater(get(session.url), throwsA(isA<IOException>()));
+  });
+
+  test('phone input: any case, current text, line breaks, size limit',
+      () async {
+    final client =
+        HttpOverrides.runWithHttpOverrides(HttpClient.new, _RealHttp());
+    addTearDown(() => client.close(force: true));
+    Future<(int, String)> get(String url) async {
+      final r = await (await client.getUrl(Uri.parse(url))).close();
+      return (r.statusCode, await r.transform(utf8.decoder).join());
+    }
+    Future<int> post(String url, String body) async {
+      final req = await client.postUrl(Uri.parse(url));
+      req.headers.contentType = ContentType(
+          'application', 'x-www-form-urlencoded', charset: 'utf-8');
+      req.write(body);
+      final res = await req.close();
+      await res.drain<void>();
+      return res.statusCode;
+    }
+
+    final s = await PhoneInputSession.start(
+        label: 'Summary', multiline: true, initial: 'Old <b>text</b>',
+        host: InternetAddress.loopbackIPv4);
+    // Phones type lowercase in the address bar.
+    final (code, page) = await get(s.url.toLowerCase());
+    expect(code, 200);
+    // The phone starts from the field's text (escaped), so one typo is one fix.
+    expect(page, contains('Old &lt;b&gt;text'));
+    expect(page, isNot(contains('<b>')));
+    // Too big: refused, session still waiting.
+    expect(await post(s.url, 'v=${'x' * (70 * 1024)}'), 413);
+    expect(await post(s.url, 'v=${Uri.encodeQueryComponent('one\r\ntwo')}'), 200);
+    expect(await s.value, 'one\ntwo'); // browsers send textarea breaks as CRLF
+
+    // Passwords never go back to the phone.
+    final p = await PhoneInputSession.start(
+        label: 'Password', obscure: true, initial: 'secret',
+        host: InternetAddress.loopbackIPv4);
+    expect((await get(p.url)).$2, isNot(contains('secret')));
+    await p.close();
+  });
+
+  test('phone input prefers the Wi-Fi or Ethernet address', () {
+    final picked = PhoneInputSession.pickHomeAddress([
+      ('tun0', '100.101.1.2'), ('p2p0', '192.168.49.1'),
+      ('eth9', '169.254.3.4'), ('wlan0', '192.168.1.50'),
+    ]);
+    expect(picked, '192.168.1.50');
+    expect(PhoneInputSession.pickHomeAddress([('tun0', '100.101.1.2')]),
+        '100.101.1.2'); // still better than nothing
+    expect(PhoneInputSession.pickHomeAddress([('wlan0', '8.8.8.8')]), isNull);
+  });
+
+  testWidgets('TV: Right from the rail still lands in the search field',
+      (tester) async {
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    await tester.tap(find.text('Search').first);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Type on your phone'), findsOneWidget);
+    // Put focus on the rail's Search item, then press Right.
+    final rail = find.ancestor(
+        of: find.text('Search').first, matching: find.byType(Focus)).first;
+    Focus.of(tester.element(rail)).requestFocus();
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pumpAndSettle();
+    // The field's own focus node, not the 📱 button beside it.
+    final focused = FocusManager.instance.primaryFocus?.context?.widget;
+    expect(focused is Focus ? focused.debugLabel : focused, 'EditableText');
+  });
+
+  testWidgets('TV: a text field can be typed on the phone', (tester) async {
+    final value = Completer<String>();
+    var closed = false;
+    final saved = startPhoneInput;
+    addTearDown(() => startPhoneInput = saved);
+    String? asked;
+    startPhoneInput = ({required label, obscure = false, multiline = false,
+        initial = ''}) async {
+      asked = label;
+      return FakePhoneInput('http://192.168.1.50:41234/K7QXPM', value.future,
+          () => closed = true);
+    };
+
+    await _pump(tester, const Size(1920, 1080), tv: true, demo: false);
+    await tester.tap(find.text('Connect Jellyfin'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Type on your phone').first);
+    // The dialog's "waiting" spinner never settles: pump a fixed time.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(asked, 'Server address');
+    expect(find.text('http://192.168.1.50:41234/K7QXPM'), findsOneWidget);
+
+    value.complete('nas:8096');
+    await tester.pumpAndSettle();
+    expect(find.text('http://192.168.1.50:41234/K7QXPM'), findsNothing);
+    expect(find.widgetWithText(TextField, 'nas:8096'), findsOneWidget);
+    expect(closed, isTrue);
+  });
+
+  testWidgets('TV: the remote reaches the phone button and leaves the field',
+      (tester) async {
+    await _pump(tester, const Size(1920, 1080), tv: true, demo: false);
+    await tester.tap(find.text('Connect Jellyfin'));
+    await tester.pumpAndSettle();
+    String? tip() => FocusManager.instance.primaryFocus?.context
+        ?.findAncestorWidgetOfExactType<Tooltip>()
+        ?.message;
+    bool inField() {
+      final w = FocusManager.instance.primaryFocus?.context?.widget;
+      return w is Focus && w.debugLabel == 'EditableText';
+    }
+
+    expect(inField(), isTrue); // the address field starts focused
+    await tester.enterText(find.byType(TextField), 'nas');
+    // Right inside the text moves the caret; at its end it reaches 📱.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pumpAndSettle();
+    expect(tip(), 'Type on your phone');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.pumpAndSettle();
+    expect(inField(), isTrue);
+    // Down leaves a one-line field for what's below it.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(inField(), isFalse);
+    expect(tip(), isNot('Type on your phone'));
+  });
+
+  testWidgets('phones have no type-on-phone button', (tester) async {
+    await _pump(tester, const Size(390, 844), demo: false);
+    await tester.tap(find.text('Connect Jellyfin'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Type on your phone'), findsNothing);
+  });
+
   test('home or away is decided from the server address', () {
     for (final home in [
       'http://192.168.1.20:32400', 'http://10.0.0.5:8096',
@@ -2508,3 +2680,6 @@ void main() {
         'That PIN wasn\'t right.');
   });
 }
+
+/// The plain dart:io client, bypassing flutter_test's stub.
+class _RealHttp extends HttpOverrides {}
