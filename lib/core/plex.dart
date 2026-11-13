@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
@@ -836,6 +837,7 @@ class PlexBackend extends MediaBackend {
           ManageAction.refresh,
           ManageAction.analyze,
           ManageAction.poster,
+          ManageAction.upload,
           ManageAction.background,
         },
       MediaKind.episode => const {
@@ -974,6 +976,27 @@ class PlexBackend extends MediaBackend {
       _manage(() => _dio.put<dynamic>(
           '/library/metadata/${item.id}/${_artPath(kind)}',
           queryParameters: {'url': option.id}));
+
+  /// Plex stores the upload and selects it.
+  @override
+  Future<void> uploadArtwork(MediaItem item, ArtworkKind kind,
+      {Uint8List? bytes, String? mimeType, String? url}) {
+    final path = '/library/metadata/${item.id}/${_artPath(kind)}s';
+    if (url != null) {
+      return _manage(
+          () => _dio.post<dynamic>(path, queryParameters: {'url': url}));
+    }
+    final data = bytes ?? Uint8List(0);
+    return _manage(() => _dio.post<dynamic>(
+          path,
+          // Sent as the raw body, not encoded.
+          data: Stream.value(data),
+          options: Options(
+            contentType: mimeType ?? 'image/jpeg',
+            headers: {Headers.contentLengthHeader: data.length},
+          ),
+        ));
+  }
 
   // -- playlists ------------------------------------------------------------
 

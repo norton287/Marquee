@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
@@ -996,12 +998,14 @@ class JellyfinBackend extends MediaBackend {
           ManageAction.refresh,
           ManageAction.match,
           ManageAction.poster,
+          ManageAction.upload,
           ManageAction.background,
         },
       MediaKind.season => const {
           ManageAction.edit,
           ManageAction.refresh,
           ManageAction.poster,
+          ManageAction.upload,
         },
       MediaKind.episode => const {ManageAction.edit, ManageAction.refresh},
       _ => const {},
@@ -1113,6 +1117,24 @@ class JellyfinBackend extends MediaBackend {
             '/Items/${item.id}/RemoteImages/Download',
             queryParameters: {'type': _imageType(kind), 'imageUrl': option.id},
           ));
+
+  /// A file goes up as base64 (what Jellyfin's image endpoint expects); a
+  /// link is downloaded by the server.
+  @override
+  Future<void> uploadArtwork(MediaItem item, ArtworkKind kind,
+      {Uint8List? bytes, String? mimeType, String? url}) {
+    if (url != null) {
+      return _manage(() => _dio.post<dynamic>(
+            '/Items/${item.id}/RemoteImages/Download',
+            queryParameters: {'type': _imageType(kind), 'imageUrl': url},
+          ));
+    }
+    return _manage(() => _dio.post<dynamic>(
+          '/Items/${item.id}/Images/${_imageType(kind)}',
+          data: base64Encode(bytes ?? Uint8List(0)),
+          options: Options(contentType: mimeType ?? 'image/jpeg'),
+        ));
+  }
 
   // -- playlists ------------------------------------------------------------
 

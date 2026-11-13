@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,6 +15,7 @@ import 'package:marquee/core/providers.dart';
 import 'package:marquee/core/storage.dart';
 import 'package:marquee/ui/add_server_screen.dart';
 import 'package:marquee/ui/libraries_screen.dart';
+import 'package:marquee/ui/manage.dart';
 import 'package:marquee/ui/player/player_widgets.dart';
 import 'package:marquee/ui/widgets.dart';
 
@@ -1140,6 +1143,123 @@ void main() {
     await tester.pumpAndSettle();
     expect(inField(summary), isFalse);
     expect(inField(title), isFalse);
+  });
+
+  test('Upload poster: Plex sends raw bytes or a link', () async {
+    final reqs = <RequestOptions>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        reqs.add(o);
+        h.resolve(Response(requestOptions: o, statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    const movie = MediaItem(serverId: 'p', id: '42', kind: MediaKind.movie,
+        title: 'Heat');
+    final bytes = Uint8List.fromList([1, 2, 3, 4]);
+    await plex.uploadArtwork(movie, ArtworkKind.poster,
+        bytes: bytes, mimeType: 'image/png');
+    expect((reqs.last.method, reqs.last.path),
+        ('POST', '/library/metadata/42/posters'));
+    expect(reqs.last.contentType, 'image/png');
+    expect(reqs.last.headers[Headers.contentLengthHeader], 4);
+    expect(await (reqs.last.data as Stream<List<int>>).expand((c) => c).toList(),
+        [1, 2, 3, 4]);
+
+    await plex.uploadArtwork(movie, ArtworkKind.background,
+        url: 'https://img/x.jpg');
+    expect((reqs.last.path, reqs.last.queryParameters['url']),
+        ('/library/metadata/42/arts', 'https://img/x.jpg'));
+  });
+
+  test('Upload poster: Jellyfin sends base64 or a link', () async {
+    final reqs = <RequestOptions>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        reqs.add(o);
+        h.resolve(Response(requestOptions: o, statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const movie = MediaItem(serverId: 'j', id: 'm1', kind: MediaKind.movie,
+        title: 'Heat');
+    await jf.uploadArtwork(movie, ArtworkKind.poster,
+        bytes: Uint8List.fromList([9, 8, 7]), mimeType: 'image/jpeg');
+    expect(reqs.last.path, '/Items/m1/Images/Primary');
+    expect(reqs.last.data, base64Encode([9, 8, 7]));
+    expect(reqs.last.contentType, 'image/jpeg');
+
+    await jf.uploadArtwork(movie, ArtworkKind.poster, url: 'https://img/p.jpg');
+    expect(reqs.last.path, '/Items/m1/RemoteImages/Download');
+    expect(reqs.last.queryParameters,
+        {'type': 'Primary', 'imageUrl': 'https://img/p.jpg'});
+  });
+
+  testWidgets('Upload poster from a file or a link', (tester) async {
+    final original = pickImageFile;
+    addTearDown(() => pickImageFile = original);
+    pickImageFile = () async =>
+        (bytes: Uint8List.fromList(List.filled(64, 1)), name: 'mine.png');
+
+    await openDemoMovie(tester, 'Saltwater Kings');
+    Future<void> openUpload() async {
+      await tester.tap(find.byTooltip('Manage'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Upload poster…'));
+      await tester.pumpAndSettle();
+    }
+
+    await openUpload();
+    expect(find.text('Use this link'), findsOneWidget);
+    await tester.tap(find.text('Choose an image…'));
+    await tester.pumpAndSettle();
+    expect(find.text('mine.png'), findsOneWidget);
+    await tester.tap(find.text('Upload'));
+    await tester.pumpAndSettle();
+    expect(find.text('Poster uploaded'), findsOneWidget);
+
+    await openUpload();
+    final link = find.ancestor(
+        of: find.text('Use this link'),
+        matching: find.byWidgetPredicate((w) => w is FilledButton));
+    expect(tester.widget<FilledButton>(link).onPressed, isNull);
+    await tester.enterText(find.byType(TextField), 'not a link');
+    await tester.pump();
+    expect(tester.widget<FilledButton>(link).onPressed, isNull);
+    await tester.enterText(find.byType(TextField), 'https://example.com/p.jpg');
+    await tester.pump();
+    await tester.tap(link);
+    await tester.pumpAndSettle();
+    expect(find.text('Poster uploaded'), findsOneWidget);
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final movie = (await container
+            .read(backendsProvider)['demo']!
+            .search('Saltwater Kings'))
+        .first;
+    expect(movie.poster!.template, 'https://example.com/p.jpg');
+  });
+
+  testWidgets('Upload panel on a TV: starts on Choose, falls back to a link',
+      (tester) async {
+    final original = pickImageFile;
+    addTearDown(() => pickImageFile = original);
+    pickImageFile = () async => throw Exception('No activity for intent');
+
+    await openDemoMovie(tester, 'A Quiet Orbit', tv: true);
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Upload poster…'));
+    await tester.pumpAndSettle();
+    // Enter alone reaches the picker: the panel opened on "Choose an image…".
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.text('This device has no file browser. Use an image link instead.'),
+        findsOneWidget);
   });
 
   test('backend errors reach the user verbatim', () {

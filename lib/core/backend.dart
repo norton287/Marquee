@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'models.dart';
 
 /// Identity this app presents to servers. Filled in once at startup.
@@ -162,6 +164,12 @@ abstract class MediaBackend {
 
   /// Creates a playlist called [title] holding [item].
   Future<void> createPlaylist(String title, MediaItem item) async {}
+
+  /// Use an image of your own as [item]'s poster or background: either the
+  /// file's [bytes] (with its [mimeType]) or a [url] the server downloads.
+  /// The upload becomes the selected image.
+  Future<void> uploadArtwork(MediaItem item, ArtworkKind kind,
+      {Uint8List? bytes, String? mimeType, String? url}) async {}
 
   void dispose() {}
 }

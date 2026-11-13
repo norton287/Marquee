@@ -26,6 +26,7 @@ dependencies:
   # Picture in picture (Android) and mini-player window (desktop).
   floating: ^6.0.0
   window_manager: ^0.5.1
+  file_picker: ^13.3.3
 
 dev_dependencies:
   flutter_test:

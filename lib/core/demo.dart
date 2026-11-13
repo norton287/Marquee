@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'backend.dart';
 import 'models.dart';
 
@@ -473,6 +475,7 @@ class DemoBackend extends MediaBackend {
             ManageAction.refresh,
             ManageAction.match,
             ManageAction.poster,
+            ManageAction.upload,
             ManageAction.background,
           },
         MediaKind.season => const {
@@ -540,6 +543,16 @@ class DemoBackend extends MediaBackend {
   Future<void> setArtwork(
       MediaItem item, ArtworkKind kind, ArtworkOption option) async {
     (kind == ArtworkKind.poster ? _posters : _backdrops)[item.id] = option.image;
+  }
+
+  /// The demo has nowhere to store a file, so an upload shows a fresh
+  /// sample image instead; a link is used as-is.
+  @override
+  Future<void> uploadArtwork(MediaItem item, ArtworkKind kind,
+      {Uint8List? bytes, String? mimeType, String? url}) async {
+    (kind == ArtworkKind.poster ? _posters : _backdrops)[item.id] = url != null
+        ? ImageRef(url)
+        : _pic('upload-${item.id}-${bytes?.length ?? 0}');
   }
 
   // -- playlists ------------------------------------------------------------

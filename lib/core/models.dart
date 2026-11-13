@@ -671,6 +671,7 @@ enum ManageAction {
   match('Fix match…'),
   unmatch('Unmatch'),
   poster('Change poster…'),
+  upload('Upload poster…'),
   background('Change background…');
 
   const ManageAction(this.label);

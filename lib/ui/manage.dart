@@ -1,3 +1,5 @@
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -47,6 +49,7 @@ class ManageButton extends ConsumerWidget {
         ManageAction.match => Icons.manage_search_rounded,
         ManageAction.unmatch => Icons.link_off_rounded,
         ManageAction.poster => Icons.image_outlined,
+        ManageAction.upload => Icons.upload_file_rounded,
         ManageAction.background => Icons.wallpaper_rounded,
       };
 
@@ -62,6 +65,11 @@ class ManageButton extends ConsumerWidget {
       case ManageAction.edit:
         await showPanel<void>(context,
             width: 460, builder: (_) => _EditPanel(item: item));
+      case ManageAction.upload:
+        await showPanel<void>(context,
+            width: 460,
+            builder: (_) =>
+                _UploadPanel(item: item, kind: ArtworkKind.poster));
       case ManageAction.match:
         await showPanel<void>(context,
             width: 460, builder: (_) => _MatchPanel(item: item));
@@ -175,6 +183,225 @@ class _PanelTitle extends StatelessWidget {
           ],
         ),
       );
+}
+
+/// A picked image file: its bytes and file name.
+typedef PickedImage = ({Uint8List bytes, String name});
+
+/// Opens the system file browser for an image. Tests swap this out.
+@visibleForTesting
+Future<PickedImage?> Function() pickImageFile = () async {
+  final file = await FilePicker.pickFile(type: FileType.image);
+  if (file == null) return null;
+  return (bytes: await file.xFile.readAsBytes(), name: file.name);
+};
+
+/// Upload an image of your own: a file from this device, or a link the
+/// server downloads (the only option on TVs without a file browser).
+class _UploadPanel extends ConsumerStatefulWidget {
+  const _UploadPanel({required this.item, required this.kind});
+  final MediaItem item;
+  final ArtworkKind kind;
+
+  @override
+  ConsumerState<_UploadPanel> createState() => _UploadPanelState();
+}
+
+class _UploadPanelState extends ConsumerState<_UploadPanel> {
+  static const _maxBytes = 15 * 1024 * 1024;
+  final _url = TextEditingController();
+  final _uploadButton = FocusNode(debugLabel: 'upload file');
+  PickedImage? _file;
+  bool _busy = false;
+  Object? _error;
+
+  @override
+  void dispose() {
+    _url.dispose();
+    _uploadButton.dispose();
+    super.dispose();
+  }
+
+  bool get _urlOk {
+    final u = Uri.tryParse(_url.text.trim());
+    return u != null && (u.scheme == 'http' || u.scheme == 'https') &&
+        u.host.isNotEmpty;
+  }
+
+  static String _mime(String name) {
+    final n = name.toLowerCase();
+    if (n.endsWith('.png')) return 'image/png';
+    if (n.endsWith('.webp')) return 'image/webp';
+    return 'image/jpeg';
+  }
+
+  Future<void> _choose() async {
+    setState(() => _error = null);
+    try {
+      final f = await pickImageFile();
+      if (f == null || !mounted) return;
+      if (f.bytes.length > _maxBytes) {
+        setState(() => _error =
+            const FormatException('That image is over 15 MB. Pick a smaller one.'));
+        return;
+      }
+      setState(() => _file = f);
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _uploadButton.requestFocus());
+    } catch (_) {
+      // Many Android TVs ship without a document browser.
+      if (mounted) {
+        setState(() => _error = const FormatException(
+            'This device has no file browser. Use an image link instead.'));
+      }
+    }
+  }
+
+  Future<void> _upload({PickedImage? file, String? url}) async {
+    final container = ProviderScope.containerOf(context, listen: false);
+    final backend = container.read(backendsProvider)[widget.item.serverId];
+    if (backend == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await backend.uploadArtwork(widget.item, widget.kind,
+          bytes: file?.bytes,
+          mimeType: file == null ? null : _mime(file.name),
+          url: url);
+      reloadItem(container, widget.item);
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.pop(context);
+      (messenger..hideCurrentSnackBar()).showSnackBar(
+          SnackBar(content: Text('${widget.kind.label} uploaded')));
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e;
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final file = _file;
+    final label = widget.kind.label.toLowerCase();
+    const heading = TextStyle(
+        fontSize: 11.5,
+        letterSpacing: 1.3,
+        fontWeight: FontWeight.w800,
+        color: Palette.muted);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _PanelTitle('Upload $label', subtitle: widget.item.title),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('FROM THIS DEVICE', style: heading),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    autofocus: true,
+                    onPressed: _busy ? null : _choose,
+                    icon: const Icon(Icons.folder_open_rounded, size: 18),
+                    label: Text(file == null
+                        ? 'Choose an image…'
+                        : 'Choose a different image…'),
+                  ),
+                ),
+                if (file != null) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      SizedBox(
+                        width: 96,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: AspectRatio(
+                            aspectRatio: widget.kind == ArtworkKind.poster
+                                ? 2 / 3
+                                : 16 / 9,
+                            child: Image.memory(file.bytes,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => const ColoredBox(
+                                    color: Palette.surfaceHigh,
+                                    child: Icon(Icons.broken_image_outlined))),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(file.name,
+                                maxLines: 2, overflow: TextOverflow.ellipsis),
+                            const SizedBox(height: 8),
+                            FilledButton.icon(
+                              focusNode: _uploadButton,
+                              onPressed:
+                                  _busy ? null : () => _upload(file: file),
+                              icon: const Icon(Icons.upload_rounded, size: 18),
+                              label: Text(_busy ? 'Uploading…' : 'Upload'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 24),
+                const Text('FROM A LINK', style: heading),
+                const SizedBox(height: 8),
+                _RemoteTextField(
+                  child: TextField(
+                    controller: _url,
+                    enabled: !_busy,
+                    keyboardType: TextInputType.url,
+                    textInputAction: TextInputAction.done,
+                    decoration: const InputDecoration(
+                        hintText: 'https://…/image.jpg'),
+                    onChanged: (_) => setState(() {}),
+                    onSubmitted: (_) =>
+                        _urlOk ? _upload(url: _url.text.trim()) : null,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton.icon(
+                    onPressed: _busy || !_urlOk
+                        ? null
+                        : () => _upload(url: _url.text.trim()),
+                    icon: const Icon(Icons.link_rounded, size: 18),
+                    label: const Text('Use this link'),
+                  ),
+                ),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(friendlyError(_error!),
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.error)),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Edit an item's title and summary.
