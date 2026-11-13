@@ -542,6 +542,44 @@ void main() {
     expect(find.byIcon(Icons.public_rounded), findsOneWidget);
   });
 
+  test('Jellyfin drops hidden-library items from similar and collections',
+      () async {
+    final calls = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final q = o.queryParameters;
+        calls.add('${o.path} ids=${q['ids']} parentId=${q['parentId']}');
+        Map<String, dynamic> items(List<String> ids) => {
+              'Items': [for (final id in ids) {'Id': id, 'Name': id, 'Type': 'Movie'}]
+            };
+        final data = switch (o.path) {
+          '/Items/m1/Similar' => items(['a', 'b', 'c']),
+          // Which of these ids live in the hidden library: only b.
+          '/Items' when q['ids'] != null && q['parentId'] == 'kids' =>
+            items(['b']),
+          '/Items' when q['parentId'] == 'box1' => items(['a', 'b']),
+          _ => <String, dynamic>{},
+        };
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    final movie = jf.parse({'Id': 'm1', 'Name': 'Heat', 'Type': 'Movie'});
+    final box = jf.parse({'Id': 'box1', 'Name': 'Saga', 'Type': 'BoxSet'});
+
+    // Nothing hidden: no extra lookups.
+    expect((await jf.similar(movie)).map((i) => i.id), ['a', 'b', 'c']);
+    expect(calls.where((c) => c.contains('ids=a')), isEmpty);
+
+    jf.hiddenLibraries = {'kids'};
+    expect((await jf.similar(movie)).map((i) => i.id), ['a', 'c']);
+    expect(calls.last, '/Items ids=a,b,c parentId=kids');
+    expect((await jf.children(box)).map((i) => i.id), ['a']);
+  });
+
   test('Jellyfin scopes queries to visible libraries when some are hidden',
       () async {
     final calls = <String>[];

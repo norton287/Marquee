@@ -486,6 +486,34 @@ class JellyfinBackend extends MediaBackend {
     return lists.expand((l) => l).toList();
   }
 
+  /// Drops [items] that live in a hidden library. Used where a query can't be
+  /// scoped by library ("More like this", collection contents): one request
+  /// per hidden library asks which of these ids are inside it. If that check
+  /// fails the items are kept, so a row never goes blank.
+  Future<List<MediaItem>> _dropHidden(List<MediaItem> items) async {
+    if (hiddenLibraries.isEmpty || items.isEmpty) return items;
+    final ids = items.map((i) => i.id).toSet().join(',');
+    try {
+      final inHidden = await Future.wait(hiddenLibraries.map((lib) => _dio
+          .get<Map<String, dynamic>>('/Items', queryParameters: {
+            'userId': _uid,
+            'ids': ids,
+            'parentId': lib,
+            'recursive': true,
+            'enableImages': false,
+            'enableUserData': false,
+          })));
+      final hidden = {
+        for (final r in inHidden)
+          for (final i in (r.data?['Items'] as List?) ?? const [])
+            '${(i as Map)['Id']}',
+      };
+      return items.where((i) => !hidden.contains(i.id)).toList();
+    } on DioException {
+      return items;
+    }
+  }
+
   static bool _hasVideo(Library l) => l.kind != LibraryKind.music;
   static bool _hasShows(Library l) =>
       l.kind == LibraryKind.shows || l.kind == LibraryKind.other;
@@ -604,6 +632,10 @@ class JellyfinBackend extends MediaBackend {
         MediaKind.playlist => _list('/Playlists/${parent.id}/Items'),
         MediaKind.folder => _list('/Items',
             {'parentId': parent.id, 'sortBy': 'IsFolder,SortName'}),
+        // A collection can hold items from any library, hidden ones too.
+        MediaKind.collection => _list('/Items',
+                {'parentId': parent.id, 'sortBy': 'SortName'})
+            .then(_dropHidden),
         _ => _list('/Items', {'parentId': parent.id, 'sortBy': 'SortName'}),
       };
 
@@ -617,7 +649,8 @@ class JellyfinBackend extends MediaBackend {
   @override
   Future<List<MediaItem>> similar(MediaItem item) async {
     try {
-      return await _list('/Items/${item.id}/Similar', {'limit': 16});
+      return await _dropHidden(
+          await _list('/Items/${item.id}/Similar', {'limit': 16}));
     } on DioException {
       return const [];
     }
