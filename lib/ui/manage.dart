@@ -51,6 +51,7 @@ class ManageButton extends ConsumerWidget {
         ManageAction.poster => Icons.image_outlined,
         ManageAction.upload => Icons.upload_file_rounded,
         ManageAction.background => Icons.wallpaper_rounded,
+        ManageAction.uploadBackground => Icons.add_photo_alternate_outlined,
       };
 
   Future<void> _run(BuildContext context, WidgetRef ref, ManageAction a) async {
@@ -65,11 +66,14 @@ class ManageButton extends ConsumerWidget {
       case ManageAction.edit:
         await showPanel<void>(context,
             width: 460, builder: (_) => _EditPanel(item: item));
-      case ManageAction.upload:
+      case ManageAction.upload || ManageAction.uploadBackground:
         await showPanel<void>(context,
             width: 460,
-            builder: (_) =>
-                _UploadPanel(item: item, kind: ArtworkKind.poster));
+            builder: (_) => _UploadPanel(
+                item: item,
+                kind: a == ManageAction.upload
+                    ? ArtworkKind.poster
+                    : ArtworkKind.background));
       case ManageAction.match:
         await showPanel<void>(context,
             width: 460, builder: (_) => _MatchPanel(item: item));

@@ -1244,6 +1244,28 @@ void main() {
     expect(movie.poster!.template, 'https://example.com/p.jpg');
   });
 
+  testWidgets('Upload background from a link', (tester) async {
+    await openDemoMovie(tester, 'Paper Lanterns');
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Upload background…'));
+    await tester.pumpAndSettle();
+    expect(find.text('Upload background'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'https://example.com/bg.jpg');
+    await tester.pump();
+    await tester.tap(find.text('Use this link'));
+    await tester.pumpAndSettle();
+    expect(find.text('Background uploaded'), findsOneWidget);
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final movie = (await container
+            .read(backendsProvider)['demo']!
+            .search('Paper Lanterns'))
+        .first;
+    expect(movie.backdrop!.template, 'https://example.com/bg.jpg');
+    expect(movie.poster!.template, isNot('https://example.com/bg.jpg'));
+  });
+
   testWidgets('Upload panel on a TV: starts on Choose, falls back to a link',
       (tester) async {
     final original = pickImageFile;

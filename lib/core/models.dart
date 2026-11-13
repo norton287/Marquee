@@ -672,7 +672,8 @@ enum ManageAction {
   unmatch('Unmatch'),
   poster('Change poster…'),
   upload('Upload poster…'),
-  background('Change background…');
+  background('Change background…'),
+  uploadBackground('Upload background…');
 
   const ManageAction(this.label);
   final String label;

@@ -839,6 +839,7 @@ class PlexBackend extends MediaBackend {
           ManageAction.poster,
           ManageAction.upload,
           ManageAction.background,
+          ManageAction.uploadBackground,
         },
       MediaKind.episode => const {
           ManageAction.edit,

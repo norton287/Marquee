@@ -477,6 +477,7 @@ class DemoBackend extends MediaBackend {
             ManageAction.poster,
             ManageAction.upload,
             ManageAction.background,
+            ManageAction.uploadBackground,
           },
         MediaKind.season => const {
             ManageAction.edit,
