@@ -1065,94 +1065,103 @@ class _RemoveFromPlaylistPanelState
   @override
   Widget build(BuildContext context) {
     final entries = _entries;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _PanelTitle('Remove from playlist', subtitle: widget.playlist.title),
-          if (_error != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Text(friendlyError(_error!),
-                  style:
-                      TextStyle(color: Theme.of(context).colorScheme.error)),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: _PanelTitle('Remove from playlist',
+              subtitle: widget.playlist.title),
+        ),
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text(friendlyError(_error!),
+                style: TextStyle(color: Theme.of(context).colorScheme.error)),
+          ),
+        if (entries == null && _error == null)
+          const Padding(padding: EdgeInsets.all(32), child: Loading())
+        else if (entries != null && entries.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(24),
+            child: Text('This playlist is empty.',
+                style: TextStyle(color: Palette.muted)),
+          )
+        else if (entries != null)
+          // Lazy: a long (music) playlist only builds and loads the rows on
+          // screen. Focus still works: the first row is always built for
+          // its autofocus, the row after a removal sits where the removed
+          // one was, and the list builds a little past its edges for ↓.
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
+              itemCount: entries.length,
+              itemBuilder: (context, i) => _row(entries[i], first: i == 0),
             ),
-          if (entries == null && _error == null)
-            const Padding(padding: EdgeInsets.all(32), child: Loading())
-          else if (entries != null && entries.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('This playlist is empty.',
-                  style: TextStyle(color: Palette.muted)),
-            )
-          else if (entries != null)
-            // Eager rows: a lazy list never builds off-screen autofocus.
-            for (final (i, e) in entries.indexed)
-              Pressable(
-                key: ValueKey(e.playlistEntryId ?? e.id),
-                focusNode: _node(e),
-                autofocus: i == 0,
-                grow: 1,
-                onTap: () => _remove(e),
-                builder: (context, focused, hovered) => Container(
-                  margin: const EdgeInsets.symmetric(vertical: 3),
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: focused || hovered ? Palette.surfaceHigh : null,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                        color: focused ? Colors.white : Colors.transparent,
-                        width: 2),
-                  ),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 96,
-                        child: AspectRatio(
-                          aspectRatio: 16 / 9,
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(6),
-                            child: Artwork(
-                              image: e.thumb ?? e.backdrop ?? e.poster,
-                              aspect: 16 / 9,
-                              seed: e.title,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(e.cardTitle,
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            if (e.cardSubtitle case final sub?)
-                              Text(sub,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      color: Palette.muted, fontSize: 13)),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      _removing == e.playlistEntryId
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2))
-                          : Icon(Icons.remove_circle_outline_rounded,
-                              color: focused ? Colors.white : Palette.muted),
-                    ],
+          ),
+      ],
+    );
+  }
+
+  Widget _row(MediaItem e, {required bool first}) => Pressable(
+        key: ValueKey(e.playlistEntryId ?? e.id),
+        focusNode: _node(e),
+        autofocus: first,
+        grow: 1,
+        onTap: () => _remove(e),
+        builder: (context, focused, hovered) => Container(
+          margin: const EdgeInsets.symmetric(vertical: 3),
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: focused || hovered ? Palette.surfaceHigh : null,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+                color: focused ? Colors.white : Colors.transparent, width: 2),
+          ),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 96,
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: Artwork(
+                      image: e.thumb ?? e.backdrop ?? e.poster,
+                      aspect: 16 / 9,
+                      seed: e.title,
+                    ),
                   ),
                 ),
               ),
-        ],
-      ),
-    );
-  }
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(e.cardTitle,
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                    if (e.cardSubtitle case final sub?)
+                      Text(sub,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Palette.muted, fontSize: 13)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              _removing == e.playlistEntryId
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : Icon(Icons.remove_circle_outline_rounded,
+                      color: focused ? Colors.white : Palette.muted),
+            ],
+          ),
+        ),
+      );
 }
 
 // ---------------------------------------------------------------------------

@@ -1635,10 +1635,9 @@ void main() {
     await tester.tap(find.text('Remove from playlist…'));
     await tester.pumpAndSettle();
 
-    final panel = find.ancestor(
-        of: find.text('Remove from playlist'),
-        matching: find.byType(SingleChildScrollView));
-    final rows = find.descendant(of: panel.first, matching: find.byType(Pressable));
+    final rows = find.byWidgetPredicate((w) =>
+        w is Pressable &&
+        (w.focusNode?.debugLabel?.startsWith('playlist entry') ?? false));
     String focusedTitle() {
       final ctx = FocusManager.instance.primaryFocus?.context;
       for (var i = 0; i < rows.evaluate().length; i++) {
@@ -1681,6 +1680,91 @@ void main() {
     expect(find.text('Copper Sky'), findsNothing);
     expect(find.text('Blue Hour'), findsNothing);
     expect(await demo.search('Copper Sky'), isNotEmpty);
+  });
+
+  testWidgets('TV: remove from a long playlist builds only the rows on screen',
+      (tester) async {
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    tester.view.devicePixelRatio = 2; // real TV density: ~6 rows fit
+    await tester.pumpAndSettle();
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final demo = container.read(backendsProvider)['demo']!;
+    final movies = await demo.libraryItems(
+        const Library(serverId: 'demo', id: 'movies', title: 'Movies',
+            kind: LibraryKind.movies),
+        start: 0, limit: 20);
+    await demo.createPlaylist('Marathon', movies.items.first);
+    final marathon =
+        (await demo.playlists()).firstWhere((p) => p.title == 'Marathon');
+    for (var n = 1; n < 40; n++) {
+      await demo.addToPlaylist(marathon, movies.items[n % movies.items.length]);
+    }
+    container.invalidate(playlistsProvider);
+
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Marathon'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Marathon'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove from playlist…'));
+    await tester.pumpAndSettle();
+
+    final rows = find.byWidgetPredicate((w) =>
+        w is Pressable &&
+        (w.focusNode?.debugLabel?.startsWith('playlist entry') ?? false));
+    expect(rows, findsWidgets);
+    // Only what's on screen (plus a little ahead) is built, so a long
+    // playlist doesn't start every thumbnail at once.
+    expect(rows.evaluate().length, lessThan(20));
+
+    String? focusedEntry() {
+      final ctx = FocusManager.instance.primaryFocus?.context;
+      String? id;
+      ctx?.visitAncestorElements((e) {
+        if (e.widget is Pressable && e.widget.key is ValueKey<String>) {
+          id = (e.widget.key! as ValueKey<String>).value;
+          return false;
+        }
+        return true;
+      });
+      return id;
+    }
+
+    expect(focusedEntry(), '0');
+    // The remote still reaches rows far down the list.
+    for (var n = 0; n < 25; n++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+    }
+    expect(focusedEntry(), '25');
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(focusedEntry(), '26');
+  });
+
+  testWidgets('remove from playlist lays out as a phone bottom sheet',
+      (tester) async {
+    await _pump(tester, const Size(390, 844));
+    await tester.tap(find.text('Libraries').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Friday Night'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Friday Night'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove from playlist…'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.byType(BottomSheet), findsOneWidget);
+    expect(find.byWidgetPredicate((w) =>
+        w is Pressable &&
+        (w.focusNode?.debugLabel?.startsWith('playlist entry') ?? false)),
+        findsWidgets);
   });
 
   testWidgets('TV: a refused removal keeps the row, its focus and says why',
@@ -1743,10 +1827,9 @@ void main() {
     // Told why, in a snackbar that shows however far the list is scrolled.
     expect(find.descendant(of: find.byType(SnackBar),
         matching: find.textContaining('Only its owner can')), findsOneWidget);
-    final panel = find.ancestor(
-        of: find.text('Remove from playlist'),
-        matching: find.byType(SingleChildScrollView));
-    final rows = find.descendant(of: panel.first, matching: find.byType(Pressable));
+    final rows = find.byWidgetPredicate((w) =>
+        w is Pressable &&
+        (w.focusNode?.debugLabel?.startsWith('playlist entry') ?? false));
     expect(rows, findsNWidgets(2));
     // The remote is still on the row it pressed.
     final ctx = FocusManager.instance.primaryFocus?.context;
