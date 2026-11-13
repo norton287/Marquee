@@ -41,6 +41,7 @@ class ManageButton extends ConsumerWidget {
   }
 
   static IconData _icon(ManageAction a) => switch (a) {
+        ManageAction.edit => Icons.edit_outlined,
         ManageAction.refresh => Icons.refresh_rounded,
         ManageAction.analyze => Icons.analytics_outlined,
         ManageAction.match => Icons.manage_search_rounded,
@@ -58,6 +59,9 @@ class ManageButton extends ConsumerWidget {
         (messenger..hideCurrentSnackBar()).showSnackBar(SnackBar(content: Text(text)));
 
     switch (a) {
+      case ManageAction.edit:
+        await showPanel<void>(context,
+            width: 460, builder: (_) => _EditPanel(item: item));
       case ManageAction.match:
         await showPanel<void>(context,
             width: 460, builder: (_) => _MatchPanel(item: item));
@@ -118,8 +122,21 @@ class ManageButton extends ConsumerWidget {
 /// Wraps a text field so ↑/↓ on a remote move focus out of it. Text fields
 /// normally keep the arrow keys, which traps a D-pad inside the field.
 class _RemoteTextField extends StatelessWidget {
-  const _RemoteTextField({required this.child});
+  const _RemoteTextField({required this.child, this.multiline});
   final Widget child;
+
+  /// For a multi-line field: ↑/↓ only leave it from the first / last line,
+  /// so a keyboard can still move between lines.
+  final TextEditingController? multiline;
+
+  bool _atEdge(TraversalDirection dir) {
+    final c = multiline;
+    if (c == null) return true;
+    final caret = c.selection.isValid ? c.selection.extentOffset : 0;
+    return dir == TraversalDirection.up
+        ? !c.text.substring(0, caret.clamp(0, c.text.length)).contains('\n')
+        : !c.text.substring(caret.clamp(0, c.text.length)).contains('\n');
+  }
 
   @override
   Widget build(BuildContext context) => Focus(
@@ -132,7 +149,7 @@ class _RemoteTextField extends StatelessWidget {
             LogicalKeyboardKey.arrowUp => TraversalDirection.up,
             _ => null,
           };
-          if (dir == null) return KeyEventResult.ignored;
+          if (dir == null || !_atEdge(dir)) return KeyEventResult.ignored;
           FocusManager.instance.primaryFocus?.focusInDirection(dir);
           return KeyEventResult.handled;
         },
@@ -158,6 +175,136 @@ class _PanelTitle extends StatelessWidget {
           ],
         ),
       );
+}
+
+/// Edit an item's title and summary.
+class _EditPanel extends ConsumerStatefulWidget {
+  const _EditPanel({required this.item});
+  final MediaItem item;
+
+  @override
+  ConsumerState<_EditPanel> createState() => _EditPanelState();
+}
+
+class _EditPanelState extends ConsumerState<_EditPanel> {
+  late final _title = TextEditingController(text: widget.item.title);
+  late final _summary =
+      TextEditingController(text: widget.item.overview ?? '');
+  bool _saving = false;
+  Object? _error;
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _summary.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final title = _title.text.trim();
+    final summary = _summary.text.trim();
+    if (title.isEmpty) {
+      setState(() => _error = const FormatException('The title can\'t be empty'));
+      return;
+    }
+    if (title == widget.item.title && summary == (widget.item.overview ?? '')) {
+      Navigator.pop(context);
+      return;
+    }
+    final container = ProviderScope.containerOf(context, listen: false);
+    final backend = container.read(backendsProvider)[widget.item.serverId];
+    if (backend == null) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      await backend.editDetails(widget.item, title: title, summary: summary);
+      reloadItem(container, widget.item);
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.pop(context);
+      (messenger..hideCurrentSnackBar())
+          .showSnackBar(SnackBar(content: Text('Saved changes to $title')));
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e;
+          _saving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _PanelTitle('Edit details',
+              subtitle: 'Edited fields are locked so a metadata refresh '
+                  'keeps them.'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _RemoteTextField(
+                  child: TextField(
+                    controller: _title,
+                    autofocus: true,
+                    enabled: !_saving,
+                    textCapitalization: TextCapitalization.words,
+                    textInputAction: TextInputAction.next,
+                    decoration: const InputDecoration(labelText: 'Title'),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                _RemoteTextField(
+                  multiline: _summary,
+                  child: TextField(
+                    controller: _summary,
+                    enabled: !_saving,
+                    minLines: 4,
+                    maxLines: 10,
+                    textCapitalization: TextCapitalization.sentences,
+                    keyboardType: TextInputType.multiline,
+                    decoration: const InputDecoration(
+                        labelText: 'Summary', alignLabelWithHint: true),
+                  ),
+                ),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Text(friendlyError(_error!),
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.error)),
+                  ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed:
+                          _saving ? null : () => Navigator.pop(context),
+                      child: const Text('Cancel'),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      onPressed: _saving ? null : _save,
+                      child: Text(_saving ? 'Saving…' : 'Save'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Search the server's agents for the right title and apply one.

@@ -1042,6 +1042,106 @@ void main() {
     expect(focusedText(), contains('New playlist…'));
   });
 
+  test('Edit details: Plex sets and locks title and summary', () async {
+    final calls = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final q = Map.of(o.queryParameters)..remove('X-Plex-Token');
+        calls.add('${o.method} ${o.path} $q');
+        h.resolve(Response(requestOptions: o, statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    final show = plex.parse({'ratingKey': '7', 'type': 'show',
+        'title': 'Old', 'librarySectionID': 2});
+    await plex.editDetails(show, title: 'New', summary: 'About it');
+    expect(calls.single,
+        'PUT /library/sections/2/all {type: 2, id: 7, title.value: New, '
+        'title.locked: 1, summary.value: About it, summary.locked: 1}');
+  });
+
+  test('Edit details: Jellyfin sends the whole record back with locks',
+      () async {
+    Object? posted;
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        if (o.method == 'POST') posted = o.data;
+        h.resolve(Response(requestOptions: o, statusCode: 200, data: {
+          'Id': 'm1', 'Name': 'Old', 'Overview': 'x', 'Genres': ['Drama'],
+          'LockedFields': ['Genres'],
+        }));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    await jf.editDetails(
+        const MediaItem(serverId: 'j', id: 'm1', kind: MediaKind.movie,
+            title: 'Old'),
+        title: 'New',
+        summary: 'Better');
+    expect(posted, {
+      'Id': 'm1', 'Name': 'New', 'Overview': 'Better', 'Genres': ['Drama'],
+      'LockedFields': ['Genres', 'Name', 'Overview'],
+    });
+  });
+
+  testWidgets('Edit details changes the title and summary', (tester) async {
+    await openDemoMovie(tester, 'Field Notes');
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit details…'));
+    await tester.pumpAndSettle();
+    final fields = find.byType(TextField);
+    await tester.enterText(fields.at(0), 'Field Notes (Director\'s Cut)');
+    await tester.enterText(fields.at(1), 'A longer, stranger cut.');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Saved changes to Field Notes (Director\'s Cut)'),
+        findsOneWidget);
+    expect(find.text('Field Notes (Director\'s Cut)'), findsWidgets);
+    expect(find.text('A longer, stranger cut.'), findsOneWidget);
+  });
+
+  testWidgets('Edit panel: remote ↑/↓ leave fields, but not mid-summary',
+      (tester) async {
+    await openDemoMovie(tester, 'Blue Hour', tv: true);
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit details…'));
+    await tester.pumpAndSettle();
+    final title = tester.widget<TextField>(find.byType(TextField).at(0));
+    final summary = tester.widget<TextField>(find.byType(TextField).at(1));
+    bool inField(TextField f) =>
+        FocusManager.instance.primaryFocus == f.focusNode ||
+        FocusManager.instance.primaryFocus?.context
+                ?.findAncestorWidgetOfExactType<TextField>() ==
+            f;
+    expect(inField(title), isTrue); // opens on the title
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(inField(summary), isTrue);
+    summary.controller!
+      ..text = 'line one\nline two'
+      ..selection = const TextSelection.collapsed(offset: 0);
+    await tester.pump();
+    // Caret on the first line: ↓ stays in the summary.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(inField(summary), isTrue);
+    // From the last line ↓ leaves for the buttons.
+    summary.controller!.selection =
+        const TextSelection.collapsed(offset: 'line one\nline two'.length);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(inField(summary), isFalse);
+    expect(inField(title), isFalse);
+  });
+
   test('backend errors reach the user verbatim', () {
     expect(friendlyError(const BackendException('That PIN wasn\'t right.')),
         'That PIN wasn\'t right.');

@@ -832,14 +832,45 @@ class PlexBackend extends MediaBackend {
     return switch (item.kind) {
       MediaKind.movie || MediaKind.show => ManageAction.values.toSet(),
       MediaKind.season => const {
+          ManageAction.edit,
           ManageAction.refresh,
           ManageAction.analyze,
           ManageAction.poster,
           ManageAction.background,
         },
-      MediaKind.episode => const {ManageAction.refresh, ManageAction.analyze},
+      MediaKind.episode => const {
+          ManageAction.edit,
+          ManageAction.refresh,
+          ManageAction.analyze,
+        },
       _ => const {},
     };
+  }
+
+  @override
+  Future<void> editDetails(MediaItem item,
+      {required String title, required String summary}) {
+    final type = switch (item.kind) {
+      MediaKind.movie => 1,
+      MediaKind.show => 2,
+      MediaKind.season => 3,
+      MediaKind.episode => 4,
+      _ => null,
+    };
+    // The same request Plex's editor makes: values plus locks.
+    return _manage(() => _dio.put<dynamic>(
+          item.libraryId != null
+              ? '/library/sections/${item.libraryId}/all'
+              : '/library/metadata/${item.id}',
+          queryParameters: {
+            'type': ?type,
+            'id': item.id,
+            'title.value': title,
+            'title.locked': 1,
+            'summary.value': summary,
+            'summary.locked': 1,
+          },
+        ));
   }
 
   @override

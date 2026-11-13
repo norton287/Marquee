@@ -665,6 +665,7 @@ bool asBool(Object? v) => v == true || v == 1 || v == '1' || v == 'true';
 
 /// What the Manage menu on a details page can do for an item.
 enum ManageAction {
+  edit('Edit details…'),
   refresh('Refresh metadata'),
   analyze('Analyze'),
   match('Fix match…'),

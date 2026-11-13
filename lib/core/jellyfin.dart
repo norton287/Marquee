@@ -992,15 +992,42 @@ class JellyfinBackend extends MediaBackend {
     if (!await _admin()) return const {};
     return switch (item.kind) {
       MediaKind.movie || MediaKind.show => const {
+          ManageAction.edit,
           ManageAction.refresh,
           ManageAction.match,
           ManageAction.poster,
           ManageAction.background,
         },
-      MediaKind.season => const {ManageAction.refresh, ManageAction.poster},
-      MediaKind.episode => const {ManageAction.refresh},
+      MediaKind.season => const {
+          ManageAction.edit,
+          ManageAction.refresh,
+          ManageAction.poster,
+        },
+      MediaKind.episode => const {ManageAction.edit, ManageAction.refresh},
       _ => const {},
     };
+  }
+
+  /// `POST /Items/{id}` replaces the whole record, so read it, change the
+  /// two fields, lock them, and send everything back.
+  @override
+  Future<void> editDetails(MediaItem item,
+      {required String title, required String summary}) {
+    return _manage(() async {
+      final r = await _dio.get<Map<String, dynamic>>('/Items/${item.id}',
+          queryParameters: {'userId': _uid});
+      final dto = Map<String, dynamic>.of(r.data ?? const {});
+      final locked = {
+        ...((dto['LockedFields'] as List?) ?? const []).map((f) => '$f'),
+        'Name',
+        'Overview',
+      };
+      dto
+        ..['Name'] = title
+        ..['Overview'] = summary
+        ..['LockedFields'] = locked.toList();
+      await _dio.post<dynamic>('/Items/${item.id}', data: dto);
+    });
   }
 
   @override

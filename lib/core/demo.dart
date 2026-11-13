@@ -28,6 +28,7 @@ class DemoBackend extends MediaBackend {
 
   // What Manage and playlists changed, kept for the life of the app.
   static final _titles = <String, String>{};
+  static final _overviews = <String, String>{};
   static final _posters = <String, ImageRef>{};
   static final _backdrops = <String, ImageRef>{};
   static final _userPlaylists = <MediaItem>[];
@@ -232,7 +233,7 @@ class DemoBackend extends MediaBackend {
       id: i.id,
       kind: i.kind,
       title: _titles[i.id] ?? i.title,
-      overview: i.overview,
+      overview: _overviews[i.id] ?? i.overview,
       tagline: i.tagline,
       year: i.year,
       duration: i.duration,
@@ -468,15 +469,27 @@ class DemoBackend extends MediaBackend {
   Future<Set<ManageAction>> manageActions(MediaItem item) async =>
       switch (item.kind) {
         MediaKind.movie || MediaKind.show => const {
+            ManageAction.edit,
             ManageAction.refresh,
             ManageAction.match,
             ManageAction.poster,
             ManageAction.background,
           },
-        MediaKind.season => const {ManageAction.refresh, ManageAction.poster},
-        MediaKind.episode => const {ManageAction.refresh},
+        MediaKind.season => const {
+            ManageAction.edit,
+            ManageAction.refresh,
+            ManageAction.poster,
+          },
+        MediaKind.episode => const {ManageAction.edit, ManageAction.refresh},
         _ => const {},
       };
+
+  @override
+  Future<void> editDetails(MediaItem item,
+      {required String title, required String summary}) async {
+    _titles[item.id] = title;
+    _overviews[item.id] = summary;
+  }
 
   @override
   Future<List<MatchCandidate>> searchMatches(MediaItem item,
