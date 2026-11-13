@@ -78,20 +78,26 @@ class SettingsScreen extends ConsumerWidget {
                                   size: 16, color: serverColor(s.kind)),
                             ),
                       title: Text(s.name),
-                      subtitle: Text([
-                        switch (s.kind) {
-                          ServerKind.plex => 'Plex',
-                          ServerKind.jellyfin => 'Jellyfin',
-                          ServerKind.demo => 'Built-in sample library',
-                        },
-                        ?s.userName,
-                        if (s.kind != ServerKind.demo) Uri.tryParse(s.baseUrl)?.host,
-                        // Which maximum quality applies (home or away).
-                        if (s.kind != ServerKind.demo)
-                          isLocalAddress(s.baseUrl)
-                              ? 'home network'
-                              : 'over the internet',
-                      ].nonNulls.join(' · ')),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text([
+                            switch (s.kind) {
+                              ServerKind.plex => 'Plex',
+                              ServerKind.jellyfin => 'Jellyfin',
+                              ServerKind.demo => 'Built-in sample library',
+                            },
+                            ?s.userName,
+                            if (s.kind != ServerKind.demo)
+                              Uri.tryParse(s.baseUrl)?.host,
+                          ].nonNulls.join(' · ')),
+                          // Which maximum quality applies (home or away), on
+                          // its own line so a long plex.direct host can't
+                          // push it out of sight.
+                          if (s.kind != ServerKind.demo)
+                            _NetworkLabel(local: isLocalAddress(s.baseUrl)),
+                        ],
+                      ),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -336,6 +342,27 @@ class _Heading extends StatelessWidget {
             fontWeight: FontWeight.w800,
             color: Palette.muted,
           ),
+        ),
+      );
+}
+
+/// "Home network" / "Over the internet" under a server: tells the user which
+/// maximum quality (at home / away from home) applies to it.
+class _NetworkLabel extends StatelessWidget {
+  const _NetworkLabel({required this.local});
+  final bool local;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(local ? Icons.home_rounded : Icons.public_rounded,
+                size: 14, color: Palette.muted),
+            const SizedBox(width: 4),
+            Text(local ? 'Home network' : 'Over the internet'),
+          ],
         ),
       );
 }

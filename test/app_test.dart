@@ -405,6 +405,41 @@ void main() {
     expect(find.text('TV Shows'), findsNothing);
   });
 
+  testWidgets('settings shows home network / over the internet on its own line',
+      (tester) async {
+    Artwork.network = false;
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final storage = await _storage();
+    await storage.saveServers(const [
+      demoServer,
+      ServerConfig(id: 'home', kind: ServerKind.jellyfin, name: 'Den',
+          baseUrl: 'http://192.168.1.20:8096'),
+      ServerConfig(id: 'away', kind: ServerKind.jellyfin, name: 'Cabin',
+          baseUrl: 'https://jf.example.com'),
+    ]);
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        storageProvider.overrideWithValue(storage),
+        deviceIsTvProvider.overrideWithValue(false),
+      ],
+      retry: (_, _) => null,
+      child: const MarqueeApp(),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings').last);
+    await tester.pumpAndSettle();
+
+    // Separate Text widgets, not appended to the host line.
+    expect(find.text('Home network'), findsOneWidget);
+    expect(find.text('Over the internet'), findsOneWidget);
+    expect(find.text('Jellyfin · 192.168.1.20'), findsOneWidget);
+    expect(find.text('Jellyfin · jf.example.com'), findsOneWidget);
+    expect(find.byIcon(Icons.home_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.public_rounded), findsOneWidget);
+  });
+
   test('Jellyfin scopes queries to visible libraries when some are hidden',
       () async {
     final calls = <String>[];
