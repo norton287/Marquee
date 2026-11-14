@@ -2777,6 +2777,108 @@ void main() {
     expect(find.text('Nothing matches these filters'), findsNothing);
   });
 
+  test('library sort and filters survive a restart; removing a server forgets them',
+      () async {
+    final store = MemoryStore();
+    final a = AppStorage(store);
+    await a.load();
+    const q = LibraryQuery(sort: SortField.added, descending: true, unwatchedOnly: true,
+        filters: {'genre': [FilterValue('6', 'Action')], 'decade': [FilterValue('1990', '1990s')]});
+    await a.saveSettings(const AppSettings(libraryQueries: {'p/1': q}));
+    final b = AppStorage(store);
+    await b.load();
+    final back = b.settings.libraryQueries['p/1']!;
+    expect(back, q);
+    expect(back.filters['genre']!.single.title, 'Action'); // chips keep names
+    expect(b.settings.copyWith(trueBlack: true).libraryQueries, hasLength(1));
+
+    await b.saveServers(const [ServerConfig(id: 'p', kind: ServerKind.plex,
+        name: 'P', baseUrl: 'http://127.0.0.1:9', token: 't')]);
+    final container = ProviderContainer(
+        overrides: [storageProvider.overrideWithValue(b)], retry: (_, _) => null);
+    addTearDown(container.dispose);
+    await container.read(serversProvider.notifier).remove('p');
+    expect(container.read(settingsProvider).libraryQueries, isEmpty);
+  });
+
+  test('saving a library filter leaves the Seerr client alone', () async {
+    final storage = await _storage();
+    await storage.saveSettings(
+        const AppSettings(seerrUrl: 'http://seerr', seerrApiKey: 'k'));
+    final container = ProviderContainer(
+        overrides: [storageProvider.overrideWithValue(storage)],
+        retry: (_, _) => null);
+    addTearDown(container.dispose);
+    final sub = container.listen(seerrProvider, (_, _) {});
+    addTearDown(sub.close);
+    final before = container.read(seerrProvider);
+    expect(before, isNotNull);
+    container.read(settingsProvider.notifier).change((s) => s.copyWith(
+        libraryQueries: {'demo/movies': const LibraryQuery(unwatchedOnly: true)}));
+    // A filter tick must not rebuild Seerr (and refetch Explore behind you).
+    expect(identical(container.read(seerrProvider), before), isTrue);
+    container.read(settingsProvider.notifier)
+        .change((s) => s.copyWith(seerrApiKey: 'other'));
+    expect(identical(container.read(seerrProvider), before), isFalse);
+  });
+
+  test('a damaged saved library filter is skipped, not fatal', () {
+    final s = AppSettings.fromJson({
+      'libraryQueries': {
+        'p/1': {'sort': 'added', 'filters': 'oops'},
+        'p/2': 'oops',
+        'p/3': {'filters': {'genre': [{'id': '6', 'title': 'Action'}]}},
+      },
+    }, const {});
+    expect(s.libraryQueries.keys, ['p/1', 'p/3']);
+    expect(s.libraryQueries['p/1']!.sort, SortField.added);
+    expect(s.libraryQueries['p/3']!.filterCount, 1);
+  });
+
+  testWidgets('a library keeps its filters after the app restarts',
+      (tester) async {
+    Artwork.network = false;
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final storage = await _storage();
+    Future<void> launch() async {
+      await tester.pumpWidget(const SizedBox()); // the old app goes away
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          storageProvider.overrideWithValue(storage),
+          deviceIsTvProvider.overrideWithValue(false),
+        ],
+        retry: (_, _) => null,
+        child: const MarqueeApp(),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Libraries').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Movies').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+      await tester.pumpAndSettle();
+    }
+
+    await launch();
+    await tester.tap(find.text('Filter'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'Genre'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'Comedy'));
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('Filter (1)'), findsOneWidget);
+
+    await launch(); // "restart"
+    expect(find.text('Filter (1)'), findsOneWidget);
+    expect(find.widgetWithText(InputChip, 'Comedy'), findsOneWidget);
+  });
+
   test('home or away is decided from the server address', () {
     for (final home in [
       'http://192.168.1.20:32400', 'http://10.0.0.5:8096',

@@ -26,6 +26,7 @@ class AppSettings {
     this.skipBackSeconds = 10,
     this.skipForwardSeconds = 30,
     this.profileServerId,
+    this.libraryQueries = const {},
   });
 
   /// Choices offered for [skipBackSeconds] and [skipForwardSeconds].
@@ -70,6 +71,13 @@ class AppSettings {
   /// Home profile button shows that account. A server id, never a token.
   final String? profileServerId;
 
+  /// Each library's All-tab sort, Unwatched and filters, keyed by
+  /// [libraryKey]. Not secret; dropped with its server.
+  final Map<String, LibraryQuery> libraryQueries;
+
+  static String libraryKey(String serverId, String libraryId) =>
+      '$serverId/$libraryId';
+
   /// Library ids the user hid, per server id.
   final Map<String, Set<String>> hiddenLibraries;
 
@@ -112,6 +120,7 @@ class AppSettings {
     int? skipBackSeconds,
     int? skipForwardSeconds,
     Object? profileServerId = _keep,
+    Map<String, LibraryQuery>? libraryQueries,
   }) =>
       AppSettings(
         maxBitrateKbps: maxBitrateKbps == _keep
@@ -139,6 +148,7 @@ class AppSettings {
         hiddenLibraries: hiddenLibraries ?? this.hiddenLibraries,
         skipBackSeconds: skipBackSeconds ?? this.skipBackSeconds,
         skipForwardSeconds: skipForwardSeconds ?? this.skipForwardSeconds,
+        libraryQueries: libraryQueries ?? this.libraryQueries,
         profileServerId: profileServerId == _keep
             ? this.profileServerId
             : profileServerId as String?,
@@ -158,6 +168,9 @@ class AppSettings {
         'skipBackSeconds': skipBackSeconds,
         'skipForwardSeconds': skipForwardSeconds,
         'profileServerId': profileServerId,
+        'libraryQueries': {
+          for (final e in libraryQueries.entries) e.key: e.value.toJson(),
+        },
         'hiddenLibraries': {
           for (final e in hiddenLibraries.entries) e.key: e.value.toList(),
         },
@@ -193,6 +206,12 @@ class AppSettings {
         skipBackSeconds: _skip(j['skipBackSeconds'], 10),
         skipForwardSeconds: _skip(j['skipForwardSeconds'], 30),
         profileServerId: j['profileServerId'] as String?,
+        libraryQueries: {
+          for (final e in ((j['libraryQueries'] as Map?) ?? const {}).entries)
+            if (e.value is Map)
+              '${e.key}': LibraryQuery.fromJson(
+                  Map<String, dynamic>.from(e.value as Map)),
+        },
         hiddenLibraries: {
           for (final e in ((j['hiddenLibraries'] as Map?) ?? const {}).entries)
             '${e.key}': {...((e.value as List?) ?? const []).map((v) => '$v')},

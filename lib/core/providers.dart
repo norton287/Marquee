@@ -71,6 +71,13 @@ class ServersNotifier extends Notifier<List<ServerConfig>> {
     await _save(state.where((s) => s.id != id).toList());
     // Forget its hidden libraries so a re-added server starts clean.
     final settings = ref.read(settingsProvider.notifier);
+    // And its libraries' saved sort and filters.
+    final prefix = AppSettings.libraryKey(id, '');
+    if (ref.read(settingsProvider).libraryQueries.keys.any((k) => k.startsWith(prefix))) {
+      settings.change((s) => s.copyWith(
+          libraryQueries: {...s.libraryQueries}
+            ..removeWhere((k, _) => k.startsWith(prefix))));
+    }
     if (ref.read(settingsProvider).hiddenLibraries.containsKey(id)) {
       settings.change((s) => s.copyWith(
           hiddenLibraries: {...s.hiddenLibraries}..remove(id)));
@@ -483,10 +490,15 @@ final watchlistProvider = FutureProvider<List<Shelf>>((ref) async {
 // ---------------------------------------------------------------------------
 
 final seerrProvider = Provider<SeerrClient?>((ref) {
-  final s = ref.watch(settingsProvider);
-  if (!s.hasSeerr) return null;
-  final client =
-      SeerrClient(s.seerrUrl!, apiKey: s.seerrApiKey, cookie: s.seerrCookie);
+  // Only its own settings: others change often (each library filter tick
+  // is saved), and a rebuild here refetches the whole Explore tab.
+  final s = ref.watch(settingsProvider.select((s) =>
+      (url: s.seerrUrl, key: s.seerrApiKey, cookie: s.seerrCookie)));
+  if ((s.url ?? '').isEmpty ||
+      ((s.key ?? '').isEmpty && (s.cookie ?? '').isEmpty)) {
+    return null;
+  }
+  final client = SeerrClient(s.url!, apiKey: s.key, cookie: s.cookie);
   ref.onDispose(client.close);
   return client;
 });

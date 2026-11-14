@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/models.dart';
 import '../core/providers.dart';
+import '../core/storage.dart';
 import 'libraries_screen.dart';
 import 'phone_input.dart';
 import 'theme.dart';
@@ -28,12 +29,15 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   static const _pageSize = 60;
   final _scroll = ScrollController();
   final _items = <MediaItem>[];
-  /// Each library's sort and filters, kept while the app runs.
-  /// (Without the view: the tab decides that, so a remembered Artists
-  /// view can't open under the Albums tab.)
-  static final _remembered = <LibraryRef, LibraryQuery>{};
+  String get _savedKey => AppSettings.libraryKey(
+      widget.libraryRef.serverId, widget.libraryRef.libraryId);
+
+  /// Each library's sort, Unwatched and filters, saved in settings so they
+  /// survive a restart. (Without the view: the tab decides that, so a
+  /// saved Artists view can't open under the Albums tab.)
   late LibraryQuery _query =
-      _remembered[widget.libraryRef] ?? const LibraryQuery();
+      ref.read(settingsProvider).libraryQueries[_savedKey] ??
+          const LibraryQuery();
   final _filterButton = FocusNode(debugLabel: 'filter button');
   /// The tab the user picked; until then, the library kind decides.
   _Tab? _picked;
@@ -116,7 +120,13 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   void _setQuery(LibraryQuery q) {
     if (q == _query) return;
     _query = q;
-    _remembered[widget.libraryRef] = q.copyWith(view: LibraryView.items);
+    final saved = q.copyWith(view: LibraryView.items);
+    final key = _savedKey;
+    ref.read(settingsProvider.notifier).change((s) => s.copyWith(
+          libraryQueries: {...s.libraryQueries, key: saved}
+            // The plain default needn't be kept.
+            ..removeWhere((k, v) => k == key && v == const LibraryQuery()),
+        ));
     _reload();
   }
 

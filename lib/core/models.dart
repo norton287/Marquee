@@ -595,6 +595,38 @@ class LibraryQuery {
   int get filterCount =>
       filters.values.fold(0, (n, values) => n + values.length);
 
+  /// Saved per library (sort, Unwatched, filters; the view follows the tab).
+  Map<String, dynamic> toJson() => {
+        'sort': sort.name,
+        'descending': descending,
+        'unwatchedOnly': unwatchedOnly,
+        'filters': {
+          for (final e in filters.entries)
+            if (e.value.isNotEmpty)
+              e.key: [for (final v in e.value) {'id': v.id, 'title': v.title}],
+        },
+      };
+
+  /// Tolerant: anything malformed is dropped rather than thrown.
+  static LibraryQuery fromJson(Map<String, dynamic> j) {
+    final filters = j['filters'];
+    return LibraryQuery(
+      sort: SortField.values.asNameMap()['${j['sort']}'] ?? SortField.title,
+      descending: j['descending'] == true,
+      unwatchedOnly: j['unwatchedOnly'] == true,
+      filters: {
+        if (filters is Map)
+          for (final e in filters.entries)
+            if (e.value is List)
+              '${e.key}': [
+                for (final v in (e.value as List).whereType<Map>())
+                  if (v['id'] != null)
+                    FilterValue('${v['id']}', '${v['title'] ?? v['id']}'),
+              ],
+      }..removeWhere((_, v) => v.isEmpty),
+    );
+  }
+
   LibraryQuery copyWith({
     SortField? sort,
     bool? descending,
