@@ -95,6 +95,18 @@ abstract class MediaBackend {
   Future<List<MediaItem>> similar(MediaItem item);
   Future<List<Shelf>> discover();
 
+  /// The ways [library]'s All view can be filtered; [LibraryQuery.filters]
+  /// keys are their ids. Empty = no Filter button.
+  Future<List<FilterCategory>> filterCategories(Library library) async =>
+      const [];
+
+  /// The choices in [category] (for a searchable one, those matching
+  /// [search]; the server may need it to list anything).
+  Future<List<FilterValue>> filterValues(
+          Library library, FilterCategory category,
+          {String? search}) async =>
+      const [];
+
   /// The Recommended tab of one movie or TV library: rows such as continue
   /// watching, recently added and "because you watched". The default is just
   /// the library's recently added row.

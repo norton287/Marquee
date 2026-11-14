@@ -373,6 +373,14 @@ class DemoBackend extends MediaBackend {
   }) async {
     var list = _liveAll(_of(library));
     if (query.unwatchedOnly) list = list.where((i) => !i.played).toList();
+    final genres = {...?query.filters['genre']?.map((v) => v.id)};
+    final years = {...?query.filters['year']?.map((v) => v.id)};
+    if (genres.isNotEmpty) {
+      list = list.where((i) => i.genres.any(genres.contains)).toList();
+    }
+    if (years.isNotEmpty) {
+      list = list.where((i) => years.contains('${i.year}')).toList();
+    }
     int cmp(MediaItem a, MediaItem b) => switch (query.sort) {
           SortField.title => a.title.compareTo(b.title),
           SortField.added => (a.addedAt ?? DateTime(0))
@@ -382,6 +390,22 @@ class DemoBackend extends MediaBackend {
         };
     list.sort(query.descending ? (a, b) => cmp(b, a) : cmp);
     return Paged(list.skip(start).take(limit).toList(), list.length);
+  }
+
+  @override
+  Future<List<FilterCategory>> filterCategories(Library library) async =>
+      const [FilterCategory('genre', 'Genre'), FilterCategory('year', 'Year')];
+
+  @override
+  Future<List<FilterValue>> filterValues(
+      Library library, FilterCategory category,
+      {String? search}) async {
+    final items = _liveAll(_of(library));
+    final values = category.id == 'genre'
+        ? ({for (final i in items) ...i.genres}.toList()..sort())
+        : ({for (final i in items) if (i.year != null) '${i.year}'}.toList()
+          ..sort((a, b) => b.compareTo(a)));
+    return [for (final v in values) FilterValue(v, v)];
   }
 
   @override

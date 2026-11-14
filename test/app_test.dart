@@ -2465,6 +2465,318 @@ void main() {
     expect(find.byTooltip('Type on your phone'), findsNothing);
   });
 
+  test('LibraryQuery equality includes filters', () {
+    const a = LibraryQuery(filters: {'genre': [FilterValue('6', 'Action')]});
+    const b = LibraryQuery(filters: {'genre': [FilterValue('6', 'Action!')]});
+    expect(a, b); // values compare by id
+    expect(a.hashCode, b.hashCode);
+    expect(a == const LibraryQuery(), isFalse);
+    expect(a.filterCount, 1);
+    expect(a.copyWith(filters: const {}).filterCount, 0);
+  });
+
+  test('Plex lists filter categories and applies them combined', () async {
+    final calls = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add('${o.path} ${o.queryParameters}');
+        final data = switch (o.path) {
+          '/library/sections/1/filters' => {'MediaContainer': {'Directory': [
+              {'filter': 'genre', 'filterType': 'string', 'key': '/library/sections/1/genre', 'title': 'Genre'},
+              {'filter': 'unwatched', 'filterType': 'boolean', 'key': '/library/sections/1/unwatched', 'title': 'Unwatched'},
+              {'filter': 'hdr', 'filterType': 'boolean', 'key': '/library/sections/1/hdr', 'title': 'HDR'},
+              {'filter': 'audioLanguage', 'filterType': 'string', 'key': '/library/sections/1/audioLanguage', 'title': 'Audio Language'},
+              {'filter': 'actor', 'filterType': 'string', 'key': '/library/sections/1/actor', 'title': 'Actor'},
+              {'filter': 'decade', 'filterType': 'integer', 'key': '/library/sections/1/decade', 'title': 'Decade'},
+            ]}},
+          '/library/sections/7/filters' => {'MediaContainer': {'Directory': [
+              {'filter': 'year', 'filterType': 'integer', 'key': '/library/sections/7/year?type=9', 'title': 'Year'},
+              {'filter': 'network', 'filterType': 'string', 'key': '/library/sections/7/network?type=9', 'title': 'Network'},
+            ]}},
+          '/library/sections/1/genre' => {'MediaContainer': {'Directory': [
+              {'key': '6', 'title': 'Action'}, {'key': '203', 'title': 'Thriller'}]}},
+          _ => {'MediaContainer': {'totalSize': 0, 'Metadata': []}},
+        };
+        h.resolve(Response(requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P', baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    const lib = Library(serverId: 'p', id: '1', title: 'Movies', kind: LibraryKind.movies);
+
+    final cats = await plex.filterCategories(lib);
+    // Yes/no filters (Unwatched has its own switch) are left out; the
+    // everyday ones come first, the technical ones under "More".
+    expect(cats.map((c) => c.id), ['genre', 'decade', 'actor', 'audioLanguage']);
+    expect(cats.firstWhere((c) => c.id == 'actor').searchable, isTrue);
+    expect(cats.firstWhere((c) => c.id == 'audioLanguage').more, isTrue);
+    expect(cats.firstWhere((c) => c.id == 'genre').more, isFalse);
+
+    final genres = await plex.filterValues(lib, cats.first);
+    expect(genres.map((v) => (v.id, v.title)), [('6', 'Action'), ('203', 'Thriller')]);
+
+    await plex.libraryItems(lib, query: const LibraryQuery(unwatchedOnly: true, filters: {
+      'genre': [FilterValue('6', 'Action'), FilterValue('203', 'Thriller')],
+      'decade': [FilterValue('1990', '1990s')],
+    }));
+    final q = calls.last;
+    expect(q, contains('genre: 6,203')); // or within
+    expect(q, contains('decade: 1990')); // and across
+    expect(q, contains('unwatched: 1'));
+
+    // Categories are asked for the grid's own type (albums = 9: a music
+    // library's plain /filters lists artist filters), and a category's own
+    // query (`?type=9`) is kept when listing its values.
+    const music = Library(serverId: 'p', id: '7', title: 'Music', kind: LibraryKind.music);
+    final musicCats = await plex.filterCategories(music);
+    expect(calls.last, contains('type: 9'));
+    expect(musicCats.map((c) => c.id), ['year', 'network']);
+    final uris = <Uri>[];
+    dio.interceptors.insert(0, InterceptorsWrapper(onRequest: (o, h) {
+      uris.add(o.uri);
+      h.next(o);
+    }));
+    await plex.filterValues(music, musicCats.first);
+    expect(uris.last.path, '/library/sections/7/year');
+    expect(uris.last.queryParameters['type'], '9');
+    // The Artists view isn't filtered.
+    await plex.libraryItems(music, query: const LibraryQuery(
+        view: LibraryView.artists, filters: {'year': [FilterValue('1990', '1990')]}));
+    expect(uris.last.queryParameters.containsKey('year'), isFalse);
+  });
+
+  test('Jellyfin applies filters with or within, and across', () async {
+    final calls = <Map<String, dynamic>>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add({'path': o.path, ...o.queryParameters});
+        final data = switch (o.path) {
+          '/Genres' => {'Items': [{'Id': 'g1', 'Name': 'Crime'}, {'Id': 'g2', 'Name': 'Drama'}]},
+          '/Items/Filters' => {'Years': [1995, 1990], 'OfficialRatings': ['PG', 'R']},
+          '/Persons' => {'Items': [{'Id': 'p1', 'Name': 'Al Pacino'}]},
+          _ => {'Items': [], 'TotalRecordCount': 0},
+        };
+        h.resolve(Response(requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const lib = Library(serverId: 'j', id: 'L1', title: 'Movies', kind: LibraryKind.movies);
+    final cats = await jf.filterCategories(lib);
+    expect(cats.map((c) => c.id), ['genre', 'year', 'rating', 'studio', 'person']);
+    final genres = await jf.filterValues(lib, cats[0]);
+    expect(genres.map((v) => v.title), ['Crime', 'Drama']);
+    expect(calls.last['parentId'], 'L1');
+    final years = await jf.filterValues(lib, cats[1]);
+    expect(years.map((v) => v.id), ['1995', '1990']);
+    final people = await jf.filterValues(lib, cats[4], search: 'pac');
+    expect(people.single.title, 'Al Pacino');
+    expect(calls.last['searchTerm'], 'pac');
+
+    await jf.libraryItems(lib, query: const LibraryQuery(filters: {
+      'genre': [FilterValue('g1', 'Crime'), FilterValue('g2', 'Drama')],
+      'year': [FilterValue('1995', '1995')],
+      'rating': [FilterValue('R', 'R'), FilterValue('PG', 'PG')],
+      'person': [FilterValue('p1', 'Al Pacino')],
+    }));
+    final q = calls.last;
+    // Id lists are comma-separated (a '|' makes Jellyfin drop the filter);
+    // only ratings use '|'.
+    expect(q['genreIds'], 'g1,g2');
+    expect(q['years'], '1995');
+    expect(q['officialRatings'], 'R|PG');
+    expect(q['personIds'], 'p1');
+
+    // The Artists view of a music library isn't filtered.
+    const music = Library(serverId: 'j', id: 'M', title: 'Music', kind: LibraryKind.music);
+    await jf.libraryItems(music, query: const LibraryQuery(
+        view: LibraryView.artists, filters: {'genre': [FilterValue('g1', 'Rock')]}));
+    expect(calls.last.containsKey('genreIds'), isFalse);
+  });
+
+  test('demo filters by genre and year', () async {
+    final demo = DemoBackend(demoServer);
+    const lib = Library(serverId: 'demo', id: 'movies', title: 'Movies', kind: LibraryKind.movies);
+    final cats = await demo.filterCategories(lib);
+    expect(cats.map((c) => c.title), ['Genre', 'Year']);
+    final genres = await demo.filterValues(lib, cats[0]);
+    expect(genres.map((v) => v.title), containsAll(['Comedy', 'Drama']));
+    final page = await demo.libraryItems(lib, query: const LibraryQuery(filters: {
+      'genre': [FilterValue('Comedy', 'Comedy'), FilterValue('Drama', 'Drama')],
+      'year': [FilterValue('2023', '2023')],
+    }));
+    expect(page.items.map((i) => i.title), ['Static Bloom', 'The Cartographer']);
+  });
+
+  testWidgets('TV: filter the All grid by two genres and a year, then remove',
+      (tester) async {
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    tester.view.devicePixelRatio = 2;
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Movies').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
+    bool shown(String title) => find.text(title).evaluate().isNotEmpty;
+
+    // As with the remote: focus Filter, then OK.
+    Focus.of(tester.element(find.text('Filter'))).requestFocus();
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    // The panel opens on its first category, focused for the remote.
+    final focused = FocusManager.instance.primaryFocus?.context;
+    expect(focused?.findAncestorWidgetOfExactType<ListTile>(), isNotNull);
+    await tester.sendKeyEvent(LogicalKeyboardKey.select); // Genre
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'Comedy'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'Drama'));
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape); // back to categories
+    await tester.pumpAndSettle();
+    expect(find.text('Comedy, Drama'), findsOneWidget); // what's ticked
+    await tester.tap(find.widgetWithText(ListTile, 'Year'));
+    await tester.pumpAndSettle();
+    String? focusedRow() => FocusManager.instance.primaryFocus?.context
+        ?.findAncestorWidgetOfExactType<ListTile>()
+        ?.title
+        .toString();
+    // Years run newest first; walk down to 2023 with the remote and tick
+    // it: the row stays where it is and keeps focus.
+    final years = (await DemoBackend(demoServer).filterValues(
+            const Library(serverId: 'demo', id: 'movies', title: 'Movies',
+                kind: LibraryKind.movies),
+            const FilterCategory('year', 'Year')))
+        .map((v) => v.title)
+        .toList();
+    for (var i = 0; i < years.indexOf('2023'); i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+    }
+    expect(focusedRow(), contains('"2023"'));
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(focusedRow(), contains('"2023"'));
+    // …and stays in place: Up reaches the year that was above it.
+    final above = years[years.indexOf('2023') - 1];
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pumpAndSettle();
+    expect(focusedRow(), contains('"$above"'));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape); // close the panel
+    await tester.pumpAndSettle();
+
+    expect(find.text('Filter (3)'), findsOneWidget);
+    for (final chip in ['Comedy', 'Drama', '2023']) {
+      expect(find.widgetWithText(InputChip, chip), findsOneWidget);
+    }
+    // (Comedy or Drama) and 2023.
+    expect(shown('Static Bloom'), isTrue);
+    expect(shown('The Cartographer'), isTrue);
+    expect(shown('The Long Tide'), isFalse);
+
+    // The chip's own focus sits inside it: look up from its label.
+    Focus.of(tester.element(find.descendant(
+            of: find.widgetWithText(InputChip, 'Drama'),
+            matching: find.text('Drama'))))
+        .requestFocus();
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(InputChip, 'Drama'), findsNothing);
+    // The remote lands on Filter, not on the first movie.
+    expect(
+        FocusManager.instance.primaryFocus?.context
+            ?.findAncestorWidgetOfExactType<ActionChip>(),
+        isNotNull);
+    expect(shown('Static Bloom'), isFalse);
+    expect(shown('The Cartographer'), isTrue);
+
+    await tester.tap(find.text('Clear all'));
+    await tester.pumpAndSettle();
+    expect(find.byType(InputChip), findsNothing);
+    expect(find.text('Filter'), findsOneWidget);
+  });
+
+  testWidgets('TV: a searchable category focuses its search and searches locally',
+      (tester) async {
+    final demo = _CountingDemo(demoServer);
+    Artwork.network = false;
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final storage = await _storage();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        storageProvider.overrideWithValue(storage),
+        deviceIsTvProvider.overrideWithValue(true),
+        backendsProvider.overrideWithValue(<String, MediaBackend>{'demo': demo}),
+      ],
+      retry: (_, _) => null,
+      child: const MarqueeApp(),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Movies').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
+    Focus.of(tester.element(find.text('Filter'))).requestFocus();
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select); // Genre (searchable here)
+    await tester.pumpAndSettle();
+    final w = FocusManager.instance.primaryFocus?.context?.widget;
+    expect(w is Focus && w.debugLabel == 'EditableText', isTrue,
+        reason: 'the search box takes focus');
+    await tester.enterText(find.byType(TextField).last, 'com');
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(ListTile, 'Comedy'), findsOneWidget);
+    expect(find.widgetWithText(ListTile, 'Drama'), findsNothing);
+    expect(demo.valueCalls, 1); // one full list, searched in the app
+  });
+
+  testWidgets('filters that match nothing say so and can be cleared',
+      (tester) async {
+    await _pump(tester, const Size(1440, 900));
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Movies').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Filter'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'Genre'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'Sci-Fi'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Back').last); // the panel's, not the page's
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'Year'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, '2023'));
+    await tester.pumpAndSettle();
+    // Back steps out of the category, then closes the panel.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('Nothing matches these filters'), findsOneWidget);
+    await tester.tap(find.text('Clear all').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Nothing matches these filters'), findsNothing);
+  });
+
   test('home or away is decided from the server address', () {
     for (final home in [
       'http://192.168.1.20:32400', 'http://10.0.0.5:8096',
@@ -2687,3 +2999,22 @@ void main() {
 
 /// The plain dart:io client, bypassing flutter_test's stub.
 class _RealHttp extends HttpOverrides {}
+
+/// Demo with a searchable Genre category, counting value lookups.
+class _CountingDemo extends DemoBackend {
+  _CountingDemo(super.config);
+  int valueCalls = 0;
+
+  @override
+  Future<List<FilterCategory>> filterCategories(Library library) async => const [
+        FilterCategory('genre', 'Genre', searchable: true),
+        FilterCategory('year', 'Year'),
+      ];
+
+  @override
+  Future<List<FilterValue>> filterValues(Library library, FilterCategory category,
+      {String? search}) {
+    valueCalls++;
+    return super.filterValues(library, category, search: search);
+  }
+}

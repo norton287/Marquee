@@ -552,12 +552,72 @@ class PlexBackend extends MediaBackend {
       'includeCollections': 0,
       if (query.unwatchedOnly)
         library.kind == LibraryKind.shows ? 'unwatchedLeaves' : 'unwatched': 1,
+      // `genre=6,203`: either genre; separate keys must all match. Only
+      // the main grid is filtered (not a music library's Artists view).
+      if (query.view == LibraryView.items)
+        for (final e in query.filters.entries)
+          if (e.value.isNotEmpty) e.key: e.value.map((v) => v.id).join(','),
       'X-Plex-Container-Start': start,
       'X-Plex-Container-Size': limit,
     });
     final items = _items(c);
     return Paged(
         items, asInt(c['totalSize']) ?? asInt(c['size']) ?? items.length);
+  }
+
+  /// Shown first, in this order; the rest of the library's filters go
+  /// under "More".
+  static const _everydayFilters = [
+    'genre', 'decade', 'year', 'collection', 'actor', 'director', 'studio',
+    'network', 'contentRating', 'resolution', 'style', 'mood', 'label',
+  ];
+  static const _searchableFilters = {'actor', 'director', 'writer', 'producer'};
+
+  @override
+  Future<List<FilterCategory>> filterCategories(Library library) async {
+    // For the grid's own type: a music library's plain /filters lists
+    // artist filters, but the grid shows albums (type 9).
+    final c = await _get('/library/sections/${library.id}/filters',
+        {'type': _typeFor(library.kind, LibraryView.items)});
+    final cats = [
+      for (final d in ((c['Directory'] as List?) ?? const []).whereType<Map>())
+        // Yes/no filters have no value list (Unwatched has its own switch).
+        if (d['filterType'] != 'boolean' && d['filter'] != null)
+          FilterCategory(
+            '${d['filter']}',
+            '${d['title'] ?? d['filter']}',
+            searchable: _searchableFilters.contains(d['filter']),
+            more: !_everydayFilters.contains(d['filter']),
+            path: d['key'] as String?,
+          ),
+    ];
+    int rank(FilterCategory f) {
+      final i = _everydayFilters.indexOf(f.id);
+      return i < 0 ? _everydayFilters.length : i;
+    }
+    // Stable: the server's order within each group.
+    final indexed = cats.indexed.toList()
+      ..sort((a, b) {
+        final r = rank(a.$2).compareTo(rank(b.$2));
+        return r != 0 ? r : a.$1.compareTo(b.$1);
+      });
+    return [for (final (_, f) in indexed) f];
+  }
+
+  @override
+  Future<List<FilterValue>> filterValues(
+      Library library, FilterCategory category,
+      {String? search}) async {
+    final c = await _get(
+        category.path ?? '/library/sections/${library.id}/${category.id}');
+    final all = [
+      for (final d in ((c['Directory'] as List?) ?? const []).whereType<Map>())
+        if (d['key'] != null) FilterValue('${d['key']}', '${d['title'] ?? d['key']}'),
+    ];
+    final q = search?.trim().toLowerCase() ?? '';
+    return q.isEmpty
+        ? all
+        : all.where((v) => v.title.toLowerCase().contains(q)).toList();
   }
 
   @override

@@ -584,6 +584,16 @@ class JellyfinBackend extends MediaBackend {
       'enableImageTypes': 'Primary,Backdrop,Thumb',
       'imageTypeLimit': 1,
       if (query.unwatchedOnly) 'filters': 'IsUnplayed',
+      // Ids in one list are alternatives; different lists must all match.
+      // Comma-separated: Jellyfin drops an id list joined with '|' (it
+      // only splits on ','); official ratings are the '|'-separated one.
+      // The Artists view isn't filtered (filters belong to the main grid).
+      if (query.view == LibraryView.items)
+        for (final e in query.filters.entries)
+          if (e.value.isNotEmpty && _filterParams[e.key] != null)
+            _filterParams[e.key]!: e.value
+                .map((v) => v.id)
+                .join(e.key == 'rating' ? '|' : ','),
     };
     final Response<Map<String, dynamic>> r;
     if (library.kind == LibraryKind.music &&
@@ -604,6 +614,59 @@ class JellyfinBackend extends MediaBackend {
     }
     final items = _parseList(r.data);
     return Paged(items, asInt(r.data?['TotalRecordCount']) ?? items.length);
+  }
+
+  static const _filterParams = {
+    'genre': 'genreIds',
+    'year': 'years',
+    'rating': 'officialRatings',
+    'studio': 'studioIds',
+    'person': 'personIds',
+  };
+
+  @override
+  Future<List<FilterCategory>> filterCategories(Library library) async =>
+      library.kind == LibraryKind.music
+          ? const [FilterCategory('genre', 'Genre'), FilterCategory('year', 'Year')]
+          : const [
+              FilterCategory('genre', 'Genre'),
+              FilterCategory('year', 'Year'),
+              FilterCategory('rating', 'Content rating'),
+              FilterCategory('studio', 'Studio'),
+              FilterCategory('person', 'People', searchable: true),
+            ];
+
+  @override
+  Future<List<FilterValue>> filterValues(
+      Library library, FilterCategory category,
+      {String? search}) async {
+    List<FilterValue> named(Map<String, dynamic>? data) => [
+          for (final i in ((data?['Items'] as List?) ?? const []).whereType<Map>())
+            FilterValue('${i['Id']}', '${i['Name']}'),
+        ];
+    final scope = {'userId': _uid, 'parentId': library.id};
+    switch (category.id) {
+      case 'genre' || 'studio':
+        final r = await _dio.get<Map<String, dynamic>>(
+            category.id == 'genre' ? '/Genres' : '/Studios',
+            queryParameters: {...scope, 'sortBy': 'SortName'});
+        return named(r.data);
+      case 'year' || 'rating':
+        final r = await _dio.get<Map<String, dynamic>>('/Items/Filters',
+            queryParameters: scope);
+        final list = (r.data?[category.id == 'year' ? 'Years' : 'OfficialRatings']
+                as List?) ??
+            const [];
+        return [for (final v in list) FilterValue('$v', '$v')];
+      case 'person':
+        // Not listed per library and possibly thousands: search only.
+        final q = search?.trim() ?? '';
+        if (q.isEmpty) return const [];
+        final r = await _dio.get<Map<String, dynamic>>('/Persons',
+            queryParameters: {'userId': _uid, 'searchTerm': q, 'limit': 50});
+        return named(r.data);
+    }
+    return const [];
   }
 
   @override

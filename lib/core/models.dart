@@ -533,6 +533,47 @@ enum SortField {
 /// What a library grid is showing.
 enum LibraryView { items, albums, artists }
 
+/// One way a library can be filtered (Plex `/filters`, Jellyfin's lists).
+@immutable
+class FilterCategory {
+  const FilterCategory(this.id, this.title,
+      {this.searchable = false, this.more = false, this.path});
+
+  /// The server's name for it (Plex `genre`, `actor`…), also the key in
+  /// [LibraryQuery.filters].
+  final String id;
+  final String title;
+
+  /// Long lists (actors, directors…) get a search box.
+  final bool searchable;
+
+  /// Technical ones (codecs, languages…) go under "More".
+  final bool more;
+
+  /// Where the server lists its values (Plex category `key`).
+  final String? path;
+
+  @override
+  bool operator ==(Object other) => other is FilterCategory && other.id == id;
+
+  @override
+  int get hashCode => id.hashCode;
+}
+
+/// One choice in a [FilterCategory]; equal by [id] (the title is for chips).
+@immutable
+class FilterValue {
+  const FilterValue(this.id, this.title);
+  final String id;
+  final String title;
+
+  @override
+  bool operator ==(Object other) => other is FilterValue && other.id == id;
+
+  @override
+  int get hashCode => id.hashCode;
+}
+
 @immutable
 class LibraryQuery {
   const LibraryQuery({
@@ -540,24 +581,53 @@ class LibraryQuery {
     this.descending = false,
     this.unwatchedOnly = false,
     this.view = LibraryView.items,
+    this.filters = const {},
   });
   final SortField sort;
   final bool descending;
   final bool unwatchedOnly;
   final LibraryView view;
 
+  /// Category id → chosen values. Values in one category are alternatives
+  /// (or); categories narrow each other (and).
+  final Map<String, List<FilterValue>> filters;
+
+  int get filterCount =>
+      filters.values.fold(0, (n, values) => n + values.length);
+
   LibraryQuery copyWith({
     SortField? sort,
     bool? descending,
     bool? unwatchedOnly,
     LibraryView? view,
+    Map<String, List<FilterValue>>? filters,
   }) =>
       LibraryQuery(
         sort: sort ?? this.sort,
         descending: descending ?? this.descending,
         unwatchedOnly: unwatchedOnly ?? this.unwatchedOnly,
         view: view ?? this.view,
+        filters: filters ?? this.filters,
       );
+
+  /// [filters] without empty categories, in a stable order (for ==).
+  List<(String, Set<String>)> get _filterKey => [
+        for (final k in (filters.keys.toList()..sort()))
+          if (filters[k]!.isNotEmpty) (k, {...filters[k]!.map((v) => v.id)}),
+      ];
+
+  static bool _sameFilters(LibraryQuery a, LibraryQuery b) {
+    final x = a._filterKey, y = b._filterKey;
+    if (x.length != y.length) return false;
+    for (var i = 0; i < x.length; i++) {
+      if (x[i].$1 != y[i].$1 ||
+          x[i].$2.length != y[i].$2.length ||
+          !x[i].$2.containsAll(y[i].$2)) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   @override
   bool operator ==(Object other) =>
@@ -565,10 +635,13 @@ class LibraryQuery {
       other.sort == sort &&
       other.descending == descending &&
       other.unwatchedOnly == unwatchedOnly &&
-      other.view == view;
+      other.view == view &&
+      _sameFilters(this, other);
 
   @override
-  int get hashCode => Object.hash(sort, descending, unwatchedOnly, view);
+  int get hashCode => Object.hash(sort, descending, unwatchedOnly, view,
+      Object.hashAllUnordered(
+          [for (final (k, ids) in _filterKey) Object.hash(k, Object.hashAllUnordered(ids))]));
 }
 
 enum PlayMethod {
