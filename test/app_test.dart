@@ -1077,6 +1077,45 @@ void main() {
     expect(calls.last, startsWith('POST /playlists {type: video, title: Friday, smart: 0'));
   });
 
+  test('playlistEntriesOf finds every entry of an item (Plex)', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final data = o.path == '/playlists/9/items'
+            ? {'MediaContainer': {'Metadata': [
+                {'ratingKey': '5', 'playlistItemID': 11, 'type': 'movie', 'title': 'A'},
+                {'ratingKey': '6', 'playlistItemID': 12, 'type': 'movie', 'title': 'B'},
+                {'ratingKey': '5', 'playlistItemID': 13, 'type': 'movie', 'title': 'A'},
+              ]}}
+            : {'MediaContainer': {}};
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't', machineId: 'mach'),
+        dio: dio);
+    final playlist = plex.parse(
+        {'ratingKey': '9', 'type': 'playlist', 'title': 'Mine', 'leafCount': 3});
+    final movie = plex.parse({'ratingKey': '5', 'type': 'movie', 'title': 'A'});
+    final found = await plex.playlistEntriesOf(playlist, movie);
+    expect(found.map((e) => e.playlistEntryId), ['11', '13']);
+  });
+
+  test('playlistEntriesOf on the demo: an item added twice, then removed',
+      () async {
+    final demo = DemoBackend(demoServer);
+    final movie = (await demo.search('Second Violin')).first;
+    await demo.createPlaylist('Twice over', movie);
+    final p = (await demo.playlists()).firstWhere((p) => p.title == 'Twice over');
+    await demo.addToPlaylist(p, movie);
+    final found = await demo.playlistEntriesOf(p, movie);
+    expect(found, hasLength(2));
+    for (final e in found) {
+      await demo.removeFromPlaylist(p, e);
+    }
+    expect(await demo.playlistEntriesOf(p, movie), isEmpty);
+  });
+
   test('Plex removes a playlist entry by its playlistItemID', () async {
     final calls = <String>[];
     final dio = Dio(BaseOptions(baseUrl: 'http://h'))
@@ -1477,7 +1516,7 @@ void main() {
   testWidgets('Add to playlist creates a playlist with the item',
       (tester) async {
     await openDemoMovie(tester, 'Low Sun');
-    await tester.tap(find.byTooltip('Add to playlist'));
+    await tester.tap(find.byTooltip('Playlists'));
     await tester.pumpAndSettle();
     expect(find.text('Friday Night'), findsOneWidget);
     await tester.tap(find.text('New playlist…'));
@@ -1486,6 +1525,12 @@ void main() {
     await tester.tap(find.text('Create'));
     await tester.pumpAndSettle();
     expect(find.text('Added to "Rainy day"'), findsOneWidget);
+    // The panel stays open and the new playlist is ticked.
+    expect(
+        find.descendant(
+            of: find.widgetWithText(ListTile, 'Rainy day'),
+            matching: find.byIcon(Icons.check_circle_rounded)),
+        findsOneWidget);
 
     final container =
         ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
@@ -1493,6 +1538,101 @@ void main() {
     final created = lists.firstWhere((p) => p.title == 'Rainy day');
     final items = await container.read(backendsProvider)['demo']!.children(created);
     expect(items.single.title, 'Low Sun');
+  });
+
+  String? focusedTileText() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return null;
+    final texts = <String>[];
+    void visit(Element e) {
+      if (e.widget is Text) texts.add((e.widget as Text).data ?? '');
+      e.visitChildren(visit);
+    }
+    (ctx as Element).visitChildren(visit);
+    return texts.join(' | ');
+  }
+
+  Finder tick(String playlist) => find.descendant(
+      of: find.widgetWithText(ListTile, playlist),
+      matching: find.byIcon(Icons.check_circle_rounded));
+
+  testWidgets('Playlists panel removes and re-adds with the remote',
+      (tester) async {
+    await openDemoMovie(tester, 'Copper Sky', tv: true);
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final demo = container.read(backendsProvider)['demo']!;
+    final copper = (await demo.search('Copper Sky')).first;
+    await demo.createPlaylist('Keepers', copper);
+    await demo.createPlaylist('Elsewhere', (await demo.search('Low Sun')).first);
+    // Demo state is shared by every test: leave no extra playlists behind.
+    addTearDown(() async {
+      for (final p in await demo.playlists()) {
+        if (p.title == 'Keepers' || p.title == 'Elsewhere') {
+          await demo.deletePlaylist(p);
+        }
+      }
+    });
+
+    await tester.tap(find.byTooltip('Playlists'));
+    await tester.pumpAndSettle();
+    expect(find.text('Playlists'), findsWidgets);
+    expect(focusedTileText(), contains('New playlist…'));
+    expect(tick('Keepers'), findsOneWidget);
+    expect(tick('Elsewhere'), findsNothing);
+
+    for (var i = 0; i < 20 && !(focusedTileText() ?? '').contains('Keepers'); i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+    }
+    expect(focusedTileText(), contains('Keepers'));
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(find.text('Removed from "Keepers"'), findsOneWidget);
+    expect(tick('Keepers'), findsNothing);
+    // The row's item count follows the change while the panel stays open.
+    expect(find.descendant(of: find.widgetWithText(ListTile, 'Keepers'),
+        matching: find.text('0 items')), findsOneWidget);
+    expect(focusedTileText(), contains('Keepers'));
+    final keepers =
+        (await demo.playlists()).firstWhere((p) => p.title == 'Keepers');
+    expect(await demo.playlistEntriesOf(keepers, copper), isEmpty);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(find.text('Added to "Keepers"'), findsOneWidget);
+    expect(tick('Keepers'), findsOneWidget);
+    expect(focusedTileText(), contains('Keepers'));
+    expect(await demo.playlistEntriesOf(keepers, copper), hasLength(1));
+  });
+
+  testWidgets('Playlists panel shows no ticks for a show', (tester) async {
+    await _pump(tester, const Size(1440, 900));
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final demo = container.read(backendsProvider)['demo']!;
+    final show = (await demo.search('Kitchen Table'))
+        .firstWhere((i) => i.kind == MediaKind.show);
+    // Even when the show itself sits in a playlist, "in it" isn't clear-cut.
+    await demo.createPlaylist('Show night', show);
+    addTearDown(() async {
+      for (final p in await demo.playlists()) {
+        if (p.title == 'Show night') await demo.deletePlaylist(p);
+      }
+    });
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('TV Shows').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Kitchen Table').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Playlists'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(ListTile, 'Show night'), findsOneWidget);
+    expect(find.byIcon(Icons.check_circle_rounded), findsNothing);
   });
 
   testWidgets('Manage panels put the remote on something', (tester) async {
@@ -1529,7 +1669,7 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Add to playlist'));
+    await tester.tap(find.byTooltip('Playlists'));
     await tester.pumpAndSettle();
     expect(focusedText(), contains('New playlist…'));
   });

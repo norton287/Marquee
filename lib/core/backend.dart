@@ -184,6 +184,14 @@ abstract class MediaBackend {
 
   Future<void> addToPlaylist(MediaItem playlist, MediaItem item) async {}
 
+  /// [item]'s entries in [playlist] (several if it was added more than once),
+  /// each with its [MediaItem.playlistEntryId] for [removeFromPlaylist].
+  /// Neither server can ask "which playlists hold this?", so this reads the
+  /// playlist's contents.
+  Future<List<MediaItem>> playlistEntriesOf(
+          MediaItem playlist, MediaItem item) async =>
+      [for (final e in await children(playlist)) if (e.id == item.id) e];
+
   /// Creates a playlist called [title] holding [item].
   Future<void> createPlaylist(String title, MediaItem item) async {}
 

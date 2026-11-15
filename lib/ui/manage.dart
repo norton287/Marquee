@@ -1353,7 +1353,7 @@ class _RemoveFromPlaylistPanelState
 }
 
 // ---------------------------------------------------------------------------
-// Add to playlist
+// Playlists: add to one, or take the item out of one that holds it
 // ---------------------------------------------------------------------------
 
 class AddToPlaylistButton extends ConsumerWidget {
@@ -1367,7 +1367,7 @@ class AddToPlaylistButton extends ConsumerWidget {
       return const SizedBox.shrink();
     }
     return IconButton.outlined(
-      tooltip: 'Add to playlist',
+      tooltip: 'Playlists',
       onPressed: () => showPanel<void>(context,
           builder: (_) => _PlaylistPanel(item: item)),
       icon: const Icon(Icons.playlist_add_rounded),
@@ -1375,6 +1375,10 @@ class AddToPlaylistButton extends ConsumerWidget {
   }
 }
 
+/// Every playlist that can take the item; ✓ on those that hold it. OK adds
+/// to an unticked one and removes every entry from a ticked one. The panel
+/// stays open and rows stay enabled while a request runs, so the remote keeps
+/// its place.
 class _PlaylistPanel extends ConsumerStatefulWidget {
   const _PlaylistPanel({required this.item});
   final MediaItem item;
@@ -1384,96 +1388,184 @@ class _PlaylistPanel extends ConsumerStatefulWidget {
 }
 
 class _PlaylistPanelState extends ConsumerState<_PlaylistPanel> {
+  /// The playlist id a request is running for ('+' = creating one).
   String? _busy;
 
-  Future<void> _done(Future<void> Function() action, String playlist) async {
-    final container = ProviderScope.containerOf(context, listen: false);
-    final messenger = ScaffoldMessenger.of(context);
+  /// The item's entries per playlist id, once read.
+  final _entries = <String, List<MediaItem>>{};
+  final _loading = <String>{};
+  final _failed = <String>{};
+
+  /// "In this playlist" is only clear-cut for a single video or track; a
+  /// show, season or album can be partly in one.
+  bool get _ticks => widget.item.kind.isPlayable;
+
+  /// Reads which entries of [playlist] are the item. Safe to call from build:
+  /// it only marks the row as loading until the answer arrives.
+  void _load(MediaItem playlist) {
+    final backend = ref.read(backendsProvider)[widget.item.serverId];
+    if (!_ticks || backend == null) return;
+    _loading.add(playlist.id);
+    _failed.remove(playlist.id);
+    backend.playlistEntriesOf(playlist, widget.item).then((found) {
+      if (!mounted) return;
+      setState(() {
+        _entries[playlist.id] = found;
+        _loading.remove(playlist.id);
+      });
+    }, onError: (Object _) {
+      if (!mounted) return;
+      setState(() {
+        _entries.remove(playlist.id);
+        _failed.add(playlist.id);
+        _loading.remove(playlist.id);
+      });
+    });
+  }
+
+  void _say(String text) => (ScaffoldMessenger.of(context)..hideCurrentSnackBar())
+      .showSnackBar(SnackBar(content: Text(text)));
+
+  void _changed(MediaItem playlist) {
+    ProviderScope.containerOf(context, listen: false)
+      ..invalidate(playlistsProvider(widget.item.serverId))
+      ..invalidate(childrenProvider)
+      ..invalidate(itemProvider(playlist.ref))
+      // The panel's own list: its item counts (rows stay mounted meanwhile).
+      ..invalidate(playlistsForProvider(widget.item.ref));
+  }
+
+  Future<void> _toggle(MediaItem playlist) async {
+    // Repeat presses and rows still reading are ignored, never disabled
+    // (a disabled row would drop the remote's focus).
+    if (_busy != null || _loading.contains(playlist.id)) return;
+    final backend = ref.read(backendsProvider)[widget.item.serverId];
+    if (backend == null) return;
+    final entries = _entries[playlist.id] ?? const <MediaItem>[];
+    final removing = entries.isNotEmpty;
+    setState(() => _busy = playlist.id);
     try {
-      await action();
-      container
-        ..invalidate(playlistsProvider(widget.item.serverId))
-        ..invalidate(childrenProvider)
-        ..invalidate(itemProvider);
-      if (mounted) Navigator.pop(context);
-      (messenger..hideCurrentSnackBar()).showSnackBar(
-          SnackBar(content: Text('Added to "$playlist"')));
+      if (removing) {
+        for (final e in entries) {
+          await backend.removeFromPlaylist(playlist, e);
+        }
+      } else {
+        await backend.addToPlaylist(playlist, widget.item);
+      }
+      if (!mounted) return;
+      _changed(playlist);
+      _say(removing
+          ? 'Removed from "${playlist.title}"'
+          : 'Added to "${playlist.title}"');
+      if (removing) {
+        _entries[playlist.id] = const [];
+      } else {
+        _load(playlist); // the new entry's id
+      }
     } catch (e) {
-      (messenger..hideCurrentSnackBar()).showSnackBar(SnackBar(content: Text(friendlyError(e))));
+      if (!mounted) return;
+      _say(friendlyError(e));
+      _load(playlist); // a removal may have gone part way
+    } finally {
       if (mounted) setState(() => _busy = null);
     }
   }
 
   Future<void> _create() async {
-    final name = await showDialog<String>(
-        context: context, builder: (_) => const _NewPlaylistDialog());
-    if (name == null || name.trim().isEmpty || !mounted) return;
-    final backend = ref.read(backendsProvider)[widget.item.serverId]!;
+    if (_busy != null) return;
+    final name = (await showDialog<String>(
+            context: context, builder: (_) => const _NewPlaylistDialog()))
+        ?.trim();
+    if (name == null || name.isEmpty || !mounted) return;
+    final backend = ref.read(backendsProvider)[widget.item.serverId];
+    if (backend == null) return;
     setState(() => _busy = '+');
-    await _done(
-        () => backend.createPlaylist(name.trim(), widget.item), name.trim());
+    try {
+      await backend.createPlaylist(name, widget.item);
+      if (!mounted) return;
+      ProviderScope.containerOf(context, listen: false)
+        ..invalidate(playlistsProvider(widget.item.serverId))
+        ..invalidate(playlistsForProvider(widget.item.ref));
+      _say('Added to "$name"');
+    } catch (e) {
+      if (mounted) _say(friendlyError(e));
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+  }
+
+  static const _spinner = SizedBox(
+      width: 18,
+      height: 18,
+      child: CircularProgressIndicator(strokeWidth: 2));
+
+  Widget? _trailing(String id) {
+    if (_busy == id || _loading.contains(id)) return _spinner;
+    if (_failed.contains(id)) {
+      return Tooltip(
+          message: "Couldn't check this playlist",
+          child: Icon(Icons.error_outline_rounded,
+              color: Theme.of(context).colorScheme.error));
+    }
+    if (_entries[id]?.isNotEmpty ?? false) {
+      return const Icon(Icons.check_circle_rounded, color: Palette.accent);
+    }
+    return null;
   }
 
   @override
   Widget build(BuildContext context) {
     final lists = ref.watch(playlistsForProvider(widget.item.ref));
-    final backend = ref.watch(backendsProvider)[widget.item.serverId];
-    Widget? spinner(String id) => _busy == id
-        ? const SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2))
-        : null;
+    // Keep showing the rows while the list reloads (after a change), so the
+    // focused row stays put.
+    final playlists = lists.value;
+    if (playlists != null) {
+      for (final p in playlists) {
+        if (!_entries.containsKey(p.id) &&
+            !_loading.contains(p.id) &&
+            !_failed.contains(p.id)) {
+          _load(p);
+        }
+      }
+    }
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _PanelTitle('Add to playlist', subtitle: widget.item.title),
+          _PanelTitle('Playlists', subtitle: widget.item.title),
           ListTile(
             autofocus: true,
-            enabled: _busy == null,
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(10)),
             focusColor: Palette.surfaceHigh,
             leading: const Icon(Icons.add_rounded, color: Palette.accent),
             title: const Text('New playlist…'),
-            trailing: spinner('+'),
+            trailing: _busy == '+' ? _spinner : null,
             onTap: _create,
           ),
-          switch (lists) {
-            AsyncData(:final value) => Column(
-                children: [
-                  for (final p in value)
-                    ListTile(
-                      enabled: _busy == null,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
-                      focusColor: Palette.surfaceHigh,
-                      leading: const Icon(Icons.queue_music_rounded),
-                      title: Text(p.title),
-                      subtitle: p.childCount != null
-                          ? Text('${p.childCount} items')
-                          : null,
-                      trailing: spinner(p.id),
-                      onTap: backend == null
-                          ? null
-                          : () {
-                              setState(() => _busy = p.id);
-                              _done(() => backend.addToPlaylist(p, widget.item),
-                                  p.title);
-                            },
-                    ),
-                ],
-              ),
-            AsyncError(:final error) => Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(friendlyError(error),
-                    style:
-                        TextStyle(color: Theme.of(context).colorScheme.error)),
-              ),
-            _ => const Padding(padding: EdgeInsets.all(24), child: Loading()),
-          },
+          if (playlists != null)
+            for (final p in playlists)
+              ListTile(
+                key: ValueKey(p.id),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+                focusColor: Palette.surfaceHigh,
+                leading: const Icon(Icons.queue_music_rounded),
+                title: Text(p.title),
+                subtitle:
+                    p.childCount != null ? Text('${p.childCount} items') : null,
+                trailing: _trailing(p.id),
+                onTap: () => _toggle(p),
+              )
+          else if (lists.hasError)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(friendlyError(lists.error!),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            )
+          else
+            const Padding(padding: EdgeInsets.all(24), child: Loading()),
         ],
       ),
     );
