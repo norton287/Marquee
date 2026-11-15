@@ -823,6 +823,26 @@ class Loading extends StatelessWidget {
 Future<T?> showPanel<T>(BuildContext context,
     {required WidgetBuilder builder, double width = 400}) {
   final wide = MediaQuery.sizeOf(context).width >= 700;
+  final page = ScaffoldMessenger.maybeOf(context);
+  // The panel's own messenger: a page snackbar is drawn under the panel's
+  // route (behind a phone's bottom sheet, under the side panel's barrier).
+  Widget content(BuildContext context) => _PanelScope(
+        page: page,
+        child: ScaffoldMessenger(
+          // passthrough: the panel keeps the constraints it had (tight width
+          // and height on the side panel).
+          child: Stack(fit: StackFit.passthrough, children: [
+            Builder(builder: builder),
+            const Positioned.fill(
+              child: IgnorePointer(
+                child: Scaffold(
+                    backgroundColor: Colors.transparent,
+                    body: SizedBox.shrink()),
+              ),
+            ),
+          ]),
+        ),
+      );
   if (!wide) {
     return showModalBottomSheet<T>(
       context: context,
@@ -831,7 +851,7 @@ Future<T?> showPanel<T>(BuildContext context,
       builder: (context) => ConstrainedBox(
         constraints: BoxConstraints(
             maxHeight: MediaQuery.sizeOf(context).height * 0.8),
-        child: builder(context),
+        child: content(context),
       ),
     );
   }
@@ -851,7 +871,7 @@ Future<T?> showPanel<T>(BuildContext context,
             height: double.infinity,
             child: Padding(
               padding: const EdgeInsets.only(top: 12),
-              child: builder(context),
+              child: content(context),
             ),
           ),
         ),
@@ -864,6 +884,29 @@ Future<T?> showPanel<T>(BuildContext context,
     ),
   );
 }
+
+class _PanelScope extends InheritedWidget {
+  const _PanelScope({required this.page, required super.child});
+  final ScaffoldMessengerState? page;
+
+  @override
+  bool updateShouldNotify(_PanelScope old) => page != old.page;
+}
+
+/// The messenger of the page under a [showPanel] panel (or the nearest one
+/// outside a panel). Use it for a message said as the panel closes: the
+/// panel's own messenger goes away with it.
+ScaffoldMessengerState pageMessenger(BuildContext context) =>
+    context.getInheritedWidgetOfExactType<_PanelScope>()?.page ??
+    ScaffoldMessenger.of(context);
+
+/// Where a panel's message goes now: the panel while it is open, the page once
+/// it is closing (a message on a closing panel vanishes with it). [context]
+/// must be mounted.
+ScaffoldMessengerState panelMessenger(BuildContext context) =>
+    (ModalRoute.of(context)?.isActive ?? true)
+        ? ScaffoldMessenger.of(context)
+        : pageMessenger(context);
 
 /// "★ 7.8" with a real icon, so it never depends on a font having the glyph.
 InlineSpan ratingSpan(double rating, {Color color = Palette.text, double size = 15}) =>

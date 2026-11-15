@@ -325,7 +325,7 @@ class _UploadPanelState extends ConsumerState<_UploadPanel> {
           url: url);
       reloadItem(container, widget.item);
       if (!mounted) return;
-      final messenger = ScaffoldMessenger.of(context);
+      final messenger = pageMessenger(context); // said as the panel closes
       Navigator.pop(context);
       (messenger..hideCurrentSnackBar()).showSnackBar(
           SnackBar(content: Text('${widget.kind.label} uploaded')));
@@ -556,7 +556,7 @@ class _EditPanelState extends ConsumerState<_EditPanel> {
           genres: genres);
       reloadItem(container, widget.item);
       if (!mounted) return;
-      final messenger = ScaffoldMessenger.of(context);
+      final messenger = pageMessenger(context); // said as the panel closes
       Navigator.pop(context);
       (messenger..hideCurrentSnackBar())
           .showSnackBar(SnackBar(content: Text('Saved changes to $title')));
@@ -755,7 +755,7 @@ class _MatchPanelState extends ConsumerState<_MatchPanel> {
       await backend.applyMatch(widget.item, m);
       reloadItem(container, widget.item, again: true);
       if (!mounted) return;
-      final messenger = ScaffoldMessenger.of(context);
+      final messenger = pageMessenger(context); // said as the panel closes
       Navigator.pop(context);
       (messenger..hideCurrentSnackBar()).showSnackBar(SnackBar(
           content: Text('Matched to ${m.title}'
@@ -909,7 +909,7 @@ class _ArtworkPanelState extends ConsumerState<_ArtworkPanel> {
       await backend.setArtwork(widget.item, widget.kind, o);
       reloadItem(container, widget.item);
       if (!mounted) return;
-      final messenger = ScaffoldMessenger.of(context);
+      final messenger = pageMessenger(context); // said as the panel closes
       Navigator.pop(context);
       (messenger..hideCurrentSnackBar()).showSnackBar(
           SnackBar(content: Text('${widget.kind.label} updated')));
@@ -1087,7 +1087,7 @@ class _DeleteVersionPanelState extends ConsumerState<_DeleteVersionPanel> {
     );
     if (ok != true || !mounted) return;
     final container = ProviderScope.containerOf(context, listen: false);
-    final messenger = ScaffoldMessenger.of(context);
+    final messenger = pageMessenger(context); // said as the panel closes
     final backend = container.read(backendsProvider)[item.serverId];
     if (backend == null) return;
     setState(() {
@@ -1211,7 +1211,11 @@ class _RemoveFromPlaylistPanelState
     // remote's focus); a second OK meanwhile is ignored here instead.
     if (backend == null || entries == null || _removing != null) return;
     final container = ProviderScope.containerOf(context, listen: false);
-    final messenger = ScaffoldMessenger.of(context);
+    // The panel may be closing or closed when the server answers: then the
+    // message goes to the page (the panel's own messenger goes with it).
+    final page = pageMessenger(context);
+    ScaffoldMessengerState messenger() =>
+        mounted ? panelMessenger(context) : page;
     final at = entries.indexOf(entry);
     setState(() {
       _removing = entry.playlistEntryId;
@@ -1220,9 +1224,8 @@ class _RemoveFromPlaylistPanelState
     try {
       await backend.removeFromPlaylist(widget.playlist, entry);
     } catch (e) {
-      // A snackbar shows however far the list is scrolled, and even if the
-      // panel was closed before the server answered.
-      (messenger..hideCurrentSnackBar())
+      // A snackbar shows however far the list is scrolled.
+      (messenger()..hideCurrentSnackBar())
           .showSnackBar(SnackBar(content: Text(friendlyError(e))));
       if (mounted) {
         setState(() => _removing = null);
@@ -1231,7 +1234,7 @@ class _RemoveFromPlaylistPanelState
       }
       return;
     }
-    (messenger..hideCurrentSnackBar())
+    (messenger()..hideCurrentSnackBar())
         .showSnackBar(SnackBar(content: Text('Removed ${entry.title}')));
     reloadItem(container, widget.playlist);
     container.invalidate(playlistsProvider(widget.playlist.serverId));
@@ -1423,7 +1426,7 @@ class _PlaylistPanelState extends ConsumerState<_PlaylistPanel> {
     });
   }
 
-  void _say(String text) => (ScaffoldMessenger.of(context)..hideCurrentSnackBar())
+  void _say(String text) => (panelMessenger(context)..hideCurrentSnackBar())
       .showSnackBar(SnackBar(content: Text(text)));
 
   void _changed(MediaItem playlist) {

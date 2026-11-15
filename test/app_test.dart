@@ -2235,6 +2235,32 @@ void main() {
     expect(focusedEntry(), '26');
   });
 
+  testWidgets('phone: a panel\'s message shows on the sheet, not behind it',
+      (tester) async {
+    await _pump(tester, const Size(390, 844));
+    await tester.tap(find.text('Libraries').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Movies').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, 'All'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('A Quiet Orbit').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Playlists'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BottomSheet), findsOneWidget);
+
+    Finder onSheet(String text) => find.descendant(
+        of: find.byType(BottomSheet), matching: find.text(text));
+    await tester.tap(find.widgetWithText(ListTile, 'Friday Night'));
+    await tester.pumpAndSettle();
+    expect(onSheet('Added to "Friday Night"'), findsOneWidget);
+    // Put the sample playlist back as it was.
+    await tester.tap(find.widgetWithText(ListTile, 'Friday Night'));
+    await tester.pumpAndSettle();
+    expect(onSheet('Removed from "Friday Night"'), findsOneWidget);
+  });
+
   testWidgets('remove from playlist lays out as a phone bottom sheet',
       (tester) async {
     await _pump(tester, const Size(390, 844));
@@ -2326,6 +2352,69 @@ void main() {
     var onRow = identical(ctx, ronin);
     ctx?.visitAncestorElements((e) => !(onRow = onRow || identical(e, ronin)));
     expect(onRow, isTrue, reason: 'focus: ${FocusManager.instance.primaryFocus}');
+  });
+
+  testWidgets('TV: closing the remove panel mid-request still says why',
+      (tester) async {
+    Artwork.network = false;
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        if (o.method == 'DELETE') {
+          Future<void>.delayed(const Duration(milliseconds: 300), () =>
+              h.reject(DioException(
+                  requestOptions: o,
+                  response: Response(requestOptions: o, statusCode: 403))));
+          return;
+        }
+        final data = switch (o.path) {
+          '/playlists/9' => {'MediaContainer': {'Metadata': [
+              {'ratingKey': '9', 'type': 'playlist', 'title': 'Shared',
+               'leafCount': 1}]}},
+          '/playlists/9/items' => {'MediaContainer': {'Metadata': [
+              {'ratingKey': '1', 'playlistItemID': 10, 'type': 'movie', 'title': 'Heat'},
+            ]}},
+          _ => {'MediaContainer': {}},
+        };
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't', machineId: 'm'),
+        dio: dio);
+    final playlist = plex.parse(
+        {'ratingKey': '9', 'type': 'playlist', 'title': 'Shared', 'leafCount': 1});
+    final storage = await _storage(demo: false);
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        storageProvider.overrideWithValue(storage),
+        deviceIsTvProvider.overrideWithValue(true),
+        backendsProvider.overrideWithValue(<String, MediaBackend>{'p': plex}),
+      ],
+      retry: (_, _) => null,
+      child: MaterialApp(
+        home: Scaffold(body: Center(child: ManageButton(item: playlist))),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Manage'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove from playlist…'));
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select); // Heat, focused
+    await tester.pump();
+    // Back before the server answers.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('Heat'), findsNothing); // the panel is gone
+    await tester.pump(const Duration(milliseconds: 400)); // the refusal arrives
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.descendant(of: find.byType(SnackBar),
+        matching: find.textContaining('Only its owner can')), findsOneWidget);
   });
 
   testWidgets('TV: delete a version asks first, Cancel focused', (tester) async {
