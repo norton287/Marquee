@@ -127,6 +127,16 @@ class RecordingDemo extends DemoBackend {
   /// While set, stream lookups wait for it (a slow server).
   Completer<void>? gate;
 
+  /// An album that gains a track (the server changed behind the car).
+  String? extraTrackFor;
+  @override
+  Future<List<MediaItem>> children(MediaItem parent) async {
+    final list = await super.children(parent);
+    return parent.id == extraTrackFor
+        ? [...list, MediaItem(serverId: 'demo', id: 'new-track', kind: MediaKind.track, title: 'New')]
+        : list;
+  }
+
   @override
   Future<PlaybackSource> playback(MediaItem item, PlaybackRequest request) async {
     resolved.add(item.id);
@@ -1437,7 +1447,8 @@ void main() {
       final music = (await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
       car = CarLibrary(() => {'demo': demo}, (_) async => [music]);
       handler = MarqueeAudioHandler(engine, car,
-          notifyChanged: (id) async => notified.add(id));
+          notifyChanged: (id) async => notified.add(id),
+          keepFreshFor: Duration.zero);
     });
     tearDown(() async {
       await handler.dispose();
@@ -1585,6 +1596,84 @@ void main() {
       await settle();
       expect(handler.playbackState.value.processingState,
           as_.AudioProcessingState.ready);
+    });
+
+    test('car lists are kept: reopening answers at once and refreshes quietly',
+        () async {
+      final counting = CountingDemo();
+      final servers = <String, MediaBackend>{'demo': counting};
+      final music = (await counting.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+      final kept = MarqueeAudioHandler(
+          engine,
+          CarLibrary(() => servers, (_) async => [music],
+              timeout: const Duration(milliseconds: 100)),
+          notifyChanged: (id) async => notified.add(id),
+          keepFreshFor: Duration.zero);
+      final first = await kept.getChildren('tab:albums');
+      expect(first, isNotEmpty);
+      // Now the server is slow to answer (a song is starting to stream).
+      servers['demo'] = UnreachableDemo();
+      final again = await kept
+          .getChildren('tab:albums')
+          .timeout(const Duration(milliseconds: 200));
+      expect(again.map((m) => m.id), first.map((m) => m.id)); // from memory
+      // The refresh tried meanwhile gives up (and changes nothing).
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      // When the server answers the same again, nothing is redrawn.
+      servers['demo'] = counting;
+      final calls = counting.calls;
+      await kept.getChildren('tab:albums');
+      await settle();
+      expect(counting.calls, greaterThan(calls)); // refreshed behind it
+      expect(notified, isEmpty);
+      await kept.dispose();
+    });
+
+    test("an empty list isn't kept (it may have been a dead spot)", () async {
+      var down = true;
+      final flaky = MarqueeAudioHandler(
+          engine,
+          CarLibrary(() => {'demo': demo},
+              (_) async => down ? const <Library>[] : [
+                    (await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music)
+                  ]),
+          notifyChanged: (id) async => notified.add(id));
+      expect(await flaky.getChildren('tab:albums'), isEmpty);
+      down = false;
+      expect(await flaky.getChildren('tab:albums'), isNotEmpty);
+      await flaky.dispose();
+    });
+
+    test('a list that changed behind the car redraws it', () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      await handler.getChildren(album.id);
+      // The server's album gained a track since.
+      demo.extraTrackFor = album.id.split(':').last;
+      await handler.getChildren(album.id);
+      await settle();
+      expect(notified, contains(album.id));
+      expect((await handler.getChildren(album.id)).length,
+          greaterThan(0));
+    });
+
+    test('changing the car library clears what was kept', () async {
+      await handler.getChildren('tab:albums');
+      await handler.refreshAll(clear: true);
+      expect(handler.keptLists, 0);
+    });
+
+    test('the car can ask what the playing item is, and resume it', () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      final tracks = await handler.getChildren(album.id);
+      await handler.playFromMediaId(tracks[1].id);
+      await settle();
+      final now = handler.mediaItem.value!;
+      expect((await handler.getMediaItem(now.id))?.title, now.title);
+      expect((await handler.getMediaItem(tracks[2].id))?.title, tracks[2].title);
+      // Android's "recent" root (resume card): the current track.
+      final recent = await handler.getChildren('recent');
+      expect(recent.single.title, now.title);
+      expect(recent.single.playable, isTrue);
     });
 
     test('refreshRoot tells the car the menu changed', () async {

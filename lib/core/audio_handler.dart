@@ -58,7 +58,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       {this.notifyChanged,
       this.localArt,
       this.carArt,
-      this.artDeadline = const Duration(seconds: 2)}) {
+      this.artDeadline = const Duration(seconds: 2),
+      this.keepFreshFor = const Duration(minutes: 1)}) {
     _sub = engine.states.listen(_publish);
     _publish(engine.state);
   }
@@ -83,6 +84,56 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
 
   /// The most a car list waits for its artwork.
   final Duration artDeadline;
+
+  /// A kept car list is refreshed in the background at most this often.
+  final Duration keepFreshFor;
+
+  /// Car lists kept while the app runs (never empty ones: those may be a
+  /// dead spot): reopening answers at once, and a background refresh
+  /// redraws the car only if something changed. When a track starts, the
+  /// car reloads the list it came from while the song starts streaming; a
+  /// slow answer then showed as "can't browse".
+  final _kept = <String, List<as_.MediaItem>>{};
+  final _keptAt = <String, DateTime>{};
+  final _refreshing = <String, Future<void>>{};
+
+  int get keptLists => _kept.length;
+
+  void _keep(String id, List<as_.MediaItem> list) {
+    if (list.isEmpty) return;
+    _kept[id] = list;
+    _keptAt[id] = DateTime.now();
+  }
+
+  static bool _same(List<as_.MediaItem> a, List<as_.MediaItem> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id ||
+          a[i].title != b[i].title ||
+          a[i].artist != b[i].artist ||
+          a[i].artUri != b[i].artUri) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  Future<List<as_.MediaItem>> _load(String parentId) async =>
+      _withArt(await library.children(parentId));
+
+  Future<void> _refresh(String id) => _refreshing[id] ??= () async {
+        try {
+          final fresh = await _load(id);
+          final old = _kept[id];
+          if (fresh.isEmpty) return;
+          _keep(id, fresh);
+          if (old == null || !_same(old, fresh)) await notifyChanged?.call(id);
+        } catch (_) {
+          // Keep showing what was there.
+        } finally {
+          _refreshing.remove(id);
+        }
+      }();
 
   late final StreamSubscription<MusicState> _sub;
   List<MediaItem>? _lastQueue;
@@ -116,8 +167,36 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
 
   @override
   Future<List<as_.MediaItem>> getChildren(String parentMediaId,
-          [Map<String, dynamic>? options]) async =>
-      _withArt(await library.children(parentMediaId));
+      [Map<String, dynamic>? options]) async {
+    // Android's media resumption ("recent" root): what's playing / last played.
+    if (parentMediaId == as_.AudioService.recentRootId) {
+      final now = mediaItem.value;
+      return now == null ? const [] : [now.copyWith(playable: true)];
+    }
+    final kept = _kept[parentMediaId];
+    if (kept != null) {
+      if (DateTime.now().difference(_keptAt[parentMediaId]!) >= keepFreshFor) {
+        unawaited(_refresh(parentMediaId));
+      }
+      return kept;
+    }
+    final fresh = await _load(parentMediaId);
+    _keep(parentMediaId, fresh);
+    return fresh;
+  }
+
+  /// The car asking what an item is (e.g. the one playing).
+  @override
+  Future<as_.MediaItem?> getMediaItem(String mediaId) async {
+    final now = mediaItem.value;
+    if (now?.id == mediaId) return now;
+    for (final list in [..._kept.values, queue.value]) {
+      for (final m in list) {
+        if (m.id == mediaId) return m;
+      }
+    }
+    return null;
+  }
 
   @override
   Future<List<as_.MediaItem>> search(String query,
@@ -129,7 +208,12 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   Future<void> refreshRoot() async => notifyChanged?.call('root');
 
   /// Servers, libraries or the profile changed: every list may differ.
-  Future<void> refreshAll() async {
+  /// [clear]: what was kept no longer applies (the car's library changed).
+  Future<void> refreshAll({bool clear = false}) async {
+    if (clear) {
+      _kept.clear();
+      _keptAt.clear();
+    }
     for (final id in const [
       'root', 'tab:recent', 'tab:playlists', 'tab:artists', 'tab:albums',
     ]) {

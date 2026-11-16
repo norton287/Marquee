@@ -194,7 +194,7 @@ Future<void> _startMusicSession(
     await handler.refreshRoot();
     container.listen(backendsProvider, (_, _) => handler.refreshAll());
     container.listen(settingsProvider.select((s) => s.carMusicLibrary),
-        (_, _) => handler.refreshAll());
+        (_, _) => handler.refreshAll(clear: true));
   } catch (e) {
     // Music still plays in the app without the session.
     debugPrint('Music session unavailable: $e');
