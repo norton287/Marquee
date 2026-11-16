@@ -14,6 +14,7 @@ class MusicState {
     this.position = Duration.zero,
     this.duration = Duration.zero,
     this.error,
+    this.loading = false,
   });
   final List<MediaItem> queue;
   final int index;
@@ -21,6 +22,9 @@ class MusicState {
   final Duration position;
   final Duration duration;
   final String? error;
+
+  /// A track is being looked up / opened, or its stream is buffering.
+  final bool loading;
 
   MediaItem? get current =>
       index >= 0 && index < queue.length ? queue[index] : null;
@@ -33,6 +37,7 @@ class MusicState {
     Duration? position,
     Duration? duration,
     String? error,
+    bool? loading,
   }) =>
       MusicState(
         queue: queue ?? this.queue,
@@ -41,6 +46,7 @@ class MusicState {
         position: position ?? this.position,
         duration: duration ?? this.duration,
         error: error,
+        loading: loading ?? this.loading,
       );
 }
 
@@ -53,6 +59,7 @@ abstract class TrackPlayer {
   Future<void> stop();
   Future<void> seek(Duration to);
   Stream<bool> get playing;
+  Stream<bool> get buffering;
   Stream<Duration> get position;
   Stream<Duration> get duration;
   Stream<void> get completed;
@@ -80,6 +87,12 @@ class MusicEngine {
   }) {
     _subs.addAll([
       player.playing.listen(_onPlaying),
+      // A stream stalling mid-track shows as loading too.
+      player.buffering.listen((b) {
+        if (_current != null && b != _state.loading) {
+          _emit(_state.copyWith(loading: b, error: _state.error));
+        }
+      }),
       player.position.listen(_onPosition),
       player.duration.listen((d) => _emit(_state.copyWith(duration: d))),
       player.completed.listen((_) => _onCompleted()),
@@ -185,6 +198,7 @@ class MusicEngine {
     _emit(_state.copyWith(
         index: index,
         playing: true,
+        loading: true,
         position: Duration.zero,
         duration: track.duration ?? Duration.zero));
     try {
@@ -207,10 +221,10 @@ class MusicEngine {
       if (play) await player.play();
       if (gen != _generation) return;
       _report(PlayState.started);
+      _emit(_state.copyWith(loading: false, playing: play));
       if (!play) {
         _reportedPause = true;
         _report(PlayState.paused);
-        _emit(_state.copyWith(playing: false));
       }
       _reportTimer?.cancel();
       _reportTimer = Timer.periodic(reportEvery, (_) {
@@ -254,7 +268,7 @@ class MusicEngine {
       return _start(_state.index, retry: true);
     }
     _endCurrent();
-    _emit(_state.copyWith(error: describeError(e)));
+    _emit(_state.copyWith(error: describeError(e), loading: false));
     if (_state.hasNext) {
       final message = _state.error;
       await _start(_state.index + 1);
@@ -307,7 +321,8 @@ class MusicEngine {
     if (tracks.isEmpty) return;
     _endCurrent();
     _prefetch = null;
-    _emit(MusicState(queue: tracks, index: startIndex, playing: true));
+    _emit(MusicState(
+        queue: tracks, index: startIndex, playing: true, loading: true));
     await _start(startIndex.clamp(0, tracks.length - 1));
   }
 

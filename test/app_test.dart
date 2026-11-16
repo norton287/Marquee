@@ -66,7 +66,11 @@ class FakeTrackPlayer implements TrackPlayer {
   final _duration = StreamController<Duration>.broadcast(sync: true);
   final _completed = StreamController<void>.broadcast(sync: true);
   final _error = StreamController<String>.broadcast(sync: true);
+  final _buffering = StreamController<bool>.broadcast(sync: true);
 
+  @override
+  Stream<bool> get buffering => _buffering.stream;
+  void buffer(bool b) => _buffering.add(b);
   @override
   Stream<bool> get playing => _playing.stream;
   @override
@@ -118,9 +122,13 @@ class RecordingDemo extends DemoBackend {
   final reports = <String>[];
   int failNext = 0;
 
+  /// While set, stream lookups wait for it (a slow server).
+  Completer<void>? gate;
+
   @override
   Future<PlaybackSource> playback(MediaItem item, PlaybackRequest request) async {
     resolved.add(item.id);
+    await gate?.future;
     if (failNext > 0) {
       failNext--;
       throw DioException(
@@ -1412,6 +1420,22 @@ void main() {
       await slow.dispose();
     });
 
+    test('the car shows loading while a track starts', () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      final tracks = await handler.getChildren(album.id);
+      demo.gate = Completer<void>();
+      final playing = handler.playFromMediaId(tracks.first.id);
+      await settle();
+      expect(handler.playbackState.value.processingState,
+          as_.AudioProcessingState.buffering);
+      demo.gate!.complete();
+      demo.gate = null;
+      await playing;
+      await settle();
+      expect(handler.playbackState.value.processingState,
+          as_.AudioProcessingState.ready);
+    });
+
     test('refreshRoot tells the car the menu changed', () async {
       await handler.refreshRoot();
       expect(notified, ['root']);
@@ -1755,6 +1779,23 @@ void main() {
       await settle();
       expect(player.calls, contains('play'));
       await e.dispose();
+    });
+
+    test('loading while a track is looked up, and while the stream buffers',
+        () async {
+      demo.gate = Completer<void>();
+      final started = engine.playQueue(tracks, 0);
+      await settle();
+      expect(engine.state.loading, isTrue);
+      demo.gate!.complete();
+      demo.gate = null;
+      await started;
+      await settle();
+      expect(engine.state.loading, isFalse);
+      player.buffer(true);
+      expect(engine.state.loading, isTrue);
+      player.buffer(false);
+      expect(engine.state.loading, isFalse);
     });
 
     test('stop reports stopped and clears the queue', () async {

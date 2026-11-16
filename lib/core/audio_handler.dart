@@ -237,9 +237,13 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       ],
       androidCompactActionIndices: const [0, 1, 2],
       systemActions: const {as_.MediaAction.seek},
+      // The car shows a spinner, not a running progress bar, while a track
+      // is looked up, opened or buffering.
       processingState: current == null
           ? as_.AudioProcessingState.idle
-          : as_.AudioProcessingState.ready,
+          : s.loading
+              ? as_.AudioProcessingState.buffering
+              : as_.AudioProcessingState.ready,
       playing: s.playing,
       updatePosition: s.position,
       queueIndex: current == null ? null : s.index,
