@@ -30,7 +30,38 @@ class CarLibrary {
   CarLibrary(this.backends, this.visibleLibraries,
       {this.reconnect,
       this.timeout = const Duration(seconds: 12),
-      this.probeAfter = const Duration(milliseconds: 1500)});
+      this.probeAfter = const Duration(milliseconds: 1500),
+      this.only});
+
+  /// The one library the car uses (`<serverId>/<libraryId>`, Settings →
+  /// Android Auto), or null for all. Other servers aren't contacted at all;
+  /// if that server is gone or the library hidden, all are used.
+  final String? Function()? only;
+
+  /// The chosen library, when its server is signed in.
+  (String, String)? get _chosen {
+    final key = only?.call();
+    final slash = key?.indexOf('/') ?? -1;
+    if (key == null || slash < 0) return null;
+    final server = key.substring(0, slash);
+    return backends().containsKey(server)
+        ? (server, key.substring(slash + 1))
+        : null;
+  }
+
+  /// Which servers to ask, and (when one library is chosen) which library.
+  Future<(Iterable<String>, String?)> _scope() async {
+    final all = backends().keys;
+    final chosen = _chosen;
+    if (chosen == null) return (all, null);
+    try {
+      final libs = await visibleLibraries(chosen.$1);
+      if (!libs.any((l) => l.id == chosen.$2)) return (all, null); // hidden
+    } catch (_) {
+      // Unknown right now: still only that server.
+    }
+    return ([chosen.$1], chosen.$2);
+  }
 
   /// A server that hasn't answered by then has its addresses re-checked
   /// while the request carries on (the phone may have left home Wi-Fi: the
@@ -73,7 +104,8 @@ class CarLibrary {
   /// [read] for every server, each one caught on its own: an offline server
   /// only leaves its own music out.
   Future<List<T>> _each<T>(
-      Future<List<T>> Function(String serverId, MediaBackend b) read) async {
+      Future<List<T>> Function(String serverId, MediaBackend b) read,
+      {Iterable<String>? servers}) async {
     /// [read] at the server's current address. Never holds a server object
     /// across a wait: an address check replaces it and closes the old one's
     /// connection (and two checks can save in turn).
@@ -118,7 +150,7 @@ class CarLibrary {
     }
 
     final parts = await Future.wait([
-      for (final id in backends().keys)
+      for (final id in [...(servers ?? (await _scope()).$1)])
         one(id)
             .timeout(timeout, onTimeout: () => <T>[])
             .catchError((Object _) => <T>[]),
@@ -127,22 +159,25 @@ class CarLibrary {
   }
 
   Future<List<T>> _eachMusicLibrary<T>(
-          Future<List<T>> Function(MediaBackend b, Library l) read) =>
-      _each((id, b) async {
-        // A lookup still running on an old address fails when that
-        // connection is closed (the address just changed): ask once more.
-        final libs = (await visibleLibraries(id)
-                .catchError((Object _) => visibleLibraries(id)))
-            .where((l) => l.kind == LibraryKind.music);
-        final parts = await Future.wait([
-          // A lost connection goes up to [_each] to reconnect; anything else
-          // only drops this library.
-          for (final l in libs)
-            read(b, l).catchError((Object _) => <T>[],
-                test: (e) => !isConnectionError(e)),
-        ]);
-        return [for (final p in parts) ...p];
-      });
+      Future<List<T>> Function(MediaBackend b, Library l) read) async {
+    final (servers, library) = await _scope();
+    return _each(servers: servers, (id, b) async {
+      // A lookup still running on an old address fails when that
+      // connection is closed (the address just changed): ask once more.
+      final libs = (await visibleLibraries(id)
+              .catchError((Object _) => visibleLibraries(id)))
+          .where((l) =>
+              l.kind == LibraryKind.music && (library == null || l.id == library));
+      final parts = await Future.wait([
+        // A lost connection goes up to [_each] to reconnect; anything else
+        // only drops this library.
+        for (final l in libs)
+          read(b, l).catchError((Object _) => <T>[],
+              test: (e) => !isConnectionError(e)),
+      ]);
+      return [for (final p in parts) ...p];
+    });
+  }
 
   static MediaItem _ref(String serverId, String id, MediaKind kind) =>
       MediaItem(serverId: serverId, id: id, kind: kind, title: '');
@@ -192,7 +227,8 @@ class CarLibrary {
       case 'root':
         // The car just opened Marquee: check where each server answers now
         // (home Wi-Fi or Remote Access) before the tabs ask.
-        for (final id in backends().keys) {
+        final chosen = _chosen;
+        for (final id in chosen == null ? backends().keys : [chosen.$1]) {
           unawaited(_probe(id));
         }
         // Android Auto shows a root of browsable items as tabs (up to four).

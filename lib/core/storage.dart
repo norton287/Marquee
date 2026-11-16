@@ -27,6 +27,7 @@ class AppSettings {
     this.skipForwardSeconds = 30,
     this.profileServerId,
     this.libraryQueries = const {},
+    this.carMusicLibrary,
   });
 
   /// Choices offered for [skipBackSeconds] and [skipForwardSeconds].
@@ -70,6 +71,9 @@ class AppSettings {
   /// A server of the Plex account whose profile was switched last: the
   /// Home profile button shows that account. A server id, never a token.
   final String? profileServerId;
+
+  /// The one music library Android Auto uses, as [libraryKey]; null = all.
+  final String? carMusicLibrary;
 
   /// Each library's All-tab sort, Unwatched and filters, keyed by
   /// [libraryKey]. Not secret; dropped with its server.
@@ -121,6 +125,7 @@ class AppSettings {
     int? skipForwardSeconds,
     Object? profileServerId = _keep,
     Map<String, LibraryQuery>? libraryQueries,
+    Object? carMusicLibrary = _keep,
   }) =>
       AppSettings(
         maxBitrateKbps: maxBitrateKbps == _keep
@@ -152,6 +157,9 @@ class AppSettings {
         profileServerId: profileServerId == _keep
             ? this.profileServerId
             : profileServerId as String?,
+        carMusicLibrary: carMusicLibrary == _keep
+            ? this.carMusicLibrary
+            : carMusicLibrary as String?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -168,6 +176,7 @@ class AppSettings {
         'skipBackSeconds': skipBackSeconds,
         'skipForwardSeconds': skipForwardSeconds,
         'profileServerId': profileServerId,
+        'carMusicLibrary': carMusicLibrary,
         'libraryQueries': {
           for (final e in libraryQueries.entries) e.key: e.value.toJson(),
         },
@@ -206,6 +215,7 @@ class AppSettings {
         skipBackSeconds: _skip(j['skipBackSeconds'], 10),
         skipForwardSeconds: _skip(j['skipForwardSeconds'], 30),
         profileServerId: j['profileServerId'] as String?,
+        carMusicLibrary: j['carMusicLibrary'] as String?,
         libraryQueries: {
           for (final e in ((j['libraryQueries'] as Map?) ?? const {}).entries)
             if (e.value is Map)

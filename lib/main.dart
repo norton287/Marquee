@@ -167,6 +167,8 @@ Future<void> _startMusicSession(
           () => container.read(backendsProvider),
           (serverId) => freshLibraries(container, serverId),
           reconnect: (id) => container.read(serversProvider.notifier).revalidate(id),
+          // Settings → Android Auto: one library, or all.
+          only: () => container.read(settingsProvider).carMusicLibrary,
         ),
         // ignore: deprecated_member_use
         notifyChanged: (id) => AudioServiceBackground.notifyChildrenChanged(id),
@@ -189,6 +191,8 @@ Future<void> _startMusicSession(
     // one; and servers, libraries or the profile changing changes every list.
     await handler.refreshRoot();
     container.listen(backendsProvider, (_, _) => handler.refreshAll());
+    container.listen(settingsProvider.select((s) => s.carMusicLibrary),
+        (_, _) => handler.refreshAll());
   } catch (e) {
     // Music still plays in the app without the session.
     debugPrint('Music session unavailable: $e');

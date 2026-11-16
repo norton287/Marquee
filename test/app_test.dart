@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:marquee/app.dart';
 import 'package:marquee/core/audio_handler.dart';
@@ -29,6 +30,7 @@ import 'package:marquee/ui/manage.dart';
 import 'package:marquee/ui/music.dart';
 import 'package:marquee/ui/phone_input.dart';
 import 'package:marquee/ui/player/player_widgets.dart';
+import 'package:marquee/ui/shell.dart';
 import 'package:marquee/ui/widgets.dart';
 
 Future<AppStorage> _storage({bool demo = true}) async {
@@ -266,6 +268,36 @@ class LibrariesFailOnceDemo extends DemoBackend {
           type: DioExceptionType.connectionTimeout);
     }
     return super.libraries();
+  }
+}
+
+/// Counts every music call, to prove a server isn't contacted.
+class CountingDemo extends DemoBackend {
+  CountingDemo() : super(demoServer);
+  int calls = 0;
+  @override
+  Future<Paged> libraryItems(Library library,
+      {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) {
+    calls++;
+    return super.libraryItems(library, start: start, limit: limit, query: query);
+  }
+
+  @override
+  Future<List<MediaItem>> recentMusic(Library library, {int limit = 20}) {
+    calls++;
+    return super.recentMusic(library, limit: limit);
+  }
+
+  @override
+  Future<List<MediaItem>> musicPlaylists() {
+    calls++;
+    return super.musicPlaylists();
+  }
+
+  @override
+  Future<List<MediaItem>> search(String query) {
+    calls++;
+    return super.search(query);
   }
 }
 
@@ -1108,6 +1140,48 @@ void main() {
         closeTo(poster, 0.5));
   });
 
+  test('the car music library choice round-trips (null = all)', () async {
+    expect(const AppSettings().carMusicLibrary, isNull);
+    final store = MemoryStore();
+    final a = AppStorage(store);
+    await a.load();
+    await a.saveSettings(const AppSettings(carMusicLibrary: 'p/7'));
+    final b = AppStorage(store);
+    await b.load();
+    expect(b.settings.carMusicLibrary, 'p/7');
+    expect(b.settings.copyWith(carMusicLibrary: null).carMusicLibrary, isNull);
+    expect(b.settings.copyWith(trueBlack: true).carMusicLibrary, 'p/7');
+  });
+
+  testWidgets('Settings: choose the music library the car uses (phones only)',
+      (tester) async {
+    await _pump(tester, const Size(390, 844));
+    await tester.tap(find.text('Settings').last);
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Music in the car'), 300,
+        scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    expect(find.text('All music libraries'), findsOneWidget);
+    await tester.tap(find.text('Music in the car'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Demo library · Music').last);
+    await tester.pumpAndSettle();
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    expect(container.read(settingsProvider).carMusicLibrary, 'demo/music');
+  });
+
+  testWidgets('Settings: no car option on a TV', (tester) async {
+    await _pump(tester, const Size(1920, 1080), tv: true);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    GoRouter.of(tester.element(find.byType(AppShell))).go('/settings');
+    await tester.pumpAndSettle();
+    expect(container.read(settingsProvider).carMusicLibrary, isNull);
+    expect(find.text('Music in the car'), findsNothing);
+  });
+
   test('skip lengths default to 10/30, round-trip, and reject odd values',
       () async {
     expect(const AppSettings().skipBackSeconds, 10);
@@ -1756,6 +1830,50 @@ void main() {
         timeout: const Duration(seconds: 3),
       );
       expect(await car.children('tab:albums'), isNotEmpty);
+    });
+
+    test('with one library chosen, only its server is asked (and checked)',
+        () async {
+      final other = CountingDemo();
+      final checked = <String>[];
+      final car = CarLibrary(
+        () => {'demo': demo, 'other': other},
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        reconnect: (id) async => checked.add(id),
+        only: () => 'demo/${music.id}',
+      );
+      await car.children('root');
+      for (final tab in ['tab:recent', 'tab:playlists', 'tab:artists', 'tab:albums']) {
+        expect(await car.children(tab), isNotEmpty, reason: tab);
+      }
+      await car.search('a');
+      await car.resolve('shuffle:all');
+      await Future<void>.delayed(Duration.zero);
+      expect(other.calls, 0);
+      expect(checked, ['demo']);
+    });
+
+    test('a chosen library that is gone falls back to all', () async {
+      final other = CountingDemo();
+      final car = CarLibrary(
+        () => {'demo': demo, 'other': other},
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        only: () => 'removed/${music.id}',
+      );
+      expect(await car.children('tab:albums'), isNotEmpty);
+      expect(other.calls, greaterThan(0));
+      // Its server is there but the library isn't (hidden): all again.
+      final hidden = CarLibrary(
+        () => {'demo': demo, 'other': other},
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        only: () => 'demo/not-a-library',
+      );
+      other.calls = 0;
+      expect(await hidden.children('tab:albums'), isNotEmpty);
+      expect(other.calls, greaterThan(0));
     });
 
     test('opening the car menu re-checks every server', () async {

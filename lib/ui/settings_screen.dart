@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -265,6 +266,12 @@ class SettingsScreen extends ConsumerWidget {
                             ),
                   ),
                 ]),
+                // Android Auto runs on phones and tablets, not on a TV.
+                if (defaultTargetPlatform == TargetPlatform.android &&
+                    !ref.watch(tvProvider)) ...[
+                  const _Heading('Android Auto'),
+                  const _Card(children: [_CarLibraryChoice()]),
+                ],
                 const _Heading('Appearance'),
                 _Card(children: [
                   _Choice<String>(
@@ -382,6 +389,37 @@ class _Card extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: Column(children: children),
       );
+}
+
+/// Which music library the car uses (all, or one: then other servers aren't
+/// contacted from the car, which keeps a slow one from holding it up).
+class _CarLibraryChoice extends ConsumerWidget {
+  const _CarLibraryChoice();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final chosen = ref.watch(settingsProvider.select((s) => s.carMusicLibrary));
+    final options = <(String?, String)>[(null, 'All music libraries')];
+    for (final server in ref.watch(serversProvider)) {
+      final libs = ref.watch(librariesProvider(server.id)).value ?? const [];
+      for (final l in libs.where((l) => l.kind == LibraryKind.music)) {
+        options.add((AppSettings.libraryKey(server.id, l.id), '${server.name} · ${l.title}'));
+      }
+    }
+    // A choice whose library is gone still shows (the car then uses all).
+    if (chosen != null && !options.any((o) => o.$1 == chosen)) {
+      options.add((chosen, 'Unavailable library'));
+    }
+    return _Choice<String?>(
+      title: 'Music in the car',
+      subtitle: 'One library loads faster; others are left out.',
+      value: chosen,
+      options: options,
+      onChanged: (v) => ref
+          .read(settingsProvider.notifier)
+          .change((s) => s.copyWith(carMusicLibrary: v)),
+    );
+  }
 }
 
 class _Choice<T> extends StatelessWidget {
