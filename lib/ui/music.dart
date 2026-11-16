@@ -12,91 +12,103 @@ import '../core/providers.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-/// App-wide music playback with a queue. Lives outside any screen so music
-/// keeps going while you browse.
-class MusicController extends Notifier<MusicState> {
-  Player? _player;
+/// media_kit behind the engine's [TrackPlayer]. The mpv player is only
+/// created when music first plays (not at startup, and never on a TV that
+/// plays none).
+class MediaKitTrackPlayer implements TrackPlayer {
+  Player? _p;
+  final _playing = StreamController<bool>.broadcast();
+  final _position = StreamController<Duration>.broadcast();
+  final _duration = StreamController<Duration>.broadcast();
+  final _completed = StreamController<void>.broadcast();
+  final _error = StreamController<String>.broadcast();
   final _subs = <StreamSubscription<dynamic>>[];
 
-  @override
-  MusicState build() {
-    ref.onDispose(() {
-      for (final s in _subs) {
-        s.cancel();
-      }
-      _player?.dispose();
-    });
-    return const MusicState();
-  }
-
-  Player _ensure() {
-    final existing = _player;
+  Player get _player {
+    final existing = _p;
     if (existing != null) return existing;
     final p = Player(configuration: const PlayerConfiguration(title: 'Marquee'));
     _subs.addAll([
-      p.stream.playing.listen((v) => state = state.copyWith(playing: v)),
-      p.stream.duration.listen((v) => state = state.copyWith(duration: v)),
-      p.stream.position.listen((v) {
-        // Once a second is plenty for a progress bar.
-        if ((v - state.position).inMilliseconds.abs() >= 900) {
-          state = state.copyWith(position: v);
-        }
-      }),
-      p.stream.playlist.listen((pl) {
-        if (pl.index != state.index && pl.index < state.queue.length) {
-          state = state.copyWith(index: pl.index, position: Duration.zero);
-        }
-      }),
-      p.stream.error.listen((e) => state = state.copyWith(error: e)),
+      p.stream.playing.listen(_playing.add),
+      p.stream.position.listen(_position.add),
+      p.stream.duration.listen(_duration.add),
+      p.stream.completed.where((done) => done).listen((_) => _completed.add(null)),
+      p.stream.error.listen(_error.add),
     ]);
-    return _player = p;
+    return _p = p;
   }
 
-  Future<void> playQueue(List<MediaItem> tracks, int startIndex) async {
-    if (tracks.isEmpty) return;
-    state = MusicState(queue: tracks, index: startIndex, playing: true);
-    try {
-      final backends = ref.read(backendsProvider);
-      final medias = <Media>[];
-      for (final t in tracks) {
-        final src = await backends[t.serverId]!
-            .playback(t, const PlaybackRequest());
-        medias.add(Media(src.url, httpHeaders: src.headers));
-      }
-      await _ensure().open(Playlist(medias, index: startIndex));
-    } catch (e) {
-      state = state.copyWith(playing: false, error: friendlyError(e));
+  @override
+  Future<void> open(String url, Map<String, String> headers) =>
+      _player.open(Media(url, httpHeaders: headers), play: false);
+  @override
+  Future<void> play() => _player.play();
+  @override
+  Future<void> pause() async => _p?.pause();
+  @override
+  Future<void> stop() async => _p?.stop();
+  @override
+  Future<void> seek(Duration to) async => _p?.seek(to);
+  @override
+  Stream<bool> get playing => _playing.stream;
+  @override
+  Stream<Duration> get position => _position.stream;
+  @override
+  Stream<Duration> get duration => _duration.stream;
+  @override
+  Stream<void> get completed => _completed.stream;
+  @override
+  Stream<String> get error => _error.stream;
+
+  @override
+  Future<void> dispose() async {
+    for (final s in _subs) {
+      await s.cancel();
     }
+    await _p?.dispose();
+  }
+}
+
+/// Makes the player music plays through (tests swap in a fake).
+final trackPlayerFactoryProvider =
+    Provider<TrackPlayer Function()>((_) => MediaKitTrackPlayer.new);
+
+/// The one music engine: the app, the lock screen and the car share it.
+final musicEngineProvider = Provider<MusicEngine>((ref) {
+  final engine = MusicEngine(
+    player: ref.watch(trackPlayerFactoryProvider)(),
+    // Read at each use: a reconnect recreates the server's backend.
+    backendFor: (id) => ref.read(backendsProvider)[id],
+    reconnect: (id) => ref.read(serversProvider.notifier).revalidate(id),
+    describeError: friendlyError,
+  );
+  ref.onDispose(engine.dispose);
+  return engine;
+});
+
+/// App-wide music playback with a queue. Lives outside any screen so music
+/// keeps going while you browse; the work is done by [MusicEngine].
+class MusicController extends Notifier<MusicState> {
+  MusicEngine get _engine => ref.read(musicEngineProvider);
+
+  @override
+  MusicState build() {
+    final engine = ref.watch(musicEngineProvider);
+    final sub = engine.states.listen((s) => state = s);
+    ref.onDispose(sub.cancel);
+    return engine.state;
   }
 
-  void toggle() => _player?.playOrPause();
-  void pause() => _player?.pause();
-  void next() => _player?.next();
-  void previous() {
-    if (state.position > const Duration(seconds: 4)) {
-      seek(Duration.zero);
-    } else {
-      _player?.previous();
-    }
-  }
-
-  void jump(int index) => _player?.jump(index);
-
-  void seek(Duration to) {
-    state = state.copyWith(position: to);
-    _player?.seek(to);
-  }
-
-  Future<void> shuffleQueue() async {
-    if (state.queue.length < 2) return;
-    final shuffled = [...state.queue]..shuffle();
-    await playQueue(shuffled, 0);
-  }
-
-  Future<void> stop() async {
-    await _player?.stop();
-    state = const MusicState();
-  }
+  Future<void> playQueue(List<MediaItem> tracks, int startIndex) =>
+      _engine.playQueue(tracks, startIndex);
+  void toggle() => _engine.toggle();
+  void pause() => _engine.pause();
+  void next() => _engine.next();
+  void previous() => _engine.previous();
+  void jump(int index) => _engine.jump(index);
+  void seek(Duration to) => _engine.seek(to);
+  Future<void> shuffleQueue() => _engine.shuffleQueue();
+  Future<void> stop() => _engine.stop();
 }
 
 final musicProvider =

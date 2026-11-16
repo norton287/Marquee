@@ -52,7 +52,7 @@ class ServersNotifier extends Notifier<List<ServerConfig>> {
   List<ServerConfig> build() {
     final servers = ref.read(storageProvider).servers;
     // Plex servers move between LAN, remote and relay addresses.
-    Future.microtask(_revalidate);
+    Future.microtask(revalidate);
     return servers;
   }
 
@@ -115,11 +115,15 @@ class ServersNotifier extends Notifier<List<ServerConfig>> {
       }
     }
     await _save(next);
-    unawaited(_revalidate());
+    unawaited(revalidate());
   }
 
-  Future<void> _revalidate() async {
+  /// Probes each Plex server's addresses (or just [serverId]'s) and switches
+  /// to the best one that answers: at startup, and when music loses its
+  /// connection (the phone left home Wi-Fi in the car).
+  Future<void> revalidate([String? serverId]) async {
     for (final s in state) {
+      if (serverId != null && s.id != serverId) continue;
       if (s.kind != ServerKind.plex || s.connections.length < 2) continue;
       final best = await PlexAccount.bestConnection(s.connections, s.token);
       if (best != null && best != s.baseUrl && ref.mounted) {

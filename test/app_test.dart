@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:marquee/app.dart';
@@ -35,7 +36,7 @@ Future<AppStorage> _storage({bool demo = true}) async {
 }
 
 Future<void> _pump(WidgetTester tester, Size size,
-    {bool tv = false, bool demo = true}) async {
+    {bool tv = false, bool demo = true, List<Override> overrides = const []}) async {
   Artwork.network = false;
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
@@ -45,6 +46,7 @@ Future<void> _pump(WidgetTester tester, Size size,
     overrides: [
       storageProvider.overrideWithValue(storage),
       deviceIsTvProvider.overrideWithValue(tv),
+      ...overrides,
     ],
     retry: (_, _) => null,
     child: const MarqueeApp(),
@@ -1156,6 +1158,39 @@ void main() {
         '{uri: server://mach/com.plexapp.plugins.library/library/metadata/42}');
     await plex.createPlaylist('Friday', movie);
     expect(calls.last, startsWith('POST /playlists {type: video, title: Friday, smart: 0'));
+  });
+
+  testWidgets('music plays through the engine: mini player, Next, reconnect',
+      (tester) async {
+    final fake = FakeTrackPlayer();
+    await _pump(tester, const Size(1440, 900), overrides: [
+      trackPlayerFactoryProvider.overrideWithValue(() => fake),
+    ]);
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    final demo = container.read(backendsProvider)['demo']!;
+    final lib = (await demo.libraries())
+        .firstWhere((l) => l.kind == LibraryKind.music);
+    final album = (await demo.recentlyAdded(lib)).first;
+    final tracks = await demo.children(album);
+    await container.read(musicProvider.notifier).playQueue(tracks, 0);
+    await tester.pump();
+    expect(find.text(tracks[0].title), findsWidgets);
+    expect(fake.calls.take(2), [startsWith('open '), 'play']);
+
+    await tester.tap(find.byTooltip('Next'));
+    await tester.pump();
+    expect(container.read(musicProvider).index, 1);
+    expect(find.text(tracks[1].title), findsWidgets);
+
+    // A stream that fails is reopened once (after reconnecting).
+    final opens = fake.calls.where((c) => c.startsWith('open ')).length;
+    fake.fail('connection lost');
+    await tester.pump();
+    expect(fake.calls.where((c) => c.startsWith('open ')).length, opens + 1);
+    expect(container.read(musicProvider).index, 1);
+    await container.read(musicProvider.notifier).stop();
+    await tester.pump();
   });
 
   group('MusicEngine', () {
