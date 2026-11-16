@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'backend.dart';
@@ -26,13 +28,36 @@ class CarNode {
 /// inside something it plays from: `track:<s>:<id>@<album|playlist>:<id>`.
 class CarLibrary {
   CarLibrary(this.backends, this.visibleLibraries,
-      {this.reconnect, this.timeout = const Duration(seconds: 4)});
+      {this.reconnect,
+      this.timeout = const Duration(seconds: 12),
+      this.probeAfter = const Duration(milliseconds: 1500)});
+
+  /// A server that hasn't answered by then has its addresses re-checked
+  /// while the request carries on (the phone may have left home Wi-Fi: the
+  /// saved home address then just hangs until the 10 s connect timeout).
+  final Duration probeAfter;
+
+  /// One address check per server at a time, shared by every tab.
+  final _probing = <String, Future<void>>{};
+  static final _probed = Object();
+
+  Future<void> _probe(String id) {
+    final reconnect = this.reconnect;
+    if (reconnect == null) return Future.value();
+    return _probing[id] ??= reconnect(id)
+        .catchError((Object _) {})
+        // A block, not `=>`: remove() returns this very future, and
+        // whenComplete would wait for it (forever).
+        .whenComplete(() {
+          _probing.remove(id);
+        });
+  }
 
   /// Re-probes a server's addresses (the phone may have left home Wi-Fi).
   final Future<void> Function(String serverId)? reconnect;
 
-  /// How long one server may take: a slow or offline one is left out rather
-  /// than holding up a tab or a voice request.
+  /// The most one server may take (the car shows a spinner meanwhile): a
+  /// slow or offline one is then left out rather than holding up a tab.
   final Duration timeout;
 
   final Map<String, MediaBackend> Function() backends;
@@ -49,20 +74,46 @@ class CarLibrary {
   /// only leaves its own music out.
   Future<List<T>> _each<T>(
       Future<List<T>> Function(String serverId, MediaBackend b) read) async {
-    Future<List<T>> one(String id, MediaBackend b) async {
-      try {
-        return await read(id, b);
-      } catch (e) {
-        if (!isConnectionError(e) || reconnect == null) rethrow;
-        await reconnect!(id);
-        // A new address means a new backend.
-        return read(id, backends()[id] ?? b);
+    /// [read] at the server's current address. Never holds a server object
+    /// across a wait: an address check replaces it and closes the old one's
+    /// connection (and two checks can save in turn).
+    Future<List<T>> one(String id) async {
+      var probed = false;
+      for (var tries = 0; tries < 4; tries++) {
+        final b = backends()[id];
+        if (b == null) return <T>[];
+        final attempt = read(id, b);
+        // If it's overtaken, its late error must go nowhere.
+        unawaited(attempt.then((_) {}, onError: (Object _) {}));
+        try {
+          if (probed || reconnect == null) return await attempt;
+          try {
+            return await attempt.timeout(probeAfter);
+          } on TimeoutException {
+            // Slow or unreachable: check its addresses while it carries on.
+            probed = true;
+            final probe = _probe(id).then((_) => _probed);
+            final first = await Future.any<Object?>([attempt, probe]);
+            if (!identical(first, _probed)) return first as List<T>;
+            // Same address: the running read is all there is.
+            if (identical(backends()[id], b)) return await attempt;
+            continue; // new address: read there
+          }
+        } catch (e) {
+          if (!isConnectionError(e)) rethrow;
+          // The address changed meanwhile: try the current one.
+          if (!identical(backends()[id], b)) continue;
+          if (probed || reconnect == null) rethrow;
+          probed = true;
+          await _probe(id);
+        }
       }
+      return <T>[];
     }
 
     final parts = await Future.wait([
-      for (final e in backends().entries)
-        one(e.key, e.value)
+      for (final id in backends().keys)
+        one(id)
             .timeout(timeout, onTimeout: () => <T>[])
             .catchError((Object _) => <T>[]),
     ]);
@@ -72,7 +123,10 @@ class CarLibrary {
   Future<List<T>> _eachMusicLibrary<T>(
           Future<List<T>> Function(MediaBackend b, Library l) read) =>
       _each((id, b) async {
-        final libs = (await visibleLibraries(id))
+        // A lookup still running on an old address fails when that
+        // connection is closed (the address just changed): ask once more.
+        final libs = (await visibleLibraries(id)
+                .catchError((Object _) => visibleLibraries(id)))
             .where((l) => l.kind == LibraryKind.music);
         final parts = await Future.wait([
           // A lost connection goes up to [_each] to reconnect; anything else
@@ -130,6 +184,11 @@ class CarLibrary {
   Future<List<CarNode>> children(String parentId) async {
     switch (parentId) {
       case 'root':
+        // The car just opened Marquee: check where each server answers now
+        // (home Wi-Fi or Remote Access) before the tabs ask.
+        for (final id in backends().keys) {
+          unawaited(_probe(id));
+        }
         // Android Auto shows a root of browsable items as tabs (up to four).
         return _tabs;
       case 'tab:recent':

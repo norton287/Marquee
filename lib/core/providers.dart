@@ -121,16 +121,29 @@ class ServersNotifier extends Notifier<List<ServerConfig>> {
   /// Probes each Plex server's addresses (or just [serverId]'s) and switches
   /// to the best one that answers: at startup, and when music loses its
   /// connection (the phone left home Wi-Fi in the car).
-  Future<void> revalidate([String? serverId]) async {
-    for (final s in state) {
-      if (serverId != null && s.id != serverId) continue;
-      if (s.kind != ServerKind.plex || s.connections.length < 2) continue;
-      final best = await PlexAccount.bestConnection(s.connections, s.token);
-      if (best != null && best != s.baseUrl && ref.mounted) {
-        await _save([
-          for (final o in state) o.id == s.id ? o.copyWith(baseUrl: best) : o,
-        ]);
-      }
+  Future<void> revalidate([String? serverId]) => Future.wait([
+        for (final s in state)
+          if (serverId == null || s.id == serverId) _revalidateOne(s.id),
+      ]);
+
+  /// One check per server at a time: the startup check, the car and music
+  /// share it. Two checks saving in turn rebuilt the backends twice and
+  /// closed the one a waiting request had just picked up.
+  final _checking = <String, Future<void>>{};
+
+  Future<void> _revalidateOne(String id) =>
+      _checking[id] ??= _check(id).whenComplete(() {
+        _checking.remove(id);
+      });
+
+  Future<void> _check(String id) async {
+    final s = state.where((o) => o.id == id).firstOrNull;
+    if (s == null || s.kind != ServerKind.plex || s.connections.length < 2) return;
+    final best = await PlexAccount.bestConnection(s.connections, s.token);
+    if (best != null && best != s.baseUrl && ref.mounted) {
+      await _save([
+        for (final o in state) o.id == s.id ? o.copyWith(baseUrl: best) : o,
+      ]);
     }
   }
 }

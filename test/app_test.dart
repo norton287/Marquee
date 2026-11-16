@@ -210,6 +210,37 @@ class SmartListDemo extends DemoBackend {
       ];
 }
 
+/// A server at an address that no longer answers (home IP on mobile data):
+/// every read hangs.
+class UnreachableDemo extends DemoBackend {
+  UnreachableDemo() : super(demoServer);
+  final _never = Completer<Never>();
+  @override
+  Future<Paged> libraryItems(Library library,
+          {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) =>
+      _never.future;
+  @override
+  Future<List<MediaItem>> recentMusic(Library library, {int limit = 20}) => _never.future;
+  @override
+  Future<List<MediaItem>> musicPlaylists() => _never.future;
+}
+
+/// A server object whose connection was closed (replaced after an address
+/// change): every read fails the way a closed Dio does.
+class ClosedDemo extends DemoBackend {
+  ClosedDemo() : super(demoServer);
+  Never _closed() => throw DioException(
+      requestOptions: RequestOptions(path: '/x'),
+      type: DioExceptionType.connectionError,
+      message: "Dio can't establish a new connection after it was closed.");
+  @override
+  Future<Paged> libraryItems(Library library,
+      {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) async {
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    _closed();
+  }
+}
+
 void main() {
   const sizes = {
     'phone': (Size(390, 844), false),
@@ -1596,6 +1627,86 @@ void main() {
       final hit = hits.firstWhere((h) => h.id == artist.id, orElse: () => artist);
       final (queue, _) = (await car.resolve(hit.id))!;
       expect(queue, hasLength(expected));
+    });
+
+    test("a server that doesn't answer is re-probed early; the list comes from its new address",
+        () async {
+      // The car on mobile data with the home address saved: the probe finds
+      // the remote address, which answers.
+      final servers = <String, MediaBackend>{'home': UnreachableDemo()};
+      var probes = 0;
+      final car = CarLibrary(
+        () => servers,
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        reconnect: (id) async {
+          probes++;
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          servers[id] = demo; // the remote address works
+        },
+        probeAfter: const Duration(milliseconds: 100),
+        timeout: const Duration(seconds: 3),
+      );
+      final watch = Stopwatch()..start();
+      final lists = await Future.wait([
+        car.children('tab:albums'),
+        car.children('tab:recent'),
+      ]);
+      expect(watch.elapsed, lessThan(const Duration(seconds: 1)));
+      expect(lists[0], isNotEmpty);
+      expect(lists[1].length, greaterThan(1)); // more than Shuffle all
+      expect(probes, 1); // one probe shared by both tabs
+    });
+
+    test('a library lookup cut off by an address change is tried again',
+        () async {
+      var calls = 0;
+      final car = CarLibrary(
+        () => {'demo': demo},
+        (id) async {
+          // The lookup that was running on the old address fails when its
+          // connection is closed; the next one works.
+          if (calls++ == 0) {
+            throw DioException(requestOptions: RequestOptions(path: '/library/sections'));
+          }
+          return [Library(serverId: id, id: music.id, title: 'Music', kind: LibraryKind.music)];
+        },
+      );
+      expect(await car.children('tab:albums'), isNotEmpty);
+      expect(calls, 2);
+    });
+
+    test('a read on a connection that was replaced moves to the current one',
+        () async {
+      // Two address checks saved in turn: the server object the retry picked
+      // up was closed by the second one.
+      final servers = <String, MediaBackend>{'home': UnreachableDemo()};
+      final car = CarLibrary(
+        () => servers,
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        reconnect: (id) async {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          servers[id] = ClosedDemo();
+          unawaited(Future<void>.delayed(const Duration(milliseconds: 20),
+              () => servers[id] = demo));
+        },
+        probeAfter: const Duration(milliseconds: 50),
+        timeout: const Duration(seconds: 3),
+      );
+      expect(await car.children('tab:albums'), isNotEmpty);
+    });
+
+    test('opening the car menu re-checks every server', () async {
+      final checked = <String>[];
+      final car = CarLibrary(
+        () => {'a': demo, 'b': demo},
+        (id) async => const [],
+        reconnect: (id) async => checked.add(id),
+      );
+      await car.children('root');
+      await Future<void>.delayed(Duration.zero);
+      expect(checked, unorderedEquals(['a', 'b']));
     });
 
     test('a hidden music library is left out', () async {
