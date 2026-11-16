@@ -232,9 +232,28 @@ class CarLibrary {
   static const _tabs = [
     CarNode('tab:recent', 'Recent', browsable: true),
     CarNode('tab:playlists', 'Playlists', browsable: true),
-    CarNode('tab:artists', 'Artists', browsable: true),
-    CarNode('tab:albums', 'Albums', browsable: true),
+    CarNode('tab:library', 'Library', browsable: true),
+    CarNode('tab:tracks', 'Tracks', browsable: true),
   ];
+
+  /// '#', then A–Z: the car's letter folders (a big library doesn't fit one
+  /// list; Android Auto shows only four tabs).
+  static const letters = [
+    '#', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', //
+    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+  ];
+
+  static List<CarNode> _letterFolders(String kind) => [
+        for (final l in letters) CarNode('az:$kind:$l', l, browsable: true),
+      ];
+
+  /// Tracks of a list the car just showed, under the list's id, so a tap
+  /// plays that list from the tapped track.
+  List<CarNode> _trackList(String listId, List<MediaItem> tracks) {
+    final only = [for (final t in tracks) if (t.kind == MediaKind.track) t];
+    _rememberTracks(listId, only);
+    return [for (final t in only.take(listCap)) _node(t, container: listId)];
+  }
 
   Future<List<CarNode>> children(String parentId) async {
     switch (parentId) {
@@ -258,10 +277,45 @@ class CarLibrary {
       case 'tab:playlists':
         final lists = await _each((_, b) => b.musicPlaylists());
         return [for (final p in lists.take(listCap)) _node(p)]..sort(_byTitle);
+      case 'tab:library':
+        return const [
+          CarNode('lib:artists', 'Artists', browsable: true),
+          CarNode('lib:albums', 'Albums', browsable: true),
+        ];
+      case 'lib:artists':
+        return _letterFolders('artists');
+      case 'lib:albums':
+        return _letterFolders('albums');
+      case 'tab:tracks':
+        return [
+          const CarNode('tracks:recent', 'Recently added', browsable: true),
+          const CarNode('tracks:top', 'Most played', browsable: true),
+          ..._letterFolders('tracks'),
+        ];
+      case 'tracks:recent':
+        return _trackList(parentId,
+            await _eachMusicLibrary((b, l) => b.recentTracks(l, limit: 200)));
+      case 'tracks:top':
+        return _trackList(parentId,
+            await _eachMusicLibrary((b, l) => b.topTracks(l, limit: 200)));
+      // All artists / albums in one list (not in the menu any more; the
+      // letter folders replace them).
       case 'tab:artists':
         return _browse(LibraryView.artists);
       case 'tab:albums':
         return _browse(LibraryView.albums);
+    }
+    if (parentId.startsWith('az:')) {
+      final parts = parentId.split(':');
+      if (parts.length != 3) return const [];
+      final kind = MusicList.values.where((k) => k.name == parts[1]).firstOrNull;
+      final letter = parts[2];
+      if (kind == null || !letters.contains(letter)) return const [];
+      final items = await _eachMusicLibrary(
+          (b, l) => b.musicStartingWith(l, kind, letter, limit: listCap));
+      items.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+      if (kind == MusicList.tracks) return _trackList(parentId, items);
+      return [for (final i in items.take(listCap)) _node(i)];
     }
     final parsed = _parse(parentId);
     if (parsed == null) return const [];
@@ -388,6 +442,12 @@ class CarLibrary {
           final tracks = [for (final p in parts) ...p];
           return tracks.isEmpty ? null : (tracks.take(shuffleCap).toList(), 0);
         case 'track':
+          // A list the car just showed (Tracks: recent, most played, A–Z).
+          final shown = container == null ? null : _containerTracks[container];
+          if (shown != null) {
+            final at = shown.indexWhere((t) => t.serverId == serverId && t.id == itemId);
+            if (at >= 0) return (shown, at);
+          }
           if (container != null) {
             final c = container.split(':');
             final known = _containerTracks['${c.first}:$serverId:${c.sublist(1).join(':')}'];

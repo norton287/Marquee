@@ -56,6 +56,9 @@ bool isConnectionError(Object e) =>
       DioExceptionType.unknown,
     }.contains(e.type);
 
+/// What a car A–Z folder lists.
+enum MusicList { artists, albums, tracks }
+
 abstract class MediaBackend {
   ServerConfig get config;
   String get serverId => config.id;
@@ -98,6 +101,32 @@ abstract class MediaBackend {
   /// car), picked by the server.
   Future<List<MediaItem>> randomTracks(Library library, {int limit = 200}) async =>
       const [];
+
+  /// A music [library]'s artists, albums or tracks under [letter] ('A'–'Z',
+  /// or '#' for anything else), by title, at most [limit] (car A–Z folders).
+  Future<List<MediaItem>> musicStartingWith(
+          Library library, MusicList kind, String letter,
+          {int limit = 500}) async =>
+      const [];
+
+  /// A music [library]'s newest tracks (car: Tracks → Recently added).
+  Future<List<MediaItem>> recentTracks(Library library, {int limit = 200}) async =>
+      const [];
+
+  /// The tracks played most, played ones only (car: Tracks → Most played).
+  Future<List<MediaItem>> topTracks(Library library, {int limit = 200}) async =>
+      const [];
+
+  /// Whether [title] belongs in the car's [letter] folder: by its first
+  /// letter, or for "The …" by the next word ("The Beatles" under B, not T);
+  /// '#' holds everything not starting with A–Z.
+  static bool underLetter(String title, String letter) {
+    var t = title.trim().toUpperCase();
+    if (t.startsWith('THE ') && t.length > 4) t = t.substring(4).trimLeft();
+    final c = t.isEmpty ? '' : t[0];
+    final az = c.length == 1 && c.codeUnitAt(0) >= 65 && c.codeUnitAt(0) <= 90;
+    return letter == '#' ? !az : c == letter;
+  }
 
   /// A music [library]'s albums for the car's Recent tab: recently played
   /// first, then recently added, each once.

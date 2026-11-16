@@ -1470,7 +1470,7 @@ void main() {
 
     test('the car browses the tabs', () async {
       final root = await handler.getChildren('root');
-      expect(root.map((m) => m.title), ['Recent', 'Playlists', 'Artists', 'Albums']);
+      expect(root.map((m) => m.title), ['Recent', 'Playlists', 'Library', 'Tracks']);
       expect(root.every((m) => m.playable == false), isTrue);
     });
 
@@ -1770,13 +1770,13 @@ void main() {
           CarLibrary(() => {'demo': counting}, (_) async => [music]),
           notifyChanged: (id) async => notified.add(id),
           keepFreshFor: const Duration(hours: 1));
-      await longKeep.getChildren('tab:albums');
+      await longKeep.getChildren('tab:recent');
       final calls = counting.calls;
       notified.clear();
       await longKeep.refreshAll();
       await settle();
       expect(counting.calls, greaterThan(calls)); // looked again
-      expect(notified, isNot(contains('tab:albums'))); // same: not redrawn
+      expect(notified, isNot(contains('tab:recent'))); // same: not redrawn
       await longKeep.dispose();
     });
 
@@ -1824,7 +1824,7 @@ void main() {
     test('refreshAll reloads the root and every tab (servers changed)',
         () async {
       await handler.refreshAll();
-      expect(notified, ['root', 'tab:recent', 'tab:playlists', 'tab:artists', 'tab:albums']);
+      expect(notified, ['root', 'tab:recent', 'tab:playlists', 'tab:library', 'tab:tracks']);
     });
   });
 
@@ -1864,7 +1864,7 @@ void main() {
     test('root holds the four tabs; Recent starts with Shuffle all', () async {
       final car = make();
       final root = await car.children('root');
-      expect(root.map((n) => n.title), ['Recent', 'Playlists', 'Artists', 'Albums']);
+      expect(root.map((n) => n.title), ['Recent', 'Playlists', 'Library', 'Tracks']);
       expect(root.every((n) => n.browsable && !n.playable), isTrue);
       final recent = await car.children(root.first.id);
       expect(recent.first.title, 'Shuffle all');
@@ -2176,6 +2176,52 @@ void main() {
       expect(checked, unorderedEquals(['a', 'b']));
     });
 
+    test('Library → Artists / Albums → A–Z letters → items under that letter',
+        () async {
+      final car = make();
+      final lib = await car.children('tab:library');
+      expect(lib.map((n) => n.title), ['Artists', 'Albums']);
+      final letters = await car.children(lib[1].id);
+      expect(letters.map((n) => n.title), ['#', for (var c = 65; c <= 90; c++) String.fromCharCode(c)]);
+      expect(letters.every((n) => n.browsable), isTrue);
+      // Every demo album is under its own letter.
+      final albums = await car.children('tab:albums');
+      final first = albums.first.title;
+      final letter = MediaBackend.underLetter(first, '#') ? '#' : first[0].toUpperCase();
+      final under = await car.children(letters.firstWhere((n) => n.title == letter).id);
+      expect(under.map((n) => n.title), contains(first));
+      expect(under.every((n) => MediaBackend.underLetter(n.title, letter)), isTrue);
+      expect(await car.children((await car.children(under.first.id)).first.id),
+          isEmpty); // album → tracks (tracks have no children)
+      final artistLetters = await car.children(lib[0].id);
+      final firstArtist = (await car.children('tab:artists')).first.title;
+      final artists = await car.children(artistLetters
+          .firstWhere((n) => n.title == firstArtist[0].toUpperCase())
+          .id);
+      expect(artists, isNotEmpty);
+    });
+
+    test('Tracks: Recently added, Most played, then A–Z; a tap plays that list',
+        () async {
+      final car = make();
+      final tracks = await car.children('tab:tracks');
+      expect(tracks.take(2).map((n) => n.title), ['Recently added', 'Most played']);
+      expect(tracks.skip(2).map((n) => n.title).first, '#');
+      expect(tracks, hasLength(2 + 27));
+      final recent = await car.children(tracks[0].id);
+      expect(recent, isNotEmpty);
+      expect(recent.every((n) => n.playable), isTrue);
+      final (queue, at) = (await car.resolve(recent[3].id))!;
+      expect(queue.map((t) => t.title), recent.map((n) => n.title));
+      expect(at, 3);
+      // Demo tracks are "Track 1…": all under T.
+      final t = await car.children(tracks.firstWhere((n) => n.title == 'T').id);
+      expect(t, isNotEmpty);
+      final (tq, ti) = (await car.resolve(t[5].id))!;
+      expect(tq[ti].title, t[5].title);
+      expect(tq, hasLength(t.length));
+    });
+
     test('a hidden music library is left out', () async {
       hidden = true;
       final car = make();
@@ -2474,6 +2520,87 @@ void main() {
     await plex.playlistTracks(lists.last, limit: 500);
     expect(asked.single, '/playlists/2/items '
         '{X-Plex-Container-Start: 0, X-Plex-Container-Size: 500}');
+  });
+
+  test('which letter a title is under (car A–Z folders)', () {
+    bool under(String t, String l) => MediaBackend.underLetter(t, l);
+    expect(under('Blue Hour', 'B'), isTrue);
+    expect(under('blue hour', 'B'), isTrue);
+    expect(under('The Beatles', 'B'), isTrue); // by its next word
+    expect(under('The Beatles', 'T'), isFalse);
+    expect(under('The Trooper', 'T'), isTrue);
+    expect(under('Thunderstruck', 'T'), isTrue);
+    expect(under('2 Live Crew', '#'), isTrue);
+    expect(under('[unknown]', '#'), isTrue);
+    expect(under('Ébène', '#'), isTrue); // not A–Z
+    expect(under('Blue Hour', '#'), isFalse);
+  });
+
+  test('Plex A–Z, recently added and most played for the car', () async {
+    final asked = <Map<String, dynamic>>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        asked.add(Map.of(o.queryParameters)..remove('X-Plex-Token'));
+        final meta = [
+          {'ratingKey': '1', 'type': 'track', 'title': 'Baby'},
+          {'ratingKey': '2', 'type': 'track', 'title': 'The Bomb'},
+          {'ratingKey': '3', 'type': 'track', 'title': 'Hit', 'viewCount': 4},
+          {'ratingKey': '4', 'type': 'track', 'title': 'The Trooper'},
+        ];
+        h.resolve(Response(requestOptions: o,
+            data: jsonDecode(jsonEncode({'MediaContainer': {'Metadata': meta}})),
+            statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: dio);
+
+    final b = await plex.musicStartingWith(musicLib, MusicList.tracks, 'B');
+    expect(b.map((t) => t.title), ['Baby', 'The Bomb']); // only what's under B
+    expect(asked.last, {'type': 10, 'sort': 'titleSort', 'title<': 'B,The B',
+        'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 500});
+    await plex.musicStartingWith(musicLib, MusicList.albums, '#', limit: 300);
+    expect(asked.last['type'], 9);
+    expect(asked.last['title<'], startsWith('0,1,2,3,4,5,6,7,8,9'));
+    await plex.musicStartingWith(musicLib, MusicList.artists, 'Q');
+    expect(asked.last['type'], 8);
+
+    await plex.recentTracks(musicLib);
+    expect(asked.last, {'type': 10, 'sort': 'addedAt:desc',
+        'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 200});
+    final top = await plex.topTracks(musicLib);
+    expect(asked.last['sort'], 'viewCount:desc');
+    expect(top.map((t) => t.title), ['Hit']); // only played ones
+  });
+
+  test('Jellyfin A–Z, recently added and most played for the car', () async {
+    final asked = <String, Map<String, dynamic>>{};
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final q = o.queryParameters;
+        asked['${o.path} ${q['includeItemTypes'] ?? ''} ${q['sortBy'] ?? ''}'] = q;
+        h.resolve(Response(requestOptions: o,
+            data: jsonDecode(jsonEncode({'Items': [
+              {'Id': 'x', 'Type': 'Audio', 'Name': 'Baby'}]})),
+            statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const lib = Library(serverId: 'j', id: 'L', title: 'Music', kind: LibraryKind.music);
+    await jf.musicStartingWith(lib, MusicList.tracks, 'B');
+    expect(asked['/Items Audio SortName'], containsPair('nameStartsWith', 'B'));
+    expect(asked['/Items Audio SortName'], containsPair('parentId', 'L'));
+    await jf.musicStartingWith(lib, MusicList.albums, '#');
+    expect(asked['/Items MusicAlbum SortName'], containsPair('nameLessThan', 'A'));
+    await jf.musicStartingWith(lib, MusicList.artists, 'C');
+    expect(asked['/Artists/AlbumArtists  SortName'], containsPair('nameStartsWith', 'C'));
+    await jf.recentTracks(lib);
+    expect(asked['/Items Audio DateCreated'], containsPair('sortOrder', 'Descending'));
+    await jf.topTracks(lib);
+    expect(asked['/Items Audio PlayCount'], containsPair('filters', 'IsPlayed'));
   });
 
   test('Jellyfin music for the car: random tracks and recently played albums',

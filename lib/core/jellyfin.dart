@@ -560,6 +560,50 @@ class JellyfinBackend extends MediaBackend {
   Future<List<MediaItem>> recentlyAdded(Library library, {int limit = 20}) =>
       _list('/Items/Latest', {'parentId': library.id, 'limit': limit});
 
+  /// Jellyfin matches `nameStartsWith` against the sort name ("The" already
+  /// dropped); '#' = everything sorting before 'A'.
+  @override
+  Future<List<MediaItem>> musicStartingWith(
+      Library library, MusicList kind, String letter,
+      {int limit = 500}) async {
+    final query = <String, dynamic>{
+      'parentId': library.id,
+      'sortBy': 'SortName',
+      'limit': limit,
+      if (letter == '#') 'nameLessThan': 'A' else 'nameStartsWith': letter,
+    };
+    return switch (kind) {
+      MusicList.artists => _list('/Artists/AlbumArtists', query),
+      MusicList.albums => _list('/Items',
+          {...query, 'includeItemTypes': 'MusicAlbum', 'recursive': true}),
+      MusicList.tracks => _list('/Items',
+          {...query, 'includeItemTypes': 'Audio', 'recursive': true}),
+    };
+  }
+
+  @override
+  Future<List<MediaItem>> recentTracks(Library library, {int limit = 200}) =>
+      _list('/Items', {
+        'parentId': library.id,
+        'includeItemTypes': 'Audio',
+        'recursive': true,
+        'sortBy': 'DateCreated',
+        'sortOrder': 'Descending',
+        'limit': limit,
+      });
+
+  @override
+  Future<List<MediaItem>> topTracks(Library library, {int limit = 200}) =>
+      _list('/Items', {
+        'parentId': library.id,
+        'includeItemTypes': 'Audio',
+        'recursive': true,
+        'filters': 'IsPlayed',
+        'sortBy': 'PlayCount',
+        'sortOrder': 'Descending',
+        'limit': limit,
+      });
+
   @override
   Future<List<MediaItem>> randomTracks(Library library, {int limit = 200}) =>
       _list('/Items', {

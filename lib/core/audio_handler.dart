@@ -279,7 +279,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       _keptAt.updateAll((_, _) => DateTime(0));
     }
     for (final id in const [
-      'root', 'tab:recent', 'tab:playlists', 'tab:artists', 'tab:albums',
+      'root', 'tab:recent', 'tab:playlists', 'tab:library', 'tab:tracks',
     ]) {
       if (!clear && _kept.containsKey(id)) {
         unawaited(_refresh(id));

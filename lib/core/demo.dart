@@ -383,6 +383,40 @@ class DemoBackend extends MediaBackend {
     return byName.values.toList();
   }
 
+  List<MediaItem> get _allTracks => [
+        for (final a in _albums) ...?_tracks[a.id],
+      ];
+
+  @override
+  Future<List<MediaItem>> musicStartingWith(
+      Library library, MusicList kind, String letter,
+      {int limit = 500}) async {
+    if (library.kind != LibraryKind.music) return const [];
+    final all = switch (kind) {
+      MusicList.artists => _artists(),
+      MusicList.albums => _albums,
+      MusicList.tracks => _allTracks,
+    };
+    return _liveAll([
+      for (final i in all)
+        if (MediaBackend.underLetter(i.title, letter)) i
+    ]..sort((a, b) => a.title.compareTo(b.title)))
+        .take(limit)
+        .toList();
+  }
+
+  @override
+  Future<List<MediaItem>> recentTracks(Library library, {int limit = 200}) async =>
+      library.kind != LibraryKind.music
+          ? const []
+          : _liveAll(_allTracks.take(limit));
+
+  @override
+  Future<List<MediaItem>> topTracks(Library library, {int limit = 200}) async =>
+      library.kind != LibraryKind.music
+          ? const []
+          : _liveAll(_allTracks.where((t) => _played.contains(t.id)).take(limit));
+
   @override
   Future<List<MediaItem>> randomTracks(Library library,
       {int limit = 200}) async {

@@ -526,6 +526,56 @@ class PlexBackend extends MediaBackend {
     return _items(c);
   }
 
+  static int _musicType(MusicList kind) => switch (kind) {
+        MusicList.artists => 8,
+        MusicList.albums => 9,
+        MusicList.tracks => 10,
+      };
+
+  /// `title<` is Plex's "begins with" (verified on PMS 1.43.5: exact, while
+  /// its firstCharacter counts and offsets disagree with the sort for tracks
+  /// and albums). Values are or-ed: "B,The B"; '#' asks for digits and
+  /// common symbols. Then [underLetter] keeps exactly what belongs.
+  @override
+  Future<List<MediaItem>> musicStartingWith(
+      Library library, MusicList kind, String letter,
+      {int limit = 500}) async {
+    final starts = letter == '#'
+        ? '0,1,2,3,4,5,6,7,8,9,#,[,(,",\',.,!,&,*,/,-,_,@,\$'
+        : '$letter,The $letter';
+    final items = _items(await _get('/library/sections/${library.id}/all', {
+      'type': _musicType(kind),
+      'sort': 'titleSort',
+      'title<': starts,
+      'X-Plex-Container-Start': 0,
+      'X-Plex-Container-Size': limit,
+    }));
+    return [
+      for (final i in items)
+        if (MediaBackend.underLetter(i.title, letter)) i
+    ];
+  }
+
+  @override
+  Future<List<MediaItem>> recentTracks(Library library, {int limit = 200}) async =>
+      _items(await _get('/library/sections/${library.id}/all', {
+        'type': 10,
+        'sort': 'addedAt:desc',
+        'X-Plex-Container-Start': 0,
+        'X-Plex-Container-Size': limit,
+      }));
+
+  @override
+  Future<List<MediaItem>> topTracks(Library library, {int limit = 200}) async => [
+        for (final t in _items(await _get('/library/sections/${library.id}/all', {
+          'type': 10,
+          'sort': 'viewCount:desc',
+          'X-Plex-Container-Start': 0,
+          'X-Plex-Container-Size': limit,
+        })))
+          if (t.played) t
+      ];
+
   @override
   Future<List<MediaItem>> randomTracks(Library library,
           {int limit = 200}) async =>
