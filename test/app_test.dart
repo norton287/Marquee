@@ -106,6 +106,7 @@ class FakeTrackPlayer implements TrackPlayer {
 
   void at(Duration d) => _position.add(d);
   void finish() => _completed.add(null);
+  void lasts(Duration d) => _duration.add(d);
   void fail(String e) => _error.add(e);
 }
 
@@ -153,6 +154,25 @@ class OfflineDemo extends DemoBackend {
   Future<List<MediaItem>> search(String query) async => _down();
   @override
   Future<List<MediaItem>> randomTracks(Library library, {int limit = 200}) async => _down();
+}
+
+/// A server that answers its library slowly, or drops the connection once.
+class FlakyDemo extends DemoBackend {
+  FlakyDemo({this.delay = Duration.zero, this.dropFirst = false}) : super(demoServer);
+  final Duration delay;
+  bool dropFirst;
+  @override
+  Future<Paged> libraryItems(Library library,
+      {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) async {
+    await Future<void>.delayed(delay);
+    if (dropFirst) {
+      dropFirst = false;
+      throw DioException(
+          requestOptions: RequestOptions(path: '/x'),
+          type: DioExceptionType.connectionError);
+    }
+    return super.libraryItems(library, start: start, limit: limit, query: query);
+  }
 }
 
 void main() {
@@ -1263,6 +1283,20 @@ void main() {
       await handler.skipToNext();
       await settle();
       expect(handler.mediaItem.value?.title, tracks[3].title);
+      // The notification can be closed: a Stop control (after the drive).
+      expect(handler.playbackState.value.controls, contains(as_.MediaControl.stop));
+    });
+
+    test("a skipped track's message doesn't stay on the car while music plays",
+        () async {
+      demo.failNext = 2; // the first track fails twice and is skipped
+      final album = (await handler.getChildren('tab:albums')).first;
+      final tracks = await handler.getChildren(album.id);
+      await handler.playFromMediaId(tracks.first.id);
+      await settle();
+      expect(engine.state.error, isNotNull); // the app still says why
+      expect(handler.playbackState.value.playing, isTrue);
+      expect(handler.playbackState.value.errorMessage, isNull);
     });
 
     test('voice: "play <album>" plays it; an empty query shuffles all',
@@ -1278,9 +1312,34 @@ void main() {
       expect(engine.state.queue, isNotEmpty);
     });
 
+    test('no server link (with its token) leaves the app; art is a local file',
+        () async {
+      final local = MarqueeAudioHandler(engine, car,
+          localArt: (remote) async => Uri.file('/cache/${remote.pathSegments.last}.jpg'));
+      final albums = await local.getChildren('tab:albums');
+      expect(albums.every((m) => m.artUri == null), isTrue);
+      final tracks = await local.getChildren(albums.first.id);
+      expect(tracks.every((m) => m.artUri == null), isTrue);
+      await local.playFromMediaId(tracks.first.id);
+      await settle();
+      expect(local.queue.value.every((m) => m.artUri == null), isTrue);
+      expect(local.mediaItem.value?.artUri?.scheme, 'file');
+      // A length the player finds out later reaches the car too.
+      player.lasts(const Duration(minutes: 3, seconds: 7));
+      await settle();
+      expect(local.mediaItem.value?.duration, const Duration(minutes: 3, seconds: 7));
+      await local.dispose();
+    });
+
     test('refreshRoot tells the car the menu changed', () async {
       await handler.refreshRoot();
       expect(notified, ['root']);
+    });
+
+    test('refreshAll reloads the root and every tab (servers changed)',
+        () async {
+      await handler.refreshAll();
+      expect(notified, ['root', 'tab:recent', 'tab:playlists', 'tab:artists', 'tab:albums']);
     });
   });
 
@@ -1311,6 +1370,10 @@ void main() {
       expect(recent.first.title, 'Shuffle all');
       expect(recent.first.playable, isTrue);
       expect(recent.skip(1), isNotEmpty);
+      // One tap plays a recent album.
+      expect(recent.skip(1).every((n) => n.playable), isTrue);
+      final (queue, _) = (await car.resolve(recent[1].id))!;
+      expect(queue, isNotEmpty);
     });
 
     test('Albums → album → tracks; a track plays its album from there',
@@ -1362,6 +1425,47 @@ void main() {
       expect(await car.children('tab:playlists'), isNotEmpty);
       final album = (await car.children('tab:albums')).first;
       expect(await car.search(album.title), isNotEmpty);
+    });
+
+    test('a slow server is left out after the deadline', () async {
+      final car = CarLibrary(
+        () => {'demo': demo, 'slow': FlakyDemo(delay: const Duration(seconds: 2))},
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        timeout: const Duration(milliseconds: 100),
+      );
+      final watch = Stopwatch()..start();
+      final albums = await car.children('tab:albums');
+      expect(watch.elapsed, lessThan(const Duration(seconds: 1)));
+      expect(albums, isNotEmpty); // the demo server's
+    });
+
+    test('a dropped connection reconnects that server and tries again',
+        () async {
+      final flaky = FlakyDemo(dropFirst: true);
+      final reconnected = <String>[];
+      final car = CarLibrary(
+        () => {'home': flaky},
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        reconnect: (id) async => reconnected.add(id),
+      );
+      expect(await car.children('tab:albums'), isNotEmpty);
+      expect(reconnected, ['home']);
+    });
+
+    test('playing an artist plays all their albums', () async {
+      final car = make();
+      final artist = (await car.children('tab:artists')).first;
+      final albums = await car.children(artist.id);
+      var expected = 0;
+      for (final a in albums) {
+        expected += (await car.children(a.id)).length;
+      }
+      final hits = await car.search(artist.title);
+      final hit = hits.firstWhere((h) => h.id == artist.id, orElse: () => artist);
+      final (queue, _) = (await car.resolve(hit.id))!;
+      expect(queue, hasLength(expected));
     });
 
     test('a hidden music library is left out', () async {
@@ -1481,6 +1585,70 @@ void main() {
       await settle();
       expect(engine.state.index, 2);
       expect(demo.reports, contains('${tracks[3].id} stopped'));
+    });
+
+    test('a dead stream (two errors) is retried once, not skipped', () async {
+      await engine.playQueue(tracks, 0);
+      await settle();
+      // libmpv reports a refused connection twice ("tcp: …", "Failed to open").
+      player.fail('tcp: Connection refused');
+      player.fail('Failed to open http://…');
+      await settle();
+      expect(reconnects, ['demo']);
+      expect(engine.state.index, 0);
+      expect(player.calls.where((c) => c == 'open u:${tracks[0].id}'), hasLength(2));
+    });
+
+    test('a stream that drops mid-track picks up where it was', () async {
+      await engine.playQueue(tracks, 0);
+      await settle();
+      player.at(const Duration(seconds: 30));
+      player.fail('connection lost');
+      await settle();
+      expect(player.calls, contains('seek 30'));
+    });
+
+    test('quick skips leave one report timer, for the playing track',
+        () async {
+      await engine.playQueue(tracks, 0);
+      engine.next();
+      engine.next();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final playing = demo.reports.where((r) => r.endsWith(' playing'));
+      expect(playing, isNotEmpty);
+      expect(playing.every((r) => r.startsWith('${engine.state.current!.id} ')),
+          isTrue, reason: '${demo.reports}');
+    });
+
+    test('while a video holds music, nothing starts it', () async {
+      final started = engine.playQueue(tracks, 0);
+      engine.holdForVideo(true); // the video opened while the track resolved
+      await started;
+      await settle();
+      expect(player.calls, isNot(contains('play')));
+      expect(engine.state.playing, isFalse);
+      engine.play(); // e.g. a headset button during the video
+      await settle();
+      expect(player.calls, isNot(contains('play')));
+      engine.holdForVideo(false);
+      engine.play();
+      await settle();
+      expect(player.calls, contains('play'));
+    });
+
+    test('no audio focus, no playing', () async {
+      var allow = false;
+      final e = MusicEngine(
+          player: player, backendFor: (_) => demo, beforePlay: () async => allow);
+      await e.playQueue(tracks, 0);
+      await settle();
+      expect(player.calls, isNot(contains('play')));
+      expect(e.state.playing, isFalse);
+      allow = true;
+      e.play();
+      await settle();
+      expect(player.calls, contains('play'));
+      await e.dispose();
     });
 
     test('stop reports stopped and clears the queue', () async {

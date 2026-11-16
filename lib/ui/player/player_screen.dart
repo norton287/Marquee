@@ -147,8 +147,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _init());
   }
 
+  /// Read once: `ref` can't be used in dispose.
+  MusicController? _music;
+
   Future<void> _init() async {
-    ref.read(musicProvider.notifier).pause();
+    final music = ref.read(musicProvider.notifier);
+    _music = music;
+    music.holdForVideo(true);
     if (_isMobile) {
       unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
       if (!_tv && MediaQuery.sizeOf(context).shortestSide < 600) {
@@ -793,6 +798,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   @override
   void dispose() {
+    _music?.holdForVideo(false);
     _generation++;
     for (final t in [
       _hideTimer, _peekTimer, _reportTimer, _countdownTimer, _flashTimer,

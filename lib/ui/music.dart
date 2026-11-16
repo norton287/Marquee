@@ -73,6 +73,10 @@ class MediaKitTrackPlayer implements TrackPlayer {
 final trackPlayerFactoryProvider =
     Provider<TrackPlayer Function()>((_) => MediaKitTrackPlayer.new);
 
+/// Asked before music starts (audio focus on phones, set up in main);
+/// null = always allowed.
+final musicFocusProvider = Provider<Future<bool> Function()?>((_) => null);
+
 /// The one music engine: the app, the lock screen and the car share it.
 final musicEngineProvider = Provider<MusicEngine>((ref) {
   final engine = MusicEngine(
@@ -81,6 +85,7 @@ final musicEngineProvider = Provider<MusicEngine>((ref) {
     backendFor: (id) => ref.read(backendsProvider)[id],
     reconnect: (id) => ref.read(serversProvider.notifier).revalidate(id),
     describeError: friendlyError,
+    beforePlay: ref.watch(musicFocusProvider),
   );
   ref.onDispose(engine.dispose);
   return engine;
@@ -109,6 +114,10 @@ class MusicController extends Notifier<MusicState> {
   void seek(Duration to) => _engine.seek(to);
   Future<void> shuffleQueue() => _engine.shuffleQueue();
   Future<void> stop() => _engine.stop();
+
+  /// Pauses music while a video plays and keeps anything (headset button,
+  /// lock screen, car) from starting it until the video closes.
+  void holdForVideo(bool hold) => _engine.holdForVideo(hold);
 }
 
 final musicProvider =

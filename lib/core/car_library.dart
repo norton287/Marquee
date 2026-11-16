@@ -25,7 +25,15 @@ class CarNode {
 /// playlists and tracks, `shuffle:<serverId>:<playlistId>`, and a track
 /// inside something it plays from: `track:<s>:<id>@<album|playlist>:<id>`.
 class CarLibrary {
-  CarLibrary(this.backends, this.visibleLibraries);
+  CarLibrary(this.backends, this.visibleLibraries,
+      {this.reconnect, this.timeout = const Duration(seconds: 4)});
+
+  /// Re-probes a server's addresses (the phone may have left home Wi-Fi).
+  final Future<void> Function(String serverId)? reconnect;
+
+  /// How long one server may take: a slow or offline one is left out rather
+  /// than holding up a tab or a voice request.
+  final Duration timeout;
 
   final Map<String, MediaBackend> Function() backends;
   final Future<List<Library>> Function(String serverId) visibleLibraries;
@@ -41,9 +49,22 @@ class CarLibrary {
   /// only leaves its own music out.
   Future<List<T>> _each<T>(
       Future<List<T>> Function(String serverId, MediaBackend b) read) async {
+    Future<List<T>> one(String id, MediaBackend b) async {
+      try {
+        return await read(id, b);
+      } catch (e) {
+        if (!isConnectionError(e) || reconnect == null) rethrow;
+        await reconnect!(id);
+        // A new address means a new backend.
+        return read(id, backends()[id] ?? b);
+      }
+    }
+
     final parts = await Future.wait([
       for (final e in backends().entries)
-        read(e.key, e.value).catchError((Object _) => <T>[]),
+        one(e.key, e.value)
+            .timeout(timeout, onTimeout: () => <T>[])
+            .catchError((Object _) => <T>[]),
     ]);
     return [for (final p in parts) ...p];
   }
@@ -54,7 +75,11 @@ class CarLibrary {
         final libs = (await visibleLibraries(id))
             .where((l) => l.kind == LibraryKind.music);
         final parts = await Future.wait([
-          for (final l in libs) read(b, l).catchError((Object _) => <T>[]),
+          // A lost connection goes up to [_each] to reconnect; anything else
+          // only drops this library.
+          for (final l in libs)
+            read(b, l).catchError((Object _) => <T>[],
+                test: (e) => !isConnectionError(e)),
         ]);
         return [for (final p in parts) ...p];
       });
@@ -116,7 +141,8 @@ class CarLibrary {
             (b, l) => b.recentMusic(l, limit: 20));
         return [
           const CarNode('shuffle:all', 'Shuffle all', playable: true),
-          for (final a in albums.take(_recentCap)) _node(a),
+          // One tap plays a recent album.
+          for (final a in albums.take(_recentCap)) _node(a, playable: true),
         ];
       case 'tab:playlists':
         final lists = await _each((id, b) => b.playlistsFor(_anyTrack(id)));
@@ -228,11 +254,13 @@ class CarLibrary {
         case 'artist':
           final albums =
               await backend.children(_ref(serverId, itemId, MediaKind.artist));
-          final tracks = <MediaItem>[];
-          for (final a in albums) {
-            if (tracks.length >= shuffleCap) break;
-            tracks.addAll(await tracksOf(MediaKind.album, a.id));
-          }
+          // All albums at once: one after another made "play <artist>" slow.
+          final parts = await Future.wait([
+            for (final a in albums)
+              tracksOf(MediaKind.album, a.id)
+                  .catchError((Object _) => <MediaItem>[]),
+          ]);
+          final tracks = [for (final p in parts) ...p];
           return tracks.isEmpty ? null : (tracks.take(shuffleCap).toList(), 0);
         case 'track':
           if (container != null) {

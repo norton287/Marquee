@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import 'backend.dart';
@@ -77,6 +76,7 @@ class MusicEngine {
     this.reconnect,
     this.reportEvery = const Duration(seconds: 10),
     this.describeError = _describe,
+    this.beforePlay,
   }) {
     _subs.addAll([
       player.playing.listen(_onPlaying),
@@ -93,6 +93,23 @@ class MusicEngine {
   final Duration reportEvery;
   final String Function(Object error) describeError;
 
+  /// Asked before anything starts playing (audio focus in the app); false
+  /// leaves the music paused.
+  final Future<bool> Function()? beforePlay;
+
+  /// While a video plays, nothing (a headset button, the car, a track that
+  /// was still loading) may start the music under it.
+  bool _held = false;
+  void holdForVideo(bool hold) {
+    _held = hold;
+    if (hold) pause();
+  }
+
+  Future<bool> _mayPlay() async {
+    if (_held) return false;
+    return await beforePlay?.call() ?? true;
+  }
+
   static String _describe(Object e) => '$e';
 
   final _states = StreamController<MusicState>.broadcast();
@@ -107,6 +124,13 @@ class MusicEngine {
   (MediaItem, PlaybackSource)? _current;
   (int, Future<PlaybackSource?>)? _prefetch;
   bool _retried = false;
+
+  /// The generation whose failure is being handled: libmpv reports one dead
+  /// stream twice ("tcp: …", then "Failed to open …").
+  int? _failedGeneration;
+
+  /// Where a retried track picks up (a stream that dropped mid-track).
+  Duration _resumeAt = Duration.zero;
   bool _reportedPause = false;
   Duration _position = Duration.zero;
   Timer? _reportTimer;
@@ -151,7 +175,10 @@ class MusicEngine {
     if (index < 0 || index >= _state.queue.length) return;
     _endCurrent();
     final gen = ++_generation;
-    if (!retry) _retried = false;
+    if (!retry) {
+      _retried = false;
+      _resumeAt = Duration.zero;
+    }
     _reportedPause = false;
     _position = Duration.zero;
     final track = _state.queue[index];
@@ -171,8 +198,21 @@ class MusicEngine {
       await player.open(source.url, source.headers);
       if (gen != _generation) return;
       _current = (track, source);
-      await player.play();
+      if (retry && _resumeAt > Duration.zero) {
+        await player.seek(_resumeAt);
+        _position = _resumeAt;
+      }
+      final play = await _mayPlay();
+      if (gen != _generation) return;
+      if (play) await player.play();
+      if (gen != _generation) return;
       _report(PlayState.started);
+      if (!play) {
+        _reportedPause = true;
+        _report(PlayState.paused);
+        _emit(_state.copyWith(playing: false));
+      }
+      _reportTimer?.cancel();
       _reportTimer = Timer.periodic(reportEvery, (_) {
         if (_state.playing) _report(PlayState.playing);
       });
@@ -192,25 +232,21 @@ class MusicEngine {
     );
   }
 
-  static bool _isConnection(Object e) =>
-      e is String ||
-      (e is DioException &&
-          const {
-            DioExceptionType.connectionError,
-            DioExceptionType.connectionTimeout,
-            DioExceptionType.receiveTimeout,
-            DioExceptionType.sendTimeout,
-            DioExceptionType.unknown,
-          }.contains(e.type));
+  /// Player errors come as libmpv text; most are a stream that couldn't be
+  /// reached.
+  static bool _isConnection(Object e) => e is String || isConnectionError(e);
 
   /// The current track couldn't be opened or stopped playing with an error.
   Future<void> _failed(Object e) async {
     final track = _state.current;
     if (track == null) return;
     final gen = _generation;
+    if (_failedGeneration == gen) return;
+    _failedGeneration = gen;
     if (!_retried && _isConnection(e)) {
       _retried = true;
       _prefetch = null;
+      _resumeAt = _position;
       try {
         await reconnect?.call(track.serverId);
       } catch (_) {}
@@ -277,7 +313,9 @@ class MusicEngine {
 
   void toggle() => _state.playing ? pause() : play();
   void pause() => unawaited(player.pause());
-  void play() => unawaited(player.play());
+  void play() => unawaited(() async {
+        if (await _mayPlay()) await player.play();
+      }());
   void next() {
     if (_state.hasNext) unawaited(_start(_state.index + 1));
   }

@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
+
 import 'models.dart';
 import 'network.dart';
 
@@ -42,6 +44,18 @@ class BackendException implements Exception {
 
 /// Everything the UI needs from a media server. Plex and Jellyfin each
 /// implement this, so no screen ever knows which one it is talking to.
+/// The server couldn't be reached (as opposed to refusing or not having
+/// something): worth re-probing its addresses and trying again.
+bool isConnectionError(Object e) =>
+    e is DioException &&
+    const {
+      DioExceptionType.connectionError,
+      DioExceptionType.connectionTimeout,
+      DioExceptionType.receiveTimeout,
+      DioExceptionType.sendTimeout,
+      DioExceptionType.unknown,
+    }.contains(e.type);
+
 abstract class MediaBackend {
   ServerConfig get config;
   String get serverId => config.id;
