@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart' as as_;
 
 import 'car_library.dart';
+import 'car_log.dart';
 import 'models.dart';
 import 'music_engine.dart';
 
@@ -60,7 +61,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       this.carArt,
       this.artDeadline = const Duration(seconds: 2),
       this.keepFreshFor = const Duration(minutes: 1),
-      this.answerWithin = const Duration(seconds: 8)}) {
+      this.answerWithin = const Duration(seconds: 8),
+      this.log}) {
     _sub = engine.states.listen(_publish);
     _publish(engine.state);
   }
@@ -93,6 +95,14 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// long says "Could not browse selection") and fills the list in when it
   /// arrives.
   final Duration answerWithin;
+
+  /// What the car asked and what was answered (Settings → Car log).
+  final CarLog? log;
+
+  Future<void> _notify(String id) async {
+    log?.add('redraw $id');
+    await notifyChanged?.call(id);
+  }
 
   /// Car lists kept while the app runs (never empty ones: those may be a
   /// dead spot): reopening answers at once, and a background refresh
@@ -148,7 +158,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
           final old = _kept[id];
           if (fresh.isEmpty || epoch != _epoch) return;
           _keep(id, fresh, epoch);
-          if (old == null || !_same(old, fresh)) await notifyChanged?.call(id);
+          if (old == null || !_same(old, fresh)) await _notify(id);
         } catch (_) {
           // Keep showing what was there.
         } finally {
@@ -189,13 +199,24 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   @override
   Future<List<as_.MediaItem>> getChildren(String parentMediaId,
       [Map<String, dynamic>? options]) async {
+    final took = Stopwatch()..start();
+    var how = 'loaded';
+    final list = await _children(parentMediaId, (h) => how = h);
+    log?.add('list $parentMediaId: ${list.length} rows ($how) in ${took.elapsedMilliseconds} ms');
+    return list;
+  }
+
+  Future<List<as_.MediaItem>> _children(
+      String parentMediaId, void Function(String how) note) async {
     // Android's media resumption ("recent" root): what's playing / last played.
     if (parentMediaId == as_.AudioService.recentRootId) {
       final now = mediaItem.value;
+      note('resume card');
       return now == null ? const [] : [_shareable(now).copyWith(playable: true)];
     }
     final kept = _kept[parentMediaId];
     if (kept != null) {
+      note('from memory');
       // Most recently used last (the cap drops the oldest).
       _kept
         ..remove(parentMediaId)
@@ -214,13 +235,15 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
         _keep(parentMediaId, fresh, epoch);
         return fresh;
       } on TimeoutException {
+        note('slow: answered empty, fills in later');
         unawaited(load.then((fresh) async {
           if (fresh.isEmpty || epoch != _epoch) return;
           _keep(parentMediaId, fresh, epoch);
-          await notifyChanged?.call(parentMediaId);
+          await _notify(parentMediaId);
         }, onError: (Object _) {}));
         return const <as_.MediaItem>[];
-      } catch (_) {
+      } catch (e) {
+        note('failed: $e');
         // A failure goes back to the car as "Could not browse selection":
         // an empty list (or the next look) is better.
         return const <as_.MediaItem>[];
@@ -238,6 +261,12 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// The car asking what an item is (e.g. the one playing).
   @override
   Future<as_.MediaItem?> getMediaItem(String mediaId) async {
+    final found = await _item(mediaId);
+    log?.add('item? $mediaId → ${found == null ? 'not known' : found.title}');
+    return found;
+  }
+
+  Future<as_.MediaItem?> _item(String mediaId) async {
     final now = mediaItem.value;
     if (now != null && now.id == mediaId) return _shareable(now);
     for (final list in [..._kept.values, _lastSearch, queue.value]) {
@@ -254,16 +283,20 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   @override
   Future<List<as_.MediaItem>> search(String query,
       [Map<String, dynamic>? extras]) async {
+    final took = Stopwatch()..start();
     try {
-      return _lastSearch = await _withArt(await library.search(query));
-    } catch (_) {
+      final hits = _lastSearch = await _withArt(await library.search(query));
+      log?.add('search "$query": ${hits.length} in ${took.elapsedMilliseconds} ms');
+      return hits;
+    } catch (e) {
+      log?.add('search "$query" failed: $e');
       return const []; // never an error back to the car
     }
   }
 
   /// A car that asked for the menu before the app was ready got an empty
   /// one (cold start); this makes it ask again.
-  Future<void> refreshRoot() async => notifyChanged?.call('root');
+  Future<void> refreshRoot() async => _notify('root');
 
   /// Servers, libraries or the profile changed: every list may differ.
   /// [clear]: what was kept no longer applies (the car's library changed).
@@ -286,13 +319,13 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       if (!clear && _kept.containsKey(id)) {
         unawaited(_refresh(id));
       } else {
-        await notifyChanged?.call(id);
+        await _notify(id);
       }
     }
     for (final id in shown) {
       if (!const ['root', 'tab:recent', 'tab:playlists', 'tab:library', 'tab:tracks']
           .contains(id)) {
-        await notifyChanged?.call(id);
+        await _notify(id);
       }
     }
   }
@@ -337,11 +370,17 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   Future<void> playFromMediaId(String mediaId,
       [Map<String, dynamic>? extras]) async {
     _tapError = null;
-    final tapped = await getMediaItem(mediaId);
+    log?.add('tap $mediaId');
+    final took = Stopwatch()..start();
+    final tapped = await _item(mediaId);
     if (tapped != null) mediaItem.add(tapped);
     playbackState.add(playbackState.value.copyWith(
         processingState: as_.AudioProcessingState.loading, errorMessage: null));
+    _logState();
     final queue = await library.resolve(mediaId);
+    log?.add(queue == null
+        ? 'tap → nothing to play (${took.elapsedMilliseconds} ms)'
+        : 'tap → ${queue.$1.length} tracks from #${queue.$2} (${took.elapsedMilliseconds} ms)');
     if (queue == null) {
       _tapError = "Couldn't play that. Check the connection to your server.";
       _publish(engine.state);
@@ -354,6 +393,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   @override
   Future<void> playFromSearch(String query,
       [Map<String, dynamic>? extras]) async {
+    log?.add('voice "$query"');
     if (query.trim().isEmpty) return _play(await library.resolve('shuffle:all'));
     final hits = await library.search(query);
     for (final h in hits) {
@@ -363,23 +403,46 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   }
 
   @override
-  Future<void> play() async => engine.play();
+  Future<void> play() async {
+    log?.add('control play');
+    engine.play();
+  }
+
   @override
-  Future<void> pause() async => engine.pause();
+  Future<void> pause() async {
+    log?.add('control pause');
+    engine.pause();
+  }
   @override
   Future<void> stop() async {
+    log?.add('control stop');
     await engine.stop();
     await super.stop();
   }
 
   @override
-  Future<void> skipToNext() async => engine.next();
+  Future<void> skipToNext() async {
+    log?.add('control next');
+    engine.next();
+  }
+
   @override
-  Future<void> skipToPrevious() async => engine.previous();
+  Future<void> skipToPrevious() async {
+    log?.add('control previous');
+    engine.previous();
+  }
+
   @override
-  Future<void> skipToQueueItem(int index) async => engine.jump(index);
+  Future<void> skipToQueueItem(int index) async {
+    log?.add('control queue item #$index');
+    engine.jump(index);
+  }
+
   @override
-  Future<void> seek(Duration position) async => engine.seek(position);
+  Future<void> seek(Duration position) async {
+    log?.add('control seek ${position.inSeconds} s');
+    engine.seek(position);
+  }
 
   // -- what the car and lock screen show --------------------------------------
 
@@ -407,6 +470,19 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       _art[t.id] = file;
       if (engine.state.current?.id == t.id) _publish(engine.state);
     }, onError: (Object _) {});
+  }
+
+  String? _lastSummary;
+
+  void _logState() {
+    final p = playbackState.value;
+    final summary = 'state ${p.processingState.name} '
+        '${p.playing ? 'playing' : 'paused'} item=${mediaItem.value?.id ?? '-'}'
+        '${p.errorMessage == null ? '' : ' error="${p.errorMessage}"'}';
+    if (summary != _lastSummary) {
+      _lastSummary = summary;
+      log?.add(summary);
+    }
   }
 
   void _publish(MusicState s) {
@@ -460,6 +536,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       // gets one when nothing can play; the app says why a track was skipped.
       errorMessage: _tapError ?? (s.failed && !s.playing ? s.error : null),
     ));
+    _logState();
   }
 
   Future<void> dispose() => _sub.cancel();

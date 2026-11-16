@@ -14,6 +14,7 @@ import 'app.dart';
 import 'core/audio_handler.dart';
 import 'core/backend.dart';
 import 'core/car_library.dart';
+import 'core/car_log.dart';
 import 'core/providers.dart';
 import 'core/storage.dart';
 import 'ui/music.dart';
@@ -76,9 +77,13 @@ Future<void> main() async {
   // One container for the app and the music session: on an Android Auto cold
   // start main() runs with no window, and the car needs the same servers and
   // music engine the app uses.
+  // What the car asks and Marquee answers, kept across restarts.
+  final carLog = CarLog(save: storage.saveCarLog)..load(await storage.readCarLog());
+
   final container = ProviderContainer(
     overrides: [
       storageProvider.overrideWithValue(storage),
+      carLogProvider.overrideWithValue(carLog),
       deviceIsTvProvider.overrideWithValue(isTv),
       // Music asks for audio focus first: other apps pause or duck.
       if (focus != null)
@@ -178,6 +183,7 @@ Future<void> _startMusicSession(
         localArt: (remote) async => Uri.file(
             (await AudioService.cacheManager.getSingleFile(remote.toString())).path),
         carArt: _carArt,
+        log: container.read(carLogProvider),
       ),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'app.marquee.marquee.music',

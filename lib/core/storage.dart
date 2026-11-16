@@ -373,4 +373,9 @@ class AppStorage {
     await _store.write('settings', jsonEncode(next.toJson()));
     await _store.writeSecret('settings', jsonEncode(next.secrets()));
   }
+
+  /// The car log (Settings → Android Auto), kept across app restarts. It
+  /// holds no tokens or addresses (CarLog scrubs them).
+  Future<String?> readCarLog() => _store.read('carLog');
+  Future<void> saveCarLog(String json) => _store.write('carLog', json);
 }

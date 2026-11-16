@@ -1,9 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/backend.dart';
+import '../core/car_log.dart';
 import '../core/models.dart';
 import '../core/network.dart';
 import '../core/providers.dart';
@@ -270,7 +272,7 @@ class SettingsScreen extends ConsumerWidget {
                 if (defaultTargetPlatform == TargetPlatform.android &&
                     !ref.watch(tvProvider)) ...[
                   const _Heading('Android Auto'),
-                  const _Card(children: [_CarLibraryChoice()]),
+                  const _Card(children: [_CarLibraryChoice(), _CarLogTile()]),
                 ],
                 const _Heading('Appearance'),
                 _Card(children: [
@@ -423,6 +425,92 @@ class _CarLibraryChoice extends ConsumerWidget {
           .change((s) => s.copyWith(carMusicLibrary: v)),
     );
   }
+}
+
+/// Settings → Android Auto → Car log: what the car asked and what Marquee
+/// answered, newest first, to copy and send when something goes wrong.
+class _CarLogTile extends ConsumerWidget {
+  const _CarLogTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final log = ref.watch(carLogProvider);
+    return StreamBuilder<void>(
+      stream: log.changes,
+      builder: (context, _) {
+        final n = log.entries.length;
+        return ListTile(
+          title: const Text('Car log'),
+          subtitle: Text(n == 1 ? '1 entry' : '$n entries'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => showPanel<void>(context,
+              width: 520, builder: (_) => _CarLogPanel(log: log)),
+        );
+      },
+    );
+  }
+}
+
+class _CarLogPanel extends StatelessWidget {
+  const _CarLogPanel({required this.log});
+  final CarLog log;
+
+  @override
+  Widget build(BuildContext context) => StreamBuilder<void>(
+        stream: log.changes,
+        builder: (context, _) {
+          final lines = log.toText().split('\n').reversed.where((l) => l.isNotEmpty).toList();
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 12, 4),
+                child: Row(children: [
+                  const Expanded(
+                    child: Text('Car log',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                  ),
+                  TextButton(
+                    autofocus: true,
+                    onPressed: lines.isEmpty
+                        ? null
+                        : () async {
+                            await Clipboard.setData(ClipboardData(text: log.toText()));
+                            if (context.mounted) {
+                              (panelMessenger(context)..hideCurrentSnackBar()).showSnackBar(
+                                  const SnackBar(content: Text('Copied: paste it to send it')));
+                            }
+                          },
+                    child: const Text('Copy'),
+                  ),
+                  TextButton(
+                    onPressed: lines.isEmpty ? null : log.clear,
+                    child: const Text('Clear'),
+                  ),
+                ]),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text('What the car asked Marquee for and what it answered, newest first.',
+                    style: TextStyle(color: Palette.muted, fontSize: 12.5)),
+              ),
+              Expanded(
+                child: lines.isEmpty
+                    ? const Center(child: Text('Nothing yet: connect to Android Auto.'))
+                    : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                        itemCount: lines.length,
+                        itemBuilder: (_, i) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Text(lines[i],
+                              style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                        ),
+                      ),
+              ),
+            ],
+          );
+        },
+      );
 }
 
 class _Choice<T> extends StatelessWidget {

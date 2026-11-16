@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'backend.dart';
+import 'car_log.dart';
 import 'demo.dart';
 import 'jellyfin.dart';
 import 'models.dart';
@@ -589,3 +590,10 @@ Future<List<Library>> freshLibraries(
     rethrow;
   }
 }
+
+/// The car log (Settings → Android Auto); main() gives it saving.
+final carLogProvider = Provider<CarLog>((ref) {
+  final log = CarLog();
+  ref.onDispose(log.dispose);
+  return log;
+});

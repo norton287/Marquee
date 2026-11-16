@@ -15,6 +15,7 @@ import 'package:marquee/app.dart';
 import 'package:marquee/core/audio_handler.dart';
 import 'package:marquee/core/backend.dart';
 import 'package:marquee/core/car_library.dart';
+import 'package:marquee/core/car_log.dart';
 import 'package:marquee/core/demo.dart';
 import 'package:marquee/core/jellyfin.dart';
 import 'package:marquee/core/models.dart';
@@ -1869,6 +1870,96 @@ void main() {
     final libs = await freshLibraries(container, 'demo');
     expect(libs, isNotEmpty);
     expect(flaky.calls, 2);
+  });
+
+  group('CarLog', () {
+    test('keeps the newest entries and saves them (after a short pause)',
+        () async {
+      String? saved;
+      final log = CarLog(max: 3, save: (json) async => saved = json,
+          saveAfter: const Duration(milliseconds: 20));
+      for (var i = 0; i < 5; i++) {
+        log.add('event $i');
+      }
+      expect(log.entries.map((e) => e.message), ['event 2', 'event 3', 'event 4']);
+      expect(saved, isNull); // not on every event
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      expect(saved, isNotNull);
+      final again = CarLog()..load(saved);
+      expect(again.entries.map((e) => e.message), ['event 2', 'event 3', 'event 4']);
+      log.clear();
+      expect(log.entries, isEmpty);
+    });
+
+    test('never keeps tokens or server addresses', () {
+      final log = CarLog();
+      log.add('failed: http://192.168.1.5:32400/library?X-Plex-Token=abc123&x=1');
+      log.add('jf: https://jf.example.com/Items?api_key=zzz');
+      log.add('MediaBrowser Token="secret", Client');
+      final text = log.toText();
+      expect(text, isNot(contains('abc123')));
+      expect(text, isNot(contains('192.168.1.5')));
+      expect(text, isNot(contains('jf.example.com')));
+      expect(text, isNot(contains('zzz')));
+      expect(text, isNot(contains('secret')));
+      expect(text, contains('failed:'));
+    });
+
+    test("the car's requests and Marquee's answers are logged", () async {
+      final log = CarLog();
+      final demo = RecordingDemo();
+      final player = FakeTrackPlayer();
+      final engine = MusicEngine(player: player, backendFor: (_) => demo);
+      final music = (await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+      final handler = MarqueeAudioHandler(engine,
+          CarLibrary(() => {'demo': demo}, (_) async => [music]), log: log);
+      final album = (await handler.getChildren('tab:albums')).first;
+      final tracks = await handler.getChildren(album.id);
+      await handler.playFromMediaId(tracks[1].id);
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      await handler.pause();
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      final text = log.toText();
+      expect(text, contains('list tab:albums'));
+      expect(text, contains('tap ${tracks[1].id}'));
+      expect(text, contains('control pause'));
+      expect(text, contains('state ready playing'));
+      expect(text, contains(tracks[1].id)); // the item it reported
+      await handler.dispose();
+      await engine.dispose();
+    });
+  });
+
+  testWidgets('Settings: the car log lists entries and copies them',
+      (tester) async {
+    final log = CarLog()..add('tap track:demo:a1-1@album:a1');
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copied = (call.arguments as Map)['text'] as String?;
+      }
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null));
+    await _pump(tester, const Size(390, 844),
+        overrides: [carLogProvider.overrideWithValue(log)]);
+    await tester.tap(find.text('Settings').last);
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Car log'), 300,
+        scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    expect(find.text('1 entry'), findsOneWidget);
+    await tester.tap(find.text('Car log'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('tap track:demo:a1-1@album:a1'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Copy'));
+    await tester.pumpAndSettle();
+    expect(copied, contains('tap track:demo:a1-1@album:a1'));
+    await tester.tap(find.widgetWithText(TextButton, 'Clear'));
+    await tester.pumpAndSettle();
+    expect(log.entries, isEmpty);
   });
 
   group('CarLibrary', () {
