@@ -321,6 +321,15 @@ class CountingDemo extends DemoBackend {
   }
 }
 
+/// A car library that breaks on every list (something unexpected).
+class BrokenCarLibrary extends CarLibrary {
+  BrokenCarLibrary() : super(() => const {}, (_) async => const []);
+  @override
+  Future<List<CarNode>> children(String parentId) => Future.error(StateError('boom'));
+  @override
+  Future<List<CarNode>> search(String query) => Future.error(StateError('boom'));
+}
+
 void main() {
   const sizes = {
     'phone': (Size(390, 844), false),
@@ -1781,6 +1790,30 @@ void main() {
       demo.childrenGate = null;
       await loading;
       expect(handler.keptLists, 0);
+    });
+
+    test('a list request never fails back to the car ("could not browse")',
+        () async {
+      final broken = MarqueeAudioHandler(engine, BrokenCarLibrary());
+      expect(await broken.getChildren('tab:albums'), isEmpty);
+      expect(await broken.search('x'), isEmpty);
+      await broken.dispose();
+    });
+
+    test('a slow first load answers in time, then fills the list in',
+        () async {
+      demo.childrenGate = Completer<void>();
+      final album = 'album:demo:${(await demo.recentlyAdded((await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music))).first.id}';
+      final quick = MarqueeAudioHandler(engine, car,
+          notifyChanged: (id) async => notified.add(id),
+          answerWithin: const Duration(milliseconds: 100));
+      expect(await quick.getChildren(album), isEmpty); // in time, for now
+      demo.childrenGate!.complete();
+      demo.childrenGate = null;
+      await settle();
+      expect(notified, contains(album)); // the car reloads it
+      expect(await quick.getChildren(album), isNotEmpty);
+      await quick.dispose();
     });
 
     test('refreshRoot tells the car the menu changed', () async {

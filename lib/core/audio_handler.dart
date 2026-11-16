@@ -59,7 +59,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       this.localArt,
       this.carArt,
       this.artDeadline = const Duration(seconds: 2),
-      this.keepFreshFor = const Duration(minutes: 1)}) {
+      this.keepFreshFor = const Duration(minutes: 1),
+      this.answerWithin = const Duration(seconds: 8)}) {
     _sub = engine.states.listen(_publish);
     _publish(engine.state);
   }
@@ -87,6 +88,11 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
 
   /// A kept car list is refreshed in the background at most this often.
   final Duration keepFreshFor;
+
+  /// A first load that takes longer answers empty (a car that waits too
+  /// long says "Could not browse selection") and fills the list in when it
+  /// arrives.
+  final Duration answerWithin;
 
   /// Car lists kept while the app runs (never empty ones: those may be a
   /// dead spot): reopening answers at once, and a background refresh
@@ -202,10 +208,22 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     // Two car requests for the same new list share one load.
     return _firstLoads[parentMediaId] ??= () async {
       final epoch = _epoch;
+      final load = _load(parentMediaId);
       try {
-        final fresh = await _load(parentMediaId);
+        final fresh = await load.timeout(answerWithin);
         _keep(parentMediaId, fresh, epoch);
         return fresh;
+      } on TimeoutException {
+        unawaited(load.then((fresh) async {
+          if (fresh.isEmpty || epoch != _epoch) return;
+          _keep(parentMediaId, fresh, epoch);
+          await notifyChanged?.call(parentMediaId);
+        }, onError: (Object _) {}));
+        return const <as_.MediaItem>[];
+      } catch (_) {
+        // A failure goes back to the car as "Could not browse selection":
+        // an empty list (or the next look) is better.
+        return const <as_.MediaItem>[];
       } finally {
         _firstLoads.remove(parentMediaId);
       }
@@ -235,8 +253,13 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
 
   @override
   Future<List<as_.MediaItem>> search(String query,
-          [Map<String, dynamic>? extras]) async =>
-      _lastSearch = await _withArt(await library.search(query));
+      [Map<String, dynamic>? extras]) async {
+    try {
+      return _lastSearch = await _withArt(await library.search(query));
+    } catch (_) {
+      return const []; // never an error back to the car
+    }
+  }
 
   /// A car that asked for the menu before the app was ready got an empty
   /// one (cold start); this makes it ask again.
