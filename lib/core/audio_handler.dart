@@ -398,8 +398,12 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     final hits = await library.search(query);
     for (final h in hits) {
       final queue = await library.resolve(h.id);
-      if (queue != null) return _play(queue, tapped: h.id);
+      if (queue != null) {
+        log?.add('voice → ${h.title} (${queue.$1.length} tracks)');
+        return _play(queue, tapped: h.id);
+      }
     }
+    log?.add('voice → nothing found to play (${hits.length} hits)');
   }
 
   @override

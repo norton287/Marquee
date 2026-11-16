@@ -20,12 +20,21 @@ class CarLog {
   CarLog({
     this.max = 300,
     this.save,
-    this.saveAfter = const Duration(seconds: 2),
+    this.saveAfter = const Duration(milliseconds: 500),
+    this.saveAtLeastEvery = const Duration(seconds: 3),
   });
 
   final int max;
   final Future<void> Function(String json)? save;
+
+  /// Saves this long after the last change, but never later than
+  /// [saveAtLeastEvery] after the first unsaved one (a busy car would put it
+  /// off forever, and the last moments before Android closes the app are the
+  /// ones that matter).
   final Duration saveAfter;
+  final Duration saveAtLeastEvery;
+  DateTime? _unsavedSince;
+  bool _closed = false;
 
   final _entries = <CarLogEntry>[];
   final _changes = StreamController<void>.broadcast();
@@ -37,7 +46,10 @@ class CarLog {
   Stream<void> get changes => _changes.stream;
 
   void add(String message) {
-    _entries.add(CarLogEntry(DateTime.now(), scrub(message)));
+    if (_closed) return;
+    // One line per entry (errors span several).
+    final line = scrub(message).replaceAll(RegExp(r'\s+'), ' ').trim();
+    _entries.add(CarLogEntry(DateTime.now(), line));
     if (_entries.length > max) _entries.removeRange(0, _entries.length - max);
     _changed();
   }
@@ -50,8 +62,24 @@ class CarLog {
   void _changed() {
     if (!_changes.isClosed) _changes.add(null);
     if (save == null) return;
+    final now = DateTime.now();
+    final since = _unsavedSince ??= now;
     _saving?.cancel();
-    _saving = Timer(saveAfter, () => save!(_toJson()));
+    if (now.difference(since) >= saveAtLeastEvery) {
+      _flush();
+    } else {
+      _saving = Timer(saveAfter, _flush);
+    }
+  }
+
+  void _flush() {
+    _saving?.cancel();
+    _saving = null;
+    _unsavedSince = null;
+    final save = this.save;
+    if (save == null) return;
+    // A failed save must never break the app; the next change tries again.
+    unawaited(Future(() => save(_toJson())).catchError((Object _) {}));
   }
 
   String _toJson() => jsonEncode([
@@ -74,9 +102,23 @@ class CarLog {
     }
   }
 
-  /// Links, tokens and keys out: they hold the server address and secrets.
+  /// Links, hosts, addresses, tokens, keys and cookies out.
   static String scrub(String s) => s
       .replaceAll(RegExp(r'[a-z][a-z0-9+.-]*://\S+', caseSensitive: false), '<link>')
+      // Plex's per-server names carry the IP and the certificate hash.
+      .replaceAll(RegExp(r'[\w.-]+\.plex\.direct(:\d+)?', caseSensitive: false), '<host>')
+      .replaceAll(RegExp(r"Failed host lookup: '[^']*'", caseSensitive: false),
+          'Failed host lookup: <host>')
+      .replaceAll(RegExp(r'address = \S+, port = \d+'), 'address = <address>')
+      // IPv4 (with a port) and IPv6.
+      .replaceAll(RegExp(r'\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b'), '<address>')
+      .replaceAll(
+          RegExp(r'\[?\b[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}\]?(:\d+)?', caseSensitive: false),
+          '<address>')
+      .replaceAll(RegExp(r'Bearer\s+\S+', caseSensitive: false), 'Bearer <hidden>')
+      .replaceAllMapped(RegExp(r'(cookie|sid|session)(["\x27]?\s*[=:]\s*)[^\s;,]+',
+              caseSensitive: false),
+          (m) => '${m[1]}${m[2]}<hidden>')
       .replaceAllMapped(
           RegExp(r'(token|api_key|apikey|password)(["\x27]?\s*[=:]\s*["\x27]?)[^\s"\x27&,]+',
               caseSensitive: false),
@@ -91,8 +133,11 @@ class CarLog {
               '${e.at.millisecond.toString().padLeft(3, '0')} ${e.message}',
       ].join('\n');
 
+  /// Saves what's pending, then ignores further entries.
   void dispose() {
-    _saving?.cancel();
+    if (_closed) return;
+    if (_saving != null) _flush();
+    _closed = true;
     _changes.close();
   }
 }

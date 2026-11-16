@@ -1905,6 +1905,47 @@ void main() {
       expect(text, contains('failed:'));
     });
 
+    test('connection errors keep no host, address or cookie', () {
+      final log = CarLog();
+      log.add("failed: DioException [connection error]: Failed host lookup: "
+          "'192-168-1-5.0123456789abcdef.plex.direct'\nError: SocketException: "
+          "Failed host lookup: '192-168-1-5.0123456789abcdef.plex.direct'");
+      log.add('SocketException: Connection refused (OS Error: x), address = 203.0.113.9, port = 32400');
+      log.add('tried 192.168.1.5:32400 and [2001:db8::1]:32400 and fe80::1ff:fe23:4567:890a');
+      log.add('Authorization: Bearer abc.def.ghi; Cookie: connect.sid=s%3Aqqq');
+      final text = log.toText();
+      for (final secret in ['plex.direct', '192-168-1-5', '0123456789abcdef', '203.0.113.9',
+          '192.168.1.5', '2001:db8', 'fe80', 'abc.def.ghi', 's%3Aqqq']) {
+        expect(text, isNot(contains(secret)), reason: secret);
+      }
+      // One line per entry, even for an error spanning several.
+      expect(log.entries.every((e) => !e.message.contains('\n')), isTrue);
+      expect(text.split('\n'), hasLength(4));
+    });
+
+    test('a steady stream of events still saves now and then', () async {
+      var saves = 0;
+      final log = CarLog(save: (_) async => saves++,
+          saveAfter: const Duration(milliseconds: 40),
+          saveAtLeastEvery: const Duration(milliseconds: 100));
+      for (var i = 0; i < 12; i++) {
+        log.add('event $i');
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(saves, greaterThan(0)); // not put off forever
+      log.dispose(); // flushes what's left
+      log.add('after'); // ignored
+      expect(log.entries.last.message, 'event 11');
+    });
+
+    test('a failing save never breaks anything', () async {
+      final log = CarLog(save: (_) async => throw StateError('disk full'),
+          saveAfter: const Duration(milliseconds: 5));
+      log.add('x');
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(log.entries, hasLength(1));
+    });
+
     test("the car's requests and Marquee's answers are logged", () async {
       final log = CarLog();
       final demo = RecordingDemo();
