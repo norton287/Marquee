@@ -95,6 +95,19 @@ class CarLibrary {
   final Map<String, MediaBackend> Function() backends;
   final Future<List<Library>> Function(String serverId) visibleLibraries;
 
+  /// Tracks of albums/playlists the car just listed (`album:<s>:<id>`),
+  /// so a tap plays without looking the container up again (on mobile data
+  /// that left the car on an old state for seconds). The newest 50.
+  final _containerTracks = <String, List<MediaItem>>{};
+
+  void _rememberTracks(String key, List<MediaItem> tracks) {
+    _containerTracks.remove(key);
+    _containerTracks[key] = tracks;
+    while (_containerTracks.length > 50) {
+      _containerTracks.remove(_containerTracks.keys.first);
+    }
+  }
+
   static const listCap = 500;
   static const shuffleCap = 200;
   static const _recentCap = 50;
@@ -262,6 +275,8 @@ class CarLibrary {
           return [for (final a in albums.take(listCap)) _node(a)];
         case 'album':
           final tracks = await backend.children(_ref(serverId, id, MediaKind.album));
+          _rememberTracks('album:$serverId:$id',
+              [for (final t in tracks) if (t.kind == MediaKind.track) t]);
           return [
             for (final t in tracks.take(listCap)) _node(t, container: 'album:$id')
           ];
@@ -269,6 +284,8 @@ class CarLibrary {
           final tracks = await backend.playlistTracks(
               _ref(serverId, id, MediaKind.playlist),
               limit: listCap);
+          _rememberTracks('playlist:$serverId:$id',
+              [for (final t in tracks) if (t.kind == MediaKind.track) t]);
           return [
             CarNode('shuffle:$serverId:$id', 'Shuffle', playable: true),
             for (final t in tracks.where((t) => t.kind == MediaKind.track).take(listCap))
@@ -373,7 +390,8 @@ class CarLibrary {
         case 'track':
           if (container != null) {
             final c = container.split(':');
-            final tracks = await tracksOf(
+            final known = _containerTracks['${c.first}:$serverId:${c.sublist(1).join(':')}'];
+            final tracks = known ?? await tracksOf(
                 c.first == 'playlist' ? MediaKind.playlist : MediaKind.album,
                 c.sublist(1).join(':'));
             final at = tracks.indexWhere((t) => t.id == itemId);

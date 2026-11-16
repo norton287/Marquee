@@ -96,13 +96,27 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   final _kept = <String, List<as_.MediaItem>>{};
   final _keptAt = <String, DateTime>{};
   final _refreshing = <String, Future<void>>{};
+  final _firstLoads = <String, Future<List<as_.MediaItem>>>{};
+
+  /// Bumped when the kept lists no longer apply, so loads that were already
+  /// running don't put old lists back.
+  int _epoch = 0;
 
   int get keptLists => _kept.length;
 
-  void _keep(String id, List<as_.MediaItem> list) {
-    if (list.isEmpty) return;
+  /// The most recently used lists kept (a long drive opens many albums).
+  static const _keepAtMost = 150;
+
+  void _keep(String id, List<as_.MediaItem> list, int epoch) {
+    if (list.isEmpty || epoch != _epoch) return;
+    _kept.remove(id);
     _kept[id] = list;
     _keptAt[id] = DateTime.now();
+    while (_kept.length > _keepAtMost) {
+      final oldest = _kept.keys.first;
+      _kept.remove(oldest);
+      _keptAt.remove(oldest);
+    }
   }
 
   static bool _same(List<as_.MediaItem> a, List<as_.MediaItem> b) {
@@ -122,11 +136,12 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       _withArt(await library.children(parentId));
 
   Future<void> _refresh(String id) => _refreshing[id] ??= () async {
+        final epoch = _epoch;
         try {
           final fresh = await _load(id);
           final old = _kept[id];
-          if (fresh.isEmpty) return;
-          _keep(id, fresh);
+          if (fresh.isEmpty || epoch != _epoch) return;
+          _keep(id, fresh, epoch);
           if (old == null || !_same(old, fresh)) await notifyChanged?.call(id);
         } catch (_) {
           // Keep showing what was there.
@@ -171,37 +186,57 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     // Android's media resumption ("recent" root): what's playing / last played.
     if (parentMediaId == as_.AudioService.recentRootId) {
       final now = mediaItem.value;
-      return now == null ? const [] : [now.copyWith(playable: true)];
+      return now == null ? const [] : [_shareable(now).copyWith(playable: true)];
     }
     final kept = _kept[parentMediaId];
     if (kept != null) {
+      // Most recently used last (the cap drops the oldest).
+      _kept
+        ..remove(parentMediaId)
+        ..[parentMediaId] = kept;
       if (DateTime.now().difference(_keptAt[parentMediaId]!) >= keepFreshFor) {
         unawaited(_refresh(parentMediaId));
       }
       return kept;
     }
-    final fresh = await _load(parentMediaId);
-    _keep(parentMediaId, fresh);
-    return fresh;
+    // Two car requests for the same new list share one load.
+    return _firstLoads[parentMediaId] ??= () async {
+      final epoch = _epoch;
+      try {
+        final fresh = await _load(parentMediaId);
+        _keep(parentMediaId, fresh, epoch);
+        return fresh;
+      } finally {
+        _firstLoads.remove(parentMediaId);
+      }
+    }();
   }
+
+  /// Without links only this app can open (now playing art is a private
+  /// file; Android Auto and the system run elsewhere).
+  static as_.MediaItem _shareable(as_.MediaItem m) =>
+      m.artUri?.scheme == 'file' ? m.copyWith(artUri: null) : m;
 
   /// The car asking what an item is (e.g. the one playing).
   @override
   Future<as_.MediaItem?> getMediaItem(String mediaId) async {
     final now = mediaItem.value;
-    if (now?.id == mediaId) return now;
-    for (final list in [..._kept.values, queue.value]) {
+    if (now != null && now.id == mediaId) return _shareable(now);
+    for (final list in [..._kept.values, _lastSearch, queue.value]) {
       for (final m in list) {
-        if (m.id == mediaId) return m;
+        if (m.id == mediaId) return _shareable(m);
       }
     }
     return null;
   }
 
+  /// The last search's results, so a tap on one can be shown at once.
+  List<as_.MediaItem> _lastSearch = const [];
+
   @override
   Future<List<as_.MediaItem>> search(String query,
           [Map<String, dynamic>? extras]) async =>
-      _withArt(await library.search(query));
+      _lastSearch = await _withArt(await library.search(query));
 
   /// A car that asked for the menu before the app was ready got an empty
   /// one (cold start); this makes it ask again.
@@ -211,13 +246,23 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// [clear]: what was kept no longer applies (the car's library changed).
   Future<void> refreshAll({bool clear = false}) async {
     if (clear) {
+      _epoch++;
       _kept.clear();
       _keptAt.clear();
+    } else {
+      // Servers or the profile changed: everything kept is looked at again
+      // when next shown, and the lists on screen are checked now (redrawn
+      // only if they changed).
+      _keptAt.updateAll((_, _) => DateTime(0));
     }
     for (final id in const [
       'root', 'tab:recent', 'tab:playlists', 'tab:artists', 'tab:albums',
     ]) {
-      await notifyChanged?.call(id);
+      if (!clear && _kept.containsKey(id)) {
+        unawaited(_refresh(id));
+      } else {
+        await notifyChanged?.call(id);
+      }
     }
   }
 
@@ -228,10 +273,28 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     await engine.playQueue(queue.$1, queue.$2);
   }
 
+  /// Why the last tap couldn't play (shown by the car until something plays).
+  String? _tapError;
+
+  /// The car switches to its now-playing screen on a tap and expects the
+  /// tapped song, loading, at once: looking its queue up first left the old
+  /// state showing for seconds on mobile data.
   @override
   Future<void> playFromMediaId(String mediaId,
-          [Map<String, dynamic>? extras]) async =>
-      _play(await library.resolve(mediaId));
+      [Map<String, dynamic>? extras]) async {
+    _tapError = null;
+    final tapped = await getMediaItem(mediaId);
+    if (tapped != null) mediaItem.add(tapped);
+    playbackState.add(playbackState.value.copyWith(
+        processingState: as_.AudioProcessingState.loading, errorMessage: null));
+    final queue = await library.resolve(mediaId);
+    if (queue == null) {
+      _tapError = "Couldn't play that. Check the connection to your server.";
+      _publish(engine.state);
+      return;
+    }
+    await _play(queue);
+  }
 
   /// "Hey Google, play … on Marquee". Nothing named → shuffle everything.
   @override
@@ -292,6 +355,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   }
 
   void _publish(MusicState s) {
+    if (s.playing) _tapError = null;
     if (!identical(s.queue, _lastQueue)) {
       _lastQueue = s.queue;
       queue.add([for (final t in s.queue) _fromTrack(t)]);
@@ -323,17 +387,19 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       systemActions: const {as_.MediaAction.seek},
       // The car shows a spinner, not a running progress bar, while a track
       // is looked up, opened or buffering.
-      processingState: current == null
-          ? as_.AudioProcessingState.idle
-          : s.loading
-              ? as_.AudioProcessingState.buffering
-              : as_.AudioProcessingState.ready,
+      processingState: _tapError != null || (s.failed && !s.playing)
+          ? as_.AudioProcessingState.error
+          : current == null
+              ? as_.AudioProcessingState.idle
+              : s.loading
+                  ? as_.AudioProcessingState.buffering
+                  : as_.AudioProcessingState.ready,
       playing: s.playing,
       updatePosition: s.position,
       queueIndex: current == null ? null : s.index,
-      // The app says why a track was skipped; a car may show an error as an
-      // error screen, so only while nothing plays.
-      errorMessage: s.playing ? null : s.error,
+      // The car shows any error message, even while music plays, so it only
+      // gets one when nothing can play; the app says why a track was skipped.
+      errorMessage: _tapError ?? (s.failed && !s.playing ? s.error : null),
     ));
   }
 

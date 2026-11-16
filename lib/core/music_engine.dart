@@ -15,6 +15,7 @@ class MusicState {
     this.duration = Duration.zero,
     this.error,
     this.loading = false,
+    this.failed = false,
   });
   final List<MediaItem> queue;
   final int index;
@@ -25,6 +26,10 @@ class MusicState {
 
   /// A track is being looked up / opened, or its stream is buffering.
   final bool loading;
+
+  /// Nothing could be played (the last track failed): the only state the
+  /// car is told about as an error. A skipped track's [error] is for the app.
+  final bool failed;
 
   MediaItem? get current =>
       index >= 0 && index < queue.length ? queue[index] : null;
@@ -38,6 +43,7 @@ class MusicState {
     Duration? duration,
     String? error,
     bool? loading,
+    bool? failed,
   }) =>
       MusicState(
         queue: queue ?? this.queue,
@@ -47,6 +53,7 @@ class MusicState {
         duration: duration ?? this.duration,
         error: error,
         loading: loading ?? this.loading,
+        failed: failed ?? this.failed,
       );
 }
 
@@ -200,6 +207,7 @@ class MusicEngine {
         index: index,
         playing: true,
         loading: true,
+        failed: false,
         position: Duration.zero,
         duration: track.duration ?? Duration.zero));
     try {
@@ -278,7 +286,7 @@ class MusicEngine {
         _emit(_state.copyWith(error: message));
       }
     } else {
-      _emit(_state.copyWith(playing: false, error: _state.error));
+      _emit(_state.copyWith(playing: false, error: _state.error, failed: true));
     }
   }
 

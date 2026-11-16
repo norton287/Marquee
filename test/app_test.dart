@@ -129,8 +129,12 @@ class RecordingDemo extends DemoBackend {
 
   /// An album that gains a track (the server changed behind the car).
   String? extraTrackFor;
+  /// While set, container reads wait for it (a slow album lookup).
+  Completer<void>? childrenGate;
+
   @override
   Future<List<MediaItem>> children(MediaItem parent) async {
+    await childrenGate?.future;
     final list = await super.children(parent);
     return parent.id == extraTrackFor
         ? [...list, MediaItem(serverId: 'demo', id: 'new-track', kind: MediaKind.track, title: 'New')]
@@ -1674,6 +1678,109 @@ void main() {
       final recent = await handler.getChildren('recent');
       expect(recent.single.title, now.title);
       expect(recent.single.playable, isTrue);
+    });
+
+    test('a tap shows the tapped item loading at once, before the lookup',
+        () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      // A voice/search hit: nothing about it was listed before.
+      final fresh = MarqueeAudioHandler(engine, CarLibrary(() => {'demo': demo},
+          (_) async => [(await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music)]),
+          notifyChanged: (id) async => notified.add(id));
+      final hit = (await fresh.search(album.title)).firstWhere((m) => m.title == album.title);
+      demo.childrenGate = Completer<void>(); // the album lookup is slow
+      final playing = fresh.playFromMediaId(hit.id);
+      await settle();
+      expect(fresh.mediaItem.value?.title, album.title);
+      expect(fresh.playbackState.value.processingState, as_.AudioProcessingState.loading);
+      demo.childrenGate!.complete();
+      demo.childrenGate = null;
+      await playing;
+      await settle();
+      expect(engine.state.queue, isNotEmpty);
+      await fresh.dispose();
+    });
+
+    test('a track just browsed plays without looking its album up again',
+        () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      final tracks = await handler.getChildren(album.id);
+      demo.childrenGate = Completer<void>(); // the server is slow now
+      await handler.playFromMediaId(tracks[2].id).timeout(const Duration(milliseconds: 300));
+      demo.childrenGate!.complete();
+      demo.childrenGate = null;
+      expect(engine.state.queue, hasLength(tracks.length));
+      expect(engine.state.index, 2);
+    });
+
+    test("a tap that can't be played says so", () async {
+      await handler.playFromMediaId('track:gone:x@album:y');
+      expect(handler.playbackState.value.processingState, as_.AudioProcessingState.error);
+      expect(handler.playbackState.value.errorMessage, isNotEmpty);
+    });
+
+    test('an error reaches the car only when nothing can play', () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      final tracks = await handler.getChildren(album.id);
+      demo.failNext = 2; // first track skipped, the next plays
+      await handler.playFromMediaId(tracks.first.id);
+      await settle();
+      await handler.pause();
+      await settle();
+      expect(handler.playbackState.value.errorMessage, isNull);
+      expect(handler.playbackState.value.processingState,
+          isNot(as_.AudioProcessingState.error));
+      // The last track failing twice: nothing left to play.
+      demo.failNext = 2;
+      await handler.playFromMediaId(tracks.last.id);
+      await settle();
+      expect(handler.playbackState.value.processingState, as_.AudioProcessingState.error);
+      expect(handler.playbackState.value.errorMessage, isNotNull);
+    });
+
+    test('no private file links go to the car (playing item, resume card)',
+        () async {
+      final local = MarqueeAudioHandler(engine, car,
+          localArt: (remote) async => Uri.file('/private/art.jpg'));
+      final album = (await local.getChildren('tab:albums')).first;
+      final tracks = await local.getChildren(album.id);
+      await local.playFromMediaId(tracks.first.id);
+      await settle();
+      final id = local.mediaItem.value!.id;
+      expect((await local.getMediaItem(id))?.artUri, isNull);
+      expect((await local.getChildren('recent')).single.artUri, isNull);
+      await local.dispose();
+    });
+
+    test('servers changing refresh even kept lists (redraw only on change)',
+        () async {
+      final counting = CountingDemo();
+      final music = (await counting.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+      // Kept for an hour, yet a change of servers must look again.
+      final longKeep = MarqueeAudioHandler(engine,
+          CarLibrary(() => {'demo': counting}, (_) async => [music]),
+          notifyChanged: (id) async => notified.add(id),
+          keepFreshFor: const Duration(hours: 1));
+      await longKeep.getChildren('tab:albums');
+      final calls = counting.calls;
+      notified.clear();
+      await longKeep.refreshAll();
+      await settle();
+      expect(counting.calls, greaterThan(calls)); // looked again
+      expect(notified, isNot(contains('tab:albums'))); // same: not redrawn
+      await longKeep.dispose();
+    });
+
+    test('a list loading while the memory is cleared is not kept', () async {
+      demo.childrenGate = Completer<void>();
+      final album = 'album:demo:${(await demo.recentlyAdded((await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music))).first.id}';
+      final loading = handler.getChildren(album);
+      await settle();
+      await handler.refreshAll(clear: true);
+      demo.childrenGate!.complete();
+      demo.childrenGate = null;
+      await loading;
+      expect(handler.keptLists, 0);
     });
 
     test('refreshRoot tells the car the menu changed', () async {
