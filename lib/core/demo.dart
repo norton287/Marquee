@@ -26,6 +26,9 @@ class DemoBackend extends MediaBackend {
   static final _tracks = <String, List<MediaItem>>{};
   static final _progress = <String, Duration>{};
   static final _played = <String>{};
+
+  /// Album id → when one of its tracks last started (the car's Recent tab).
+  static final _albumPlayed = <String, DateTime>{};
   static final _favorites = <String>{'m2', 's1'};
 
   // What Manage and playlists changed, kept for the life of the app.
@@ -363,6 +366,24 @@ class DemoBackend extends MediaBackend {
   Future<List<MediaItem>> recentlyAdded(Library library,
           {int limit = 20}) async =>
       _liveAll(_of(library).take(limit));
+
+  @override
+  Future<List<MediaItem>> randomTracks(Library library,
+      {int limit = 200}) async {
+    if (library.kind != LibraryKind.music) return const [];
+    final all = [
+      for (final a in _albums) ...?_tracks[a.id],
+    ]..shuffle();
+    return _liveAll(all.take(limit));
+  }
+
+  @override
+  Future<List<MediaItem>> recentMusic(Library library, {int limit = 20}) async {
+    final played = _albums.where((a) => _albumPlayed.containsKey(a.id)).toList()
+      ..sort((a, b) => _albumPlayed[b.id]!.compareTo(_albumPlayed[a.id]!));
+    return MediaBackend.mergeUnique(_liveAll(played),
+        await recentlyAdded(library, limit: limit), limit);
+  }
 
   @override
   Future<Paged> libraryItems(
@@ -712,6 +733,11 @@ class DemoBackend extends MediaBackend {
   @override
   Future<void> reportProgress(MediaItem item, PlaybackSource source,
       Duration position, PlayState state) async {
+    if (item.kind == MediaKind.track &&
+        state == PlayState.started &&
+        item.parentId != null) {
+      _albumPlayed[item.parentId!] = DateTime.now();
+    }
     final total = item.duration ?? Duration.zero;
     if (total > Duration.zero && position.inSeconds > total.inSeconds * 0.9) {
       _played.add(item.id);

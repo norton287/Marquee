@@ -1077,6 +1077,123 @@ void main() {
     expect(calls.last, startsWith('POST /playlists {type: video, title: Friday, smart: 0'));
   });
 
+  const musicLib = Library(serverId: 'p', id: '7', title: 'Music',
+      kind: LibraryKind.music);
+
+  test('Plex music for the car: random tracks and recently played albums',
+      () async {
+    final asked = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final q = Map.of(o.queryParameters)..remove('X-Plex-Token');
+        asked.add('${o.path} $q');
+        final meta = switch (q['sort']) {
+          'random' => [
+              {'ratingKey': 't1', 'type': 'track', 'title': 'One'},
+              {'ratingKey': 't2', 'type': 'track', 'title': 'Two'},
+            ],
+          // Sorted by last play: unplayed albums come last, with no date.
+          'lastViewedAt:desc' => [
+              {'ratingKey': 'a2', 'type': 'album', 'title': 'Played',
+               'lastViewedAt': 1700000000},
+              {'ratingKey': 'a9', 'type': 'album', 'title': 'Never'},
+            ],
+          _ => [
+              {'ratingKey': 'a1', 'type': 'album', 'title': 'New'},
+              {'ratingKey': 'a2', 'type': 'album', 'title': 'Played'},
+            ],
+        };
+        h.resolve(Response(requestOptions: o,
+            data: jsonDecode(jsonEncode({'MediaContainer': {'Metadata': meta}})),
+            statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: dio);
+
+    final random = await plex.randomTracks(musicLib, limit: 50);
+    expect(random.map((t) => t.id), ['t1', 't2']);
+    expect(asked.last, '/library/sections/7/all {type: 10, sort: random, '
+        'X-Plex-Container-Start: 0, X-Plex-Container-Size: 50}');
+
+    asked.clear();
+    final recent = await plex.recentMusic(musicLib, limit: 5);
+    // Played first, then recently added, each album once.
+    expect(recent.map((a) => a.id), ['a2', 'a1']);
+    expect(asked.first, '/library/sections/7/all {type: 9, '
+        'sort: lastViewedAt:desc, X-Plex-Container-Start: 0, '
+        'X-Plex-Container-Size: 5}');
+  });
+
+  test('Jellyfin music for the car: random tracks and recently played albums',
+      () async {
+    final asked = <String, Map<String, dynamic>>{};
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final q = o.queryParameters;
+        final key = o.path == '/Items' ? '/Items ${q['sortBy'] ?? q['ids']}' : o.path;
+        asked[key] = q;
+        final data = switch (key) {
+          '/Items Random' => {'Items': [
+              {'Id': 't1', 'Type': 'Audio', 'Name': 'One', 'AlbumId': 'a1'}]},
+          // Most recently played tracks: two from album a2, one from a3.
+          '/Items DatePlayed' => {'Items': [
+              {'Id': 't5', 'Type': 'Audio', 'Name': 'x', 'AlbumId': 'a2'},
+              {'Id': 't6', 'Type': 'Audio', 'Name': 'y', 'AlbumId': 'a2'},
+              {'Id': 't7', 'Type': 'Audio', 'Name': 'z', 'AlbumId': 'a3'}]},
+          '/Items a2,a3' => {'Items': [
+              {'Id': 'a3', 'Type': 'MusicAlbum', 'Name': 'Three'},
+              {'Id': 'a2', 'Type': 'MusicAlbum', 'Name': 'Two'}]},
+          '/Items/Latest' => [
+              {'Id': 'a1', 'Type': 'MusicAlbum', 'Name': 'One'},
+              {'Id': 'a3', 'Type': 'MusicAlbum', 'Name': 'Three'}],
+          _ => {'Items': []},
+        };
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const lib = Library(serverId: 'j', id: 'L', title: 'Music',
+        kind: LibraryKind.music);
+
+    final random = await jf.randomTracks(lib, limit: 30);
+    expect(random.single.id, 't1');
+    expect(asked['/Items Random'], containsPair('parentId', 'L'));
+    expect(asked['/Items Random'], containsPair('includeItemTypes', 'Audio'));
+    expect(asked['/Items Random'], containsPair('recursive', true));
+    expect(asked['/Items Random'], containsPair('limit', 30));
+
+    final recent = await jf.recentMusic(lib, limit: 5);
+    // Albums of the last played tracks in play order, then the latest added.
+    expect(recent.map((a) => a.id), ['a2', 'a3', 'a1']);
+    expect(asked['/Items DatePlayed'], containsPair('filters', 'IsPlayed'));
+    expect(asked['/Items DatePlayed'], containsPair('sortOrder', 'Descending'));
+  });
+
+  test('Demo music for the car: random tracks and recently played albums',
+      () async {
+    final demo = DemoBackend(demoServer);
+    final lib = (await demo.libraries())
+        .firstWhere((l) => l.kind == LibraryKind.music);
+    final random = await demo.randomTracks(lib, limit: 5);
+    expect(random, hasLength(5));
+    expect(random.every((t) => t.kind == MediaKind.track), isTrue);
+
+    final albums = await demo.recentlyAdded(lib);
+    final last = albums.last;
+    final track = (await demo.children(last)).first;
+    await demo.reportProgress(track,
+        const PlaybackSource(url: 'u', method: PlayMethod.directPlay, sessionId: 's'),
+        Duration.zero, PlayState.started);
+    final recent = await demo.recentMusic(lib);
+    expect(recent.first.id, last.id); // just played comes first
+    expect(recent.map((a) => a.id).toSet(), hasLength(recent.length));
+  });
+
   test('playlistEntriesOf finds every entry of an item (Plex)', () async {
     final dio = Dio(BaseOptions(baseUrl: 'http://h'))
       ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {

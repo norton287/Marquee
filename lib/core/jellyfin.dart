@@ -561,6 +561,44 @@ class JellyfinBackend extends MediaBackend {
       _list('/Items/Latest', {'parentId': library.id, 'limit': limit});
 
   @override
+  Future<List<MediaItem>> randomTracks(Library library, {int limit = 200}) =>
+      _list('/Items', {
+        'parentId': library.id,
+        'includeItemTypes': 'Audio',
+        'recursive': true,
+        'sortBy': 'Random',
+        'limit': limit,
+      });
+
+  /// Jellyfin keeps play dates on tracks, not albums: the albums of the last
+  /// played tracks in play order, then the latest added.
+  @override
+  Future<List<MediaItem>> recentMusic(Library library, {int limit = 20}) async {
+    final tracks = await _list('/Items', {
+      'parentId': library.id,
+      'includeItemTypes': 'Audio',
+      'recursive': true,
+      'filters': 'IsPlayed',
+      'sortBy': 'DatePlayed',
+      'sortOrder': 'Descending',
+      'limit': limit * 4,
+    });
+    final order = <String>{
+      for (final t in tracks) ?t.parentId,
+    }.take(limit).toList();
+    var played = <MediaItem>[];
+    if (order.isNotEmpty) {
+      final byId = {
+        for (final a in await _list('/Items', {'ids': order.join(',')})) a.id: a
+      };
+      played = [for (final id in order) ?byId[id]];
+    }
+    if (played.length >= limit) return played;
+    return MediaBackend.mergeUnique(
+        played, await recentlyAdded(library, limit: limit), limit);
+  }
+
+  @override
   Future<Paged> libraryItems(
     Library library, {
     int start = 0,

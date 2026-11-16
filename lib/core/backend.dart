@@ -79,6 +79,26 @@ abstract class MediaBackend {
   /// [continueWatching] (Plex).
   Future<List<MediaItem>> nextUp();
   Future<List<MediaItem>> recentlyAdded(Library library, {int limit = 20});
+
+  /// Up to [limit] random tracks from a music [library] ("Shuffle all" in the
+  /// car), picked by the server.
+  Future<List<MediaItem>> randomTracks(Library library, {int limit = 200}) async =>
+      const [];
+
+  /// A music [library]'s albums for the car's Recent tab: recently played
+  /// first, then recently added, each once.
+  Future<List<MediaItem>> recentMusic(Library library, {int limit = 20}) =>
+      recentlyAdded(library, limit: limit);
+
+  /// [first] then [rest], each id once, at most [limit].
+  static List<MediaItem> mergeUnique(
+      List<MediaItem> first, List<MediaItem> rest, int limit) {
+    final seen = <String>{};
+    return [
+      for (final i in [...first, ...rest])
+        if (seen.add(i.id)) i,
+    ].take(limit).toList();
+  }
   Future<Paged> libraryItems(
     Library library, {
     int start = 0,

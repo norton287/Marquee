@@ -526,6 +526,31 @@ class PlexBackend extends MediaBackend {
     return _items(c);
   }
 
+  @override
+  Future<List<MediaItem>> randomTracks(Library library,
+          {int limit = 200}) async =>
+      _items(await _get('/library/sections/${library.id}/all', {
+        'type': 10,
+        'sort': 'random',
+        'X-Plex-Container-Start': 0,
+        'X-Plex-Container-Size': limit,
+      }));
+
+  /// Albums by last play (verified on PMS 1.43.5: unplayed ones sort last
+  /// with no `lastViewedAt`, so they're dropped here), then recently added.
+  @override
+  Future<List<MediaItem>> recentMusic(Library library, {int limit = 20}) async {
+    final played = _items(await _get('/library/sections/${library.id}/all', {
+      'type': 9,
+      'sort': 'lastViewedAt:desc',
+      'X-Plex-Container-Start': 0,
+      'X-Plex-Container-Size': limit,
+    })).where((a) => a.lastViewedAt != null).toList();
+    if (played.length >= limit) return played;
+    return MediaBackend.mergeUnique(
+        played, await recentlyAdded(library, limit: limit), limit);
+  }
+
   static int _typeFor(LibraryKind kind, LibraryView view) => switch (kind) {
         LibraryKind.movies => 1,
         LibraryKind.shows => 2,
