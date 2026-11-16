@@ -89,7 +89,8 @@ class MusicEngine {
       player.playing.listen(_onPlaying),
       // A stream stalling mid-track shows as loading too.
       player.buffering.listen((b) {
-        if (_current != null && b != _state.loading) {
+        // "Stopped buffering" always counts, so a spinner never sticks.
+        if ((_current != null || !b) && b != _state.loading) {
           _emit(_state.copyWith(loading: b, error: _state.error));
         }
       }),
@@ -311,7 +312,7 @@ class MusicEngine {
       unawaited(_start(_state.index + 1));
     } else {
       _endCurrent();
-      _emit(_state.copyWith(playing: false));
+      _emit(_state.copyWith(playing: false, loading: false));
     }
   }
 

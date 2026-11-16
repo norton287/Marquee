@@ -241,6 +241,34 @@ class ClosedDemo extends DemoBackend {
   }
 }
 
+/// The saved address fails (not hangs) after a while: "no route to host".
+class FailsLaterDemo extends DemoBackend {
+  FailsLaterDemo() : super(demoServer);
+  @override
+  Future<Paged> libraryItems(Library library,
+      {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) async {
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    throw DioException(
+        requestOptions: RequestOptions(path: '/x'),
+        type: DioExceptionType.connectionError);
+  }
+}
+
+/// Its library list fails once (a dead zone), then works.
+class LibrariesFailOnceDemo extends DemoBackend {
+  LibrariesFailOnceDemo() : super(demoServer);
+  int calls = 0;
+  @override
+  Future<List<Library>> libraries() async {
+    if (calls++ == 0) {
+      throw DioException(
+          requestOptions: RequestOptions(path: '/library/sections'),
+          type: DioExceptionType.connectionTimeout);
+    }
+    return super.libraries();
+  }
+}
+
 void main() {
   const sizes = {
     'phone': (Size(390, 844), false),
@@ -1479,6 +1507,21 @@ void main() {
     });
   });
 
+  test("a failed library list isn't kept: the next look asks the server again",
+      () async {
+    final flaky = LibrariesFailOnceDemo();
+    final container = ProviderContainer(overrides: [
+      storageProvider.overrideWithValue(await _storage()),
+      deviceIsTvProvider.overrideWithValue(false),
+      backendsProvider.overrideWithValue({'demo': flaky}),
+    ], retry: (_, _) => null);
+    addTearDown(container.dispose);
+    await expectLater(freshLibraries(container, 'demo'), throwsA(isA<DioException>()));
+    final libs = await freshLibraries(container, 'demo');
+    expect(libs, isNotEmpty);
+    expect(flaky.calls, 2);
+  });
+
   group('CarLibrary', () {
     late DemoBackend demo;
     late Library music;
@@ -1697,6 +1740,24 @@ void main() {
       expect(await car.children('tab:albums'), isNotEmpty);
     });
 
+    test('a read that fails while the address check runs waits for it',
+        () async {
+      final servers = <String, MediaBackend>{'home': FailsLaterDemo()};
+      final car = CarLibrary(
+        () => servers,
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        reconnect: (id) async {
+          // The check takes longer than the home address takes to fail.
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          servers[id] = demo;
+        },
+        probeAfter: const Duration(milliseconds: 100),
+        timeout: const Duration(seconds: 3),
+      );
+      expect(await car.children('tab:albums'), isNotEmpty);
+    });
+
     test('opening the car menu re-checks every server', () async {
       final checked = <String>[];
       final car = CarLibrary(
@@ -1906,6 +1967,16 @@ void main() {
       player.buffer(true);
       expect(engine.state.loading, isTrue);
       player.buffer(false);
+      expect(engine.state.loading, isFalse);
+    });
+
+    test('a spinner showing when the last track ends goes away', () async {
+      await engine.playQueue([tracks.last], 0);
+      await settle();
+      player.buffer(true);
+      expect(engine.state.loading, isTrue);
+      player.finish();
+      await settle();
       expect(engine.state.loading, isFalse);
     });
 

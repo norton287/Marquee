@@ -14,7 +14,6 @@ import 'app.dart';
 import 'core/audio_handler.dart';
 import 'core/backend.dart';
 import 'core/car_library.dart';
-import 'core/models.dart';
 import 'core/providers.dart';
 import 'core/storage.dart';
 import 'ui/music.dart';
@@ -160,24 +159,13 @@ Future<void> _startMusicSession(
     }
   });
 
-  /// The car reads visible libraries; a failed load is retried on the next
-  /// look instead of staying an error (the container doesn't retry).
-  Future<List<Library>> libraries(String serverId) async {
-    try {
-      return await container.read(librariesProvider(serverId).future);
-    } catch (_) {
-      container.invalidate(librariesProvider(serverId));
-      rethrow;
-    }
-  }
-
   try {
     final handler = await AudioService.init(
       builder: () => MarqueeAudioHandler(
         engine,
         CarLibrary(
           () => container.read(backendsProvider),
-          libraries,
+          (serverId) => freshLibraries(container, serverId),
           reconnect: (id) => container.read(serversProvider.notifier).revalidate(id),
         ),
         // ignore: deprecated_member_use

@@ -79,6 +79,7 @@ class CarLibrary {
     /// connection (and two checks can save in turn).
     Future<List<T>> one(String id) async {
       var probed = false;
+      Future<void>? check;
       for (var tries = 0; tries < 4; tries++) {
         final b = backends()[id];
         if (b == null) return <T>[];
@@ -92,7 +93,8 @@ class CarLibrary {
           } on TimeoutException {
             // Slow or unreachable: check its addresses while it carries on.
             probed = true;
-            final probe = _probe(id).then((_) => _probed);
+            check = _probe(id);
+            final probe = check.then((_) => _probed);
             final first = await Future.any<Object?>([attempt, probe]);
             if (!identical(first, _probed)) return first as List<T>;
             // Same address: the running read is all there is.
@@ -101,11 +103,15 @@ class CarLibrary {
           }
         } catch (e) {
           if (!isConnectionError(e)) rethrow;
+          // A check still running may be about to find the working address
+          // (the home one failed before it finished): wait for it.
+          await check;
           // The address changed meanwhile: try the current one.
           if (!identical(backends()[id], b)) continue;
           if (probed || reconnect == null) rethrow;
           probed = true;
-          await _probe(id);
+          // Then once more, at the new address or (a passing glitch) the same.
+          await (check = _probe(id));
         }
       }
       return <T>[];

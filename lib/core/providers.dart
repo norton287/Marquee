@@ -569,3 +569,19 @@ final seerrRequestsProvider = FutureProvider<List<SeerrRequest>>((ref) async {
   final c = ref.watch(seerrProvider);
   return c == null ? const [] : c.requests();
 });
+
+/// A server's visible libraries for code outside the widget tree (the car).
+/// A failure isn't kept: both layers are reset so the next look asks the
+/// server again (the container doesn't retry, and resetting only
+/// [librariesProvider] reused [allLibrariesProvider]'s cached error).
+Future<List<Library>> freshLibraries(
+    ProviderContainer container, String serverId) async {
+  try {
+    return await container.read(librariesProvider(serverId).future);
+  } catch (_) {
+    container
+      ..invalidate(allLibrariesProvider(serverId))
+      ..invalidate(librariesProvider(serverId));
+    rethrow;
+  }
+}
