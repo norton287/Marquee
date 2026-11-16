@@ -532,28 +532,63 @@ class PlexBackend extends MediaBackend {
         MusicList.tracks => 10,
       };
 
+  /// What titles in the '#' folder start with: digits, ASCII and common
+  /// typographic punctuation, and "The" + a digit ("The 1975").
+  static final _hashStarts = [
+    for (var d = 0; d < 10; d++) ...['$d', 'The $d'],
+    ...'#[("\'.!&*/-_@\$+?:;=~<>{}^|`'.split(''),
+    ...'…“”‘’「『«»„¡¿–—'.split(''),
+  ];
+
   /// `title<` is Plex's "begins with" (verified on PMS 1.43.5: exact, while
   /// its firstCharacter counts and offsets disagree with the sort for tracks
-  /// and albums). Values are or-ed: "B,The B"; '#' asks for digits and
-  /// common symbols. Then [underLetter] keeps exactly what belongs.
+  /// and albums). Values are or-ed: "B,The B" plus accented forms (it
+  /// doesn't fold accents). Then [MediaBackend.underLetter] keeps exactly
+  /// what belongs, reading on while a page was all "The …" titles for other
+  /// letters (T matches every "The"). '#' also reads the end of the sort,
+  /// where Plex puts titles in other scripts (日本語, Кириллица).
   @override
   Future<List<MediaItem>> musicStartingWith(
       Library library, MusicList kind, String letter,
       {int limit = 500}) async {
     final starts = letter == '#'
-        ? '0,1,2,3,4,5,6,7,8,9,#,[,(,",\',.,!,&,*,/,-,_,@,\$'
-        : '$letter,The $letter';
-    final items = _items(await _get('/library/sections/${library.id}/all', {
-      'type': _musicType(kind),
-      'sort': 'titleSort',
-      'title<': starts,
-      'X-Plex-Container-Start': 0,
-      'X-Plex-Container-Size': limit,
-    }));
-    return [
-      for (final i in items)
-        if (MediaBackend.underLetter(i.title, letter)) i
-    ];
+        ? _hashStarts
+        : [letter, 'The $letter', ...MediaBackend.accentsOf(letter)];
+    final path = '/library/sections/${library.id}/all';
+    final kept = <MediaItem>[];
+    final seen = <String>{};
+    void keep(Iterable<MediaItem> items) {
+      for (final i in items) {
+        if (kept.length < limit &&
+            MediaBackend.underLetter(i.title, letter) &&
+            seen.add(i.id)) {
+          kept.add(i);
+        }
+      }
+    }
+
+    for (var start = 0, page = 0; page < 4 && kept.length < limit; page++) {
+      final c = await _get(path, {
+        'type': _musicType(kind),
+        'sort': 'titleSort',
+        'title<': starts.join(','),
+        'X-Plex-Container-Start': start,
+        'X-Plex-Container-Size': limit,
+      });
+      final items = _items(c);
+      keep(items);
+      start += items.length;
+      if (items.length < limit || start >= (asInt(c['totalSize']) ?? 0)) break;
+    }
+    if (letter == '#' && kept.length < limit) {
+      keep(_items(await _get(path, {
+        'type': _musicType(kind),
+        'sort': 'titleSort:desc',
+        'X-Plex-Container-Start': 0,
+        'X-Plex-Container-Size': 100,
+      })));
+    }
+    return kept;
   }
 
   @override

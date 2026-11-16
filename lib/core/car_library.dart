@@ -313,7 +313,12 @@ class CarLibrary {
       if (kind == null || !letters.contains(letter)) return const [];
       final items = await _eachMusicLibrary(
           (b, l) => b.musicStartingWith(l, kind, letter, limit: listCap));
-      items.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+      // As the car's letters read: "The Beatles" among the B's.
+      String key(MediaItem i) {
+        final t = i.title.toLowerCase().trim();
+        return t.startsWith('the ') ? t.substring(4) : t;
+      }
+      items.sort((a, b) => key(a).compareTo(key(b)));
       if (kind == MusicList.tracks) return _trackList(parentId, items);
       return [for (final i in items.take(listCap)) _node(i)];
     }
@@ -442,8 +447,15 @@ class CarLibrary {
           final tracks = [for (final p in parts) ...p];
           return tracks.isEmpty ? null : (tracks.take(shuffleCap).toList(), 0);
         case 'track':
-          // A list the car just showed (Tracks: recent, most played, A–Z).
-          final shown = container == null ? null : _containerTracks[container];
+          // A list the car just showed (Tracks: recent, most played, A–Z);
+          // forgotten (many lists later, or a restart): build it again.
+          var shown = container == null ? null : _containerTracks[container];
+          if (shown == null &&
+              container != null &&
+              (container.startsWith('tracks:') || container.startsWith('az:'))) {
+            await children(container);
+            shown = _containerTracks[container];
+          }
           if (shown != null) {
             final at = shown.indexWhere((t) => t.serverId == serverId && t.id == itemId);
             if (at >= 0) return (shown, at);

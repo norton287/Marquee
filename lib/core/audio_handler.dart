@@ -268,6 +268,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// Servers, libraries or the profile changed: every list may differ.
   /// [clear]: what was kept no longer applies (the car's library changed).
   Future<void> refreshAll({bool clear = false}) async {
+    // Lists the car may be showing below the tabs (an A–Z folder, an album).
+    final shown = clear ? [..._kept.keys] : const <String>[];
     if (clear) {
       _epoch++;
       _kept.clear();
@@ -284,6 +286,12 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       if (!clear && _kept.containsKey(id)) {
         unawaited(_refresh(id));
       } else {
+        await notifyChanged?.call(id);
+      }
+    }
+    for (final id in shown) {
+      if (!const ['root', 'tab:recent', 'tab:playlists', 'tab:library', 'tab:tracks']
+          .contains(id)) {
         await notifyChanged?.call(id);
       }
     }

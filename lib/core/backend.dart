@@ -123,9 +123,29 @@ abstract class MediaBackend {
   static bool underLetter(String title, String letter) {
     var t = title.trim().toUpperCase();
     if (t.startsWith('THE ') && t.length > 4) t = t.substring(4).trimLeft();
-    final c = t.isEmpty ? '' : t[0];
+    final c = t.isEmpty ? '' : (_unaccented[t[0]] ?? t[0]);
     final az = c.length == 1 && c.codeUnitAt(0) >= 65 && c.codeUnitAt(0) <= 90;
     return letter == '#' ? !az : c == letter;
+  }
+
+  /// Accented capitals → their base letter ("Ääripäät" is under A).
+  static final Map<String, String> _unaccented = {
+    for (final e in _accents.entries)
+      for (final ch in e.value.split('')) ch: e.key,
+  };
+
+  static const _accents = {
+    'A': 'ÀÁÂÃÄÅĀĂĄ', 'C': 'ÇĆĈĊČ', 'D': 'ĎĐ', 'E': 'ÈÉÊËĒĔĖĘĚ',
+    'G': 'ĜĞĠĢ', 'H': 'ĤĦ', 'I': 'ÌÍÎÏĨĪĬĮİ', 'J': 'Ĵ', 'K': 'Ķ',
+    'L': 'ĹĻĽĿŁ', 'N': 'ÑŃŅŇ', 'O': 'ÒÓÔÕÖØŌŎŐ', 'R': 'ŔŖŘ', 'S': 'ŚŜŞŠ',
+    'T': 'ŢŤŦ', 'U': 'ÙÚÛÜŨŪŬŮŰŲ', 'W': 'Ŵ', 'Y': 'ÝŸŶ', 'Z': 'ŹŻŽ',
+  };
+
+  /// The accented forms of [letter], capitals and small (servers match
+  /// "begins with" without folding accents).
+  static List<String> accentsOf(String letter) {
+    final caps = (_accents[letter] ?? '').split('').where((c) => c.isNotEmpty);
+    return [for (final c in caps) ...{c, c.toLowerCase()}];
   }
 
   /// A music [library]'s albums for the car's Recent tab: recently played

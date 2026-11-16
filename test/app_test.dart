@@ -1816,6 +1816,16 @@ void main() {
       await quick.dispose();
     });
 
+    test('changing the car library redraws every list the car may show',
+        () async {
+      final first = (await handler.getChildren('tab:albums')).first.title;
+      final folder = 'az:albums:${first[0].toUpperCase()}';
+      expect(await handler.getChildren(folder), isNotEmpty);
+      notified.clear();
+      await handler.refreshAll(clear: true);
+      expect(notified, contains(folder));
+    });
+
     test('refreshRoot tells the car the menu changed', () async {
       await handler.refreshRoot();
       expect(notified, ['root']);
@@ -2222,6 +2232,15 @@ void main() {
       expect(tq, hasLength(t.length));
     });
 
+    test('a tap on a Tracks list it no longer remembers rebuilds the list',
+        () async {
+      final shown = await make().children('tracks:recent');
+      final fresh = make(); // e.g. the app restarted; the car still shows it
+      final (queue, at) = (await fresh.resolve(shown[4].id))!;
+      expect(queue.map((t) => t.title), shown.map((n) => n.title));
+      expect(at, 4);
+    });
+
     test('a hidden music library is left out', () async {
       hidden = true;
       final car = make();
@@ -2532,8 +2551,17 @@ void main() {
     expect(under('Thunderstruck', 'T'), isTrue);
     expect(under('2 Live Crew', '#'), isTrue);
     expect(under('[unknown]', '#'), isTrue);
-    expect(under('Ébène', '#'), isTrue); // not A–Z
     expect(under('Blue Hour', '#'), isFalse);
+    // Accented Latin letters go under their base letter.
+    expect(under('Ääripäät', 'A'), isTrue);
+    expect(under('Íslensku Tónlistarverðlaunin', 'I'), isTrue);
+    expect(under('Ébène', 'E'), isTrue);
+    // Punctuation, digits and other scripts under #.
+    expect(under('…but home is nowhere', '#'), isTrue);
+    expect(under('“President Dead”', '#'), isTrue);
+    expect(under('The 1975', '#'), isTrue);
+    expect(under('Куйбул', '#'), isTrue);
+    expect(under('修羅の花', '#'), isTrue);
   });
 
   test('Plex A–Z, recently added and most played for the car', () async {
@@ -2562,7 +2590,8 @@ void main() {
         'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 500});
     await plex.musicStartingWith(musicLib, MusicList.albums, '#', limit: 300);
     expect(asked.last['type'], 9);
-    expect(asked.last['title<'], startsWith('0,1,2,3,4,5,6,7,8,9'));
+    expect(asked.firstWhere((q) => q['type'] == 9)['title<'],
+        startsWith('0,The 0,1,The 1,'));
     await plex.musicStartingWith(musicLib, MusicList.artists, 'Q');
     expect(asked.last['type'], 8);
 
@@ -2572,6 +2601,54 @@ void main() {
     final top = await plex.topTracks(musicLib);
     expect(asked.last['sort'], 'viewCount:desc');
     expect(top.map((t) => t.title), ['Hit']); // only played ones
+  });
+
+  test('Plex A–Z: T pages past "The …" titles; # also reads the end; accents',
+      () async {
+    final asked = <Map<String, dynamic>>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final q = Map.of(o.queryParameters)..remove('X-Plex-Token');
+        asked.add(q);
+        List<Map<String, Object>> meta;
+        if (q['sort'] == 'titleSort:desc') {
+          meta = [
+            {'ratingKey': 'j1', 'type': 'album', 'title': '修羅の花'},
+            {'ratingKey': 'z1', 'type': 'album', 'title': 'Zombieland'},
+          ];
+        } else if ('${q['title<']}'.startsWith('T,The T,') && q['X-Plex-Container-Start'] == 0) {
+          // A full first page of "The …" titles that belong elsewhere.
+          meta = [
+            for (var i = 0; i < 500; i++)
+              {'ratingKey': 'x$i', 'type': 'track', 'title': 'The Apple $i'},
+          ];
+        } else if ('${q['title<']}'.startsWith('T,The T,')) {
+          meta = [{'ratingKey': 't1', 'type': 'track', 'title': 'Thunderstruck'}];
+        } else {
+          meta = [{'ratingKey': 's1', 'type': 'album', 'title': '’90s Alt Rock'}];
+        }
+        h.resolve(Response(requestOptions: o,
+            data: jsonDecode(jsonEncode({'MediaContainer': {'Metadata': meta,
+                'totalSize': '${q['title<']}'.startsWith('T,The T,') ? 501 : meta.length}})),
+            statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    final t = await plex.musicStartingWith(musicLib, MusicList.tracks, 'T');
+    expect(t.map((i) => i.title), ['Thunderstruck']);
+    expect(asked.last['X-Plex-Container-Start'], 500); // read on
+    asked.clear();
+    final hash = await plex.musicStartingWith(musicLib, MusicList.albums, '#');
+    expect(hash.map((i) => i.title), containsAll(['’90s Alt Rock', '修羅の花']));
+    expect(hash.map((i) => i.title), isNot(contains('Zombieland')));
+    expect(asked.first['title<'], contains('…'));
+    expect(asked.first['title<'], contains('The 1'));
+    asked.clear();
+    await plex.musicStartingWith(musicLib, MusicList.albums, 'A');
+    expect(asked.single['title<'], contains('Ä'));
+    expect(asked.single['title<'], contains('ä'));
   });
 
   test('Jellyfin A–Z, recently added and most played for the car', () async {
