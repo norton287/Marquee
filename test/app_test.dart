@@ -1826,6 +1826,24 @@ void main() {
       expect(notified, contains(folder));
     });
 
+    test('the playing item has the id the car tapped (else "Could not load")',
+        () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      final tracks = await handler.getChildren(album.id);
+      await handler.playFromMediaId(tracks[2].id);
+      await settle();
+      expect(handler.mediaItem.value?.id, tracks[2].id);
+      // The next ones match their rows in the same list.
+      await handler.skipToNext();
+      await settle();
+      expect(handler.mediaItem.value?.id, tracks[3].id);
+      expect(handler.queue.value.map((m) => m.id), tracks.map((m) => m.id));
+      // Something played as a whole (an album from search): its id first.
+      await handler.playFromMediaId(album.id.replaceFirst(RegExp('^album'), 'album'));
+      await settle();
+      expect(handler.mediaItem.value?.id, album.id);
+    });
+
     test('refreshRoot tells the car the menu changed', () async {
       await handler.refreshRoot();
       expect(notified, ['root']);

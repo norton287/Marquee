@@ -299,9 +299,32 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
 
   // -- playing -----------------------------------------------------------------
 
-  Future<void> _play((List<MediaItem>, int)? queue) async {
+  /// What the car tapped, and the queue it started: the session must report
+  /// the playing item under the tapped id, or Android Auto decides the
+  /// selection never loaded ("Could not load your selection", while the
+  /// phone plays). Later tracks get ids like their rows in that list.
+  String? _tappedId;
+  int? _tappedIndex;
+  String? _tappedList;
+  List<MediaItem>? _tappedQueue;
+
+  Future<void> _play((List<MediaItem>, int)? queue, {String? tapped}) async {
     if (queue == null) return;
+    _tappedQueue = tapped == null ? null : queue.$1;
+    _tappedId = tapped;
+    _tappedIndex = queue.$2;
+    final at = tapped?.indexOf('@') ?? -1;
+    _tappedList = at < 0 ? null : tapped!.substring(at + 1);
     await engine.playQueue(queue.$1, queue.$2);
+  }
+
+  /// The id the car knows a queue entry by.
+  String _idFor(MusicState s, int i, MediaItem t) {
+    if (identical(s.queue, _tappedQueue)) {
+      if (i == _tappedIndex) return _tappedId!;
+      if (_tappedList != null) return 'track:${t.serverId}:${t.id}@$_tappedList';
+    }
+    return 'track:${t.serverId}:${t.id}';
   }
 
   /// Why the last tap couldn't play (shown by the car until something plays).
@@ -324,7 +347,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       _publish(engine.state);
       return;
     }
-    await _play(queue);
+    await _play(queue, tapped: mediaId);
   }
 
   /// "Hey Google, play … on Marquee". Nothing named → shuffle everything.
@@ -335,7 +358,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     final hits = await library.search(query);
     for (final h in hits) {
       final queue = await library.resolve(h.id);
-      if (queue != null) return _play(queue);
+      if (queue != null) return _play(queue, tapped: h.id);
     }
   }
 
@@ -360,9 +383,10 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
 
   // -- what the car and lock screen show --------------------------------------
 
-  static as_.MediaItem _fromTrack(MediaItem t, {Duration? duration, Uri? art}) =>
+  static as_.MediaItem _fromTrack(MediaItem t,
+          {required String id, Duration? duration, Uri? art}) =>
       as_.MediaItem(
-        id: 'track:${t.serverId}:${t.id}',
+        id: id,
         title: t.title,
         artist: t.grandparentTitle ?? t.parentTitle,
         album: t.parentTitle,
@@ -389,13 +413,17 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     if (s.playing) _tapError = null;
     if (!identical(s.queue, _lastQueue)) {
       _lastQueue = s.queue;
-      queue.add([for (final t in s.queue) _fromTrack(t)]);
+      queue.add([
+        for (var i = 0; i < s.queue.length; i++)
+          _fromTrack(s.queue[i], id: _idFor(s, i, s.queue[i])),
+      ]);
     }
     final current = s.current;
     if (current != null) _fetchArt(current);
     final shown = current == null
         ? null
         : _fromTrack(current,
+            id: _idFor(s, s.index, current),
             duration: s.duration > Duration.zero ? s.duration : null,
             art: _art[current.id]);
     // audio_service's MediaItem == compares ids only: a later length or art
