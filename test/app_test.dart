@@ -1101,6 +1101,62 @@ void main() {
     expect(found.map((e) => e.playlistEntryId), ['11', '13']);
   });
 
+  test('Plex asks only for the item\'s entries in a playlist', () async {
+    final asked = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final q = Map.of(o.queryParameters)..remove('X-Plex-Token');
+        asked.add('${o.path} $q');
+        // Verified on PMS 1.43.5: `id` narrows a playlist's items to that
+        // video. An older server might ignore it, so send the whole list.
+        final data = {'MediaContainer': {'Metadata': [
+          {'ratingKey': '5', 'playlistItemID': 11, 'type': 'movie', 'title': 'A'},
+          {'ratingKey': '6', 'playlistItemID': 12, 'type': 'movie', 'title': 'B'},
+        ]}};
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't', machineId: 'mach'),
+        dio: dio);
+    final playlist = plex.parse(
+        {'ratingKey': '9', 'type': 'playlist', 'title': 'Mine', 'leafCount': 2});
+    final movie = plex.parse({'ratingKey': '5', 'type': 'movie', 'title': 'A'});
+    final found = await plex.playlistEntriesOf(playlist, movie);
+    expect(asked.single, '/playlists/9/items {id: 5}');
+    expect(found.map((e) => e.playlistEntryId), ['11']); // B filtered out here
+  });
+
+  test('Jellyfin reads a playlist\'s entries without images or extras',
+      () async {
+    Map<String, dynamic>? query;
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        if (o.path == '/Playlists/pl/Items') query = o.queryParameters;
+        final data = {'Items': [
+          {'Id': 'm1', 'Type': 'Movie', 'Name': 'A', 'PlaylistItemId': 'e1'},
+          {'Id': 'm2', 'Type': 'Movie', 'Name': 'B', 'PlaylistItemId': 'e2'},
+          {'Id': 'm1', 'Type': 'Movie', 'Name': 'A', 'PlaylistItemId': 'e3'},
+        ]};
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    final playlist = jf.parse({'Id': 'pl', 'Type': 'Playlist', 'Name': 'Mine'});
+    final movie = jf.parse({'Id': 'm1', 'Type': 'Movie', 'Name': 'A'});
+    final found = await jf.playlistEntriesOf(playlist, movie);
+    expect(found.map((e) => e.playlistEntryId), ['e1', 'e3']);
+    expect(query, {
+      'userId': 'u',
+      'enableImages': false,
+      'enableUserData': false,
+    });
+  });
+
   test('playlistEntriesOf on the demo: an item added twice, then removed',
       () async {
     final demo = DemoBackend(demoServer);

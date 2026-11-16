@@ -1215,6 +1215,18 @@ class PlexBackend extends MediaBackend {
     return _items(c).where((p) => p.kind == MediaKind.playlist).toList();
   }
 
+  /// `id` narrows a playlist's items to that video (verified on PMS 1.43.5:
+  /// ~1.8 KB instead of the whole list). The id check stays in case a server
+  /// ignores the filter.
+  @override
+  Future<List<MediaItem>> playlistEntriesOf(
+          MediaItem playlist, MediaItem item) async =>
+      [
+        for (final e in _items(await _get(
+            '/playlists/${playlist.id}/items', {'id': item.id})))
+          if (e.id == item.id) e
+      ];
+
   @override
   Future<void> addToPlaylist(MediaItem playlist, MediaItem item) async {
     await _dio.put<dynamic>('/playlists/${playlist.id}/items',

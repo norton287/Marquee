@@ -220,7 +220,7 @@ abstract class MediaBackend {
   Future<void> deletePlaylist(MediaItem playlist) async {}
 
   /// Takes one entry ([MediaItem.playlistEntryId], from [children] of the
-  /// playlist) out of [playlist]. The media stays. Any user, own playlists.
+  /// playlist or [playlistEntriesOf]) out of [playlist]. The media stays. Any user, own playlists.
   Future<void> removeFromPlaylist(MediaItem playlist, MediaItem entry) =>
       throw UnsupportedError('This server can\'t remove playlist items.');
 

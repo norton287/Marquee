@@ -1389,6 +1389,20 @@ class JellyfinBackend extends MediaBackend {
     ];
   }
 
+  /// Jellyfin can't filter a playlist's items by id, so read them lean: no
+  /// images, user data or extra fields (`Id` and `PlaylistItemId` always come).
+  @override
+  Future<List<MediaItem>> playlistEntriesOf(
+      MediaItem playlist, MediaItem item) async {
+    final r = await _dio.get<dynamic>('/Playlists/${playlist.id}/Items',
+        queryParameters: {
+          'userId': _uid,
+          'enableImages': false,
+          'enableUserData': false,
+        });
+    return [for (final e in _parseList(r.data)) if (e.id == item.id) e];
+  }
+
   @override
   Future<void> addToPlaylist(MediaItem playlist, MediaItem item) =>
       _dio.post<dynamic>('/Playlists/${playlist.id}/Items',
