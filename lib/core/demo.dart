@@ -367,6 +367,22 @@ class DemoBackend extends MediaBackend {
           {int limit = 20}) async =>
       _liveAll(_of(library).take(limit));
 
+  /// One artist per album artist; an artist's id is `ar:<name>`.
+  List<MediaItem> _artists() {
+    final byName = <String, MediaItem>{};
+    for (final a in _albums) {
+      final name = a.parentTitle;
+      if (name == null) continue;
+      byName[name] ??= MediaItem(
+          serverId: serverId,
+          id: 'ar:$name',
+          kind: MediaKind.artist,
+          title: name,
+          poster: a.poster);
+    }
+    return byName.values.toList();
+  }
+
   @override
   Future<List<MediaItem>> randomTracks(Library library,
       {int limit = 200}) async {
@@ -392,6 +408,11 @@ class DemoBackend extends MediaBackend {
     int limit = 60,
     LibraryQuery query = const LibraryQuery(),
   }) async {
+    // A music library's Artists view lists who made its albums (unfiltered).
+    if (library.kind == LibraryKind.music && query.view == LibraryView.artists) {
+      final artists = _artists()..sort((a, b) => a.title.compareTo(b.title));
+      return Paged(artists.skip(start).take(limit).toList(), artists.length);
+    }
     var list = _liveAll(_of(library));
     if (query.unwatchedOnly) list = list.where((i) => !i.played).toList();
     final genres = {...?query.filters['genre']?.map((v) => v.id)};
@@ -482,6 +503,7 @@ class DemoBackend extends MediaBackend {
         MediaKind.show => _seasons[parent.id] ?? const [],
         MediaKind.season => _episodes[parent.id] ?? const [],
         MediaKind.album => _tracks[parent.id] ?? const [],
+        MediaKind.artist => _albums.where((a) => 'ar:${a.parentTitle}' == parent.id),
         MediaKind.collection => _movies.take(6),
         MediaKind.playlist => _entries(parent.id),
         MediaKind.folder => parent.id == 'f-shows'

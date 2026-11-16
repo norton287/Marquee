@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:marquee/app.dart';
 import 'package:marquee/core/backend.dart';
+import 'package:marquee/core/car_library.dart';
 import 'package:marquee/core/demo.dart';
 import 'package:marquee/core/jellyfin.dart';
 import 'package:marquee/core/models.dart';
@@ -132,6 +133,24 @@ class RecordingDemo extends DemoBackend {
       Duration position, PlayState state) async {
     reports.add('${item.id} ${state.name}');
   }
+}
+
+/// A server that's offline: every music call fails.
+class OfflineDemo extends DemoBackend {
+  OfflineDemo() : super(demoServer);
+  Never _down() => throw StateError('offline');
+  @override
+  Future<Paged> libraryItems(Library library,
+          {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) async =>
+      _down();
+  @override
+  Future<List<MediaItem>> recentMusic(Library library, {int limit = 20}) async => _down();
+  @override
+  Future<List<MediaItem>> playlistsFor(MediaItem item) async => _down();
+  @override
+  Future<List<MediaItem>> search(String query) async => _down();
+  @override
+  Future<List<MediaItem>> randomTracks(Library library, {int limit = 200}) async => _down();
 }
 
 void main() {
@@ -1191,6 +1210,104 @@ void main() {
     expect(container.read(musicProvider).index, 1);
     await container.read(musicProvider.notifier).stop();
     await tester.pump();
+  });
+
+  group('CarLibrary', () {
+    late DemoBackend demo;
+    late Library music;
+    var hidden = false;
+    CarLibrary make({bool offlineToo = false}) => CarLibrary(
+          () => {'demo': demo, if (offlineToo) 'down': OfflineDemo()},
+          (id) async => [
+            if (!hidden) Library(serverId: id, id: music.id, title: 'Music',
+                kind: LibraryKind.music),
+          ],
+        );
+
+    setUp(() async {
+      hidden = false;
+      demo = DemoBackend(demoServer);
+      music = (await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+    });
+
+    test('root holds the four tabs; Recent starts with Shuffle all', () async {
+      final car = make();
+      final root = await car.children('root');
+      expect(root.map((n) => n.title), ['Recent', 'Playlists', 'Artists', 'Albums']);
+      expect(root.every((n) => n.browsable && !n.playable), isTrue);
+      final recent = await car.children(root.first.id);
+      expect(recent.first.title, 'Shuffle all');
+      expect(recent.first.playable, isTrue);
+      expect(recent.skip(1), isNotEmpty);
+    });
+
+    test('Albums → album → tracks; a track plays its album from there',
+        () async {
+      final car = make();
+      final albums = await car.children('tab:albums');
+      final names = albums.map((n) => n.title).toList();
+      expect(names, [...names]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase())));
+      final album = albums.first;
+      expect(album.browsable, isTrue);
+      final tracks = await car.children(album.id);
+      expect(tracks.length, greaterThan(1));
+      expect(tracks.every((t) => t.playable), isTrue);
+      final (queue, start) = (await car.resolve(tracks[1].id))!;
+      expect(queue.map((t) => t.title), tracks.map((t) => t.title));
+      expect(start, 1);
+    });
+
+    test('Artists → artist → albums', () async {
+      final car = make();
+      final artists = await car.children('tab:artists');
+      expect(artists, isNotEmpty);
+      final albums = await car.children(artists.first.id);
+      expect(albums, isNotEmpty);
+      expect(albums.first.browsable, isTrue);
+    });
+
+    test('Playlists: a playlist starts with Shuffle, then its tracks', () async {
+      final car = make();
+      final lists = await car.children('tab:playlists');
+      expect(lists, isNotEmpty);
+      final inside = await car.children(lists.first.id);
+      expect(inside.first.title, 'Shuffle');
+      expect(inside.first.playable, isTrue);
+    });
+
+    test('Shuffle all plays at most 200 random tracks', () async {
+      final (queue, start) = (await make().resolve('shuffle:all'))!;
+      expect(queue, isNotEmpty);
+      expect(queue.length, lessThanOrEqualTo(200));
+      expect(queue.every((t) => t.kind == MediaKind.track), isTrue);
+      expect(start, 0);
+    });
+
+    test('an offline server never empties a tab or search', () async {
+      final car = make(offlineToo: true);
+      expect(await car.children('tab:albums'), isNotEmpty);
+      expect(await car.children('tab:recent'), hasLength(greaterThan(1)));
+      expect(await car.children('tab:playlists'), isNotEmpty);
+      final album = (await car.children('tab:albums')).first;
+      expect(await car.search(album.title), isNotEmpty);
+    });
+
+    test('a hidden music library is left out', () async {
+      hidden = true;
+      final car = make();
+      expect(await car.children('tab:albums'), isEmpty);
+      expect(await car.children('tab:artists'), isEmpty);
+    });
+
+    test('search finds an album and plays it', () async {
+      final car = make();
+      final album = (await car.children('tab:albums')).first;
+      final hits = await car.search(album.title);
+      final hit = hits.firstWhere((h) => h.title == album.title);
+      expect(hit.playable, isTrue);
+      final (queue, _) = (await car.resolve(hit.id))!;
+      expect(queue, isNotEmpty);
+    });
   });
 
   group('MusicEngine', () {
