@@ -1427,6 +1427,10 @@ class JellyfinBackend extends MediaBackend {
     ];
   }
 
+  @override
+  Future<List<MediaItem>> playlistTracks(MediaItem playlist, {int? limit}) =>
+      _list('/Playlists/${playlist.id}/Items', {'limit': ?limit});
+
   /// Jellyfin can't filter a playlist's items by id, so read them lean: no
   /// images, user data or extra fields (`Id` and `PlaylistItemId` always come).
   @override

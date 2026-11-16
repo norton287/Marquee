@@ -151,6 +151,8 @@ class OfflineDemo extends DemoBackend {
   @override
   Future<List<MediaItem>> playlistsFor(MediaItem item) async => _down();
   @override
+  Future<List<MediaItem>> musicPlaylists() async => _down();
+  @override
   Future<List<MediaItem>> search(String query) async => _down();
   @override
   Future<List<MediaItem>> randomTracks(Library library, {int limit = 200}) async => _down();
@@ -173,6 +175,31 @@ class FlakyDemo extends DemoBackend {
     }
     return super.libraryItems(library, start: start, limit: limit, query: query);
   }
+}
+
+/// A server with a smart music playlist that can't be added to by hand.
+class SmartListDemo extends DemoBackend {
+  SmartListDemo() : super(demoServer);
+
+  /// What each playlist read asked for; "Smart mix" holds 2000 tracks.
+  final limits = <int?>[];
+  @override
+  Future<List<MediaItem>> playlistTracks(MediaItem playlist, {int? limit}) async {
+    limits.add(limit);
+    if (playlist.id != 'smart1') return super.playlistTracks(playlist, limit: limit);
+    final all = [
+      for (var i = 0; i < 2000; i++)
+        MediaItem(serverId: 'demo', id: 'st$i', kind: MediaKind.track, title: 'Song $i'),
+    ];
+    return limit == null ? all : all.take(limit).toList();
+  }
+
+  @override
+  Future<List<MediaItem>> musicPlaylists() async => [
+        ...await super.musicPlaylists(),
+        const MediaItem(serverId: 'demo', id: 'smart1', kind: MediaKind.playlist,
+            title: 'Smart mix', smart: true),
+      ];
 }
 
 void main() {
@@ -1455,6 +1482,31 @@ void main() {
       expect(albums.first.browsable, isTrue);
     });
 
+    test('a huge playlist is read a page at a time and shuffles 200',
+        () async {
+      final big = SmartListDemo();
+      final car = CarLibrary(() => {'demo': big}, (id) async => [
+            Library(serverId: id, id: music.id, title: 'Music', kind: LibraryKind.music),
+          ]);
+      final rows = await car.children('playlist:demo:smart1');
+      expect(big.limits, [CarLibrary.listCap]);
+      expect(rows.length, lessThanOrEqualTo(CarLibrary.listCap + 1)); // + Shuffle
+      final (shuffled, _) = (await car.resolve('shuffle:demo:smart1'))!;
+      expect(shuffled.length, lessThanOrEqualTo(CarLibrary.shuffleCap));
+      final (fromTrack, at) = (await car.resolve(rows[5].id))!;
+      expect(fromTrack[at].id, rows[5].id.split(':')[2].split('@').first);
+      expect(big.limits.every((l) => l == CarLibrary.listCap), isTrue);
+    });
+
+    test('Playlists uses every music playlist (smart ones too)', () async {
+      final smart = SmartListDemo();
+      final car = CarLibrary(() => {'demo': smart}, (id) async => [
+            Library(serverId: id, id: music.id, title: 'Music', kind: LibraryKind.music),
+          ]);
+      final lists = await car.children('tab:playlists');
+      expect(lists.map((n) => n.title), contains('Smart mix'));
+    });
+
     test('Playlists: a playlist starts with Shuffle, then its tracks', () async {
       final car = make();
       final lists = await car.children('tab:playlists');
@@ -1761,6 +1813,38 @@ void main() {
     expect(asked.first, '/library/sections/7/all {type: 9, '
         'sort: lastViewedAt:desc, X-Plex-Container-Start: 0, '
         'X-Plex-Container-Size: 5}');
+  });
+
+  test('Plex lists every music playlist for the car, smart ones included',
+      () async {
+    final asked = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        final q = Map.of(o.queryParameters)..remove('X-Plex-Token');
+        asked.add('${o.path} $q');
+        final data = {'MediaContainer': {'Metadata': [
+          {'ratingKey': '1', 'type': 'playlist', 'title': 'Road trip',
+           'playlistType': 'audio', 'smart': false},
+          {'ratingKey': '2', 'type': 'playlist', 'title': '❤️ Tracks',
+           'playlistType': 'audio', 'smart': true},
+        ]}};
+        h.resolve(Response(
+            requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P',
+            baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    final lists = await plex.musicPlaylists();
+    expect(lists.map((p) => p.title), ['Road trip', '❤️ Tracks']);
+    expect(lists.last.smart, isTrue);
+    expect(asked.single, '/playlists {playlistType: audio}');
+
+    // A smart playlist can match a whole library: the car asks for a page.
+    asked.clear();
+    await plex.playlistTracks(lists.last, limit: 500);
+    expect(asked.single, '/playlists/2/items '
+        '{X-Plex-Container-Start: 0, X-Plex-Container-Size: 500}');
   });
 
   test('Jellyfin music for the car: random tracks and recently played albums',

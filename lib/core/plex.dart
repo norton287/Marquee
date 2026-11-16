@@ -1253,6 +1253,22 @@ class PlexBackend extends MediaBackend {
       ];
 
   @override
+  Future<List<MediaItem>> playlistTracks(MediaItem playlist, {int? limit}) async =>
+      _items(await _get('/playlists/${playlist.id}/items', {
+        if (limit != null) ...{
+          'X-Plex-Container-Start': 0,
+          'X-Plex-Container-Size': limit,
+        },
+      }));
+
+  /// Smart ones too ("❤️ Tracks", rules): Plex fills their items when read.
+  @override
+  Future<List<MediaItem>> musicPlaylists() async =>
+      _items(await _get('/playlists', {'playlistType': 'audio'}))
+          .where((p) => p.kind == MediaKind.playlist)
+          .toList();
+
+  @override
   Future<void> addToPlaylist(MediaItem playlist, MediaItem item) async {
     await _dio.put<dynamic>('/playlists/${playlist.id}/items',
         queryParameters: {'uri': await _itemUri(item)});

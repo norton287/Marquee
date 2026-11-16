@@ -218,6 +218,19 @@ abstract class MediaBackend {
 
   Future<void> addToPlaylist(MediaItem playlist, MediaItem item) async {}
 
+  /// A playlist's tracks, at most [limit] (a smart playlist can match a whole
+  /// library). Default: [children], trimmed.
+  Future<List<MediaItem>> playlistTracks(MediaItem playlist, {int? limit}) async {
+    final all = await children(playlist);
+    return limit == null ? all : all.take(limit).toList();
+  }
+
+  /// Every music playlist to play from (the car's Playlists tab), including
+  /// ones that can't be added to by hand such as Plex smart playlists.
+  /// Default: those a track could be added to.
+  Future<List<MediaItem>> musicPlaylists() => playlistsFor(
+      MediaItem(serverId: '', id: '', kind: MediaKind.track, title: ''));
+
   /// [item]'s entries in [playlist] (several if it was added more than once),
   /// each with its [MediaItem.playlistEntryId] for [removeFromPlaylist].
   /// Neither server can ask "which playlists hold this?", so this reads the

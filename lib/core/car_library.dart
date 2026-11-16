@@ -127,10 +127,6 @@ class CarLibrary {
     CarNode('tab:albums', 'Albums', browsable: true),
   ];
 
-  /// An audio-kind stand-in, so `playlistsFor` lists music playlists.
-  static MediaItem _anyTrack(String serverId) =>
-      _ref(serverId, '', MediaKind.track);
-
   Future<List<CarNode>> children(String parentId) async {
     switch (parentId) {
       case 'root':
@@ -145,7 +141,7 @@ class CarLibrary {
           for (final a in albums.take(_recentCap)) _node(a, playable: true),
         ];
       case 'tab:playlists':
-        final lists = await _each((id, b) => b.playlistsFor(_anyTrack(id)));
+        final lists = await _each((_, b) => b.musicPlaylists());
         return [for (final p in lists.take(listCap)) _node(p)]..sort(_byTitle);
       case 'tab:artists':
         return _browse(LibraryView.artists);
@@ -168,8 +164,9 @@ class CarLibrary {
             for (final t in tracks.take(listCap)) _node(t, container: 'album:$id')
           ];
         case 'playlist':
-          final tracks =
-              await backend.children(_ref(serverId, id, MediaKind.playlist));
+          final tracks = await backend.playlistTracks(
+              _ref(serverId, id, MediaKind.playlist),
+              limit: listCap);
           return [
             CarNode('shuffle:$serverId:$id', 'Shuffle', playable: true),
             for (final t in tracks.where((t) => t.kind == MediaKind.track).take(listCap))
@@ -238,15 +235,21 @@ class CarLibrary {
     final (kind, serverId, itemId, container) = parsed;
     final backend = backends()[serverId];
     if (backend == null) return null;
+    // A playlist is read a page at a time: a smart one can match a whole
+    // library. Every track the car shows is within that page.
     Future<List<MediaItem>> tracksOf(MediaKind k, String of) async => [
-          for (final t in await backend.children(_ref(serverId, of, k)))
+          for (final t in k == MediaKind.playlist
+              ? await backend.playlistTracks(_ref(serverId, of, k), limit: listCap)
+              : await backend.children(_ref(serverId, of, k)))
             if (t.kind == MediaKind.track) t,
         ];
     try {
       switch (kind) {
         case 'shuffle':
           final tracks = await tracksOf(MediaKind.playlist, itemId);
-          return tracks.isEmpty ? null : ((tracks..shuffle()), 0);
+          return tracks.isEmpty
+              ? null
+              : ((tracks..shuffle()).take(shuffleCap).toList(), 0);
         case 'album' || 'playlist':
           final tracks = await tracksOf(
               kind == 'album' ? MediaKind.album : MediaKind.playlist, itemId);
