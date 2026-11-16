@@ -5,48 +5,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 
 import '../core/models.dart';
+import '../core/music_engine.dart';
+
+export '../core/music_engine.dart' show MusicState;
 import '../core/providers.dart';
 import 'theme.dart';
 import 'widgets.dart';
-
-@immutable
-class MusicState {
-  const MusicState({
-    this.queue = const [],
-    this.index = 0,
-    this.playing = false,
-    this.position = Duration.zero,
-    this.duration = Duration.zero,
-    this.error,
-  });
-  final List<MediaItem> queue;
-  final int index;
-  final bool playing;
-  final Duration position;
-  final Duration duration;
-  final String? error;
-
-  MediaItem? get current =>
-      index >= 0 && index < queue.length ? queue[index] : null;
-  bool get hasNext => index + 1 < queue.length;
-
-  MusicState copyWith({
-    List<MediaItem>? queue,
-    int? index,
-    bool? playing,
-    Duration? position,
-    Duration? duration,
-    String? error,
-  }) =>
-      MusicState(
-        queue: queue ?? this.queue,
-        index: index ?? this.index,
-        playing: playing ?? this.playing,
-        position: position ?? this.position,
-        duration: duration ?? this.duration,
-        error: error,
-      );
-}
 
 /// App-wide music playback with a queue. Lives outside any screen so music
 /// keeps going while you browse.

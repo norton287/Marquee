@@ -13,6 +13,7 @@ import 'package:marquee/core/backend.dart';
 import 'package:marquee/core/demo.dart';
 import 'package:marquee/core/jellyfin.dart';
 import 'package:marquee/core/models.dart';
+import 'package:marquee/core/music_engine.dart';
 import 'package:marquee/core/network.dart';
 import 'package:marquee/core/phone_input.dart';
 import 'package:marquee/core/plex.dart';
@@ -49,6 +50,86 @@ Future<void> _pump(WidgetTester tester, Size size,
     child: const MarqueeApp(),
   ));
   await tester.pumpAndSettle();
+}
+
+/// A [TrackPlayer] that records what the engine asks and lets a test say
+/// when a track ends or fails.
+class FakeTrackPlayer implements TrackPlayer {
+  final calls = <String>[];
+  final _playing = StreamController<bool>.broadcast(sync: true);
+  final _position = StreamController<Duration>.broadcast(sync: true);
+  final _duration = StreamController<Duration>.broadcast(sync: true);
+  final _completed = StreamController<void>.broadcast(sync: true);
+  final _error = StreamController<String>.broadcast(sync: true);
+
+  @override
+  Stream<bool> get playing => _playing.stream;
+  @override
+  Stream<Duration> get position => _position.stream;
+  @override
+  Stream<Duration> get duration => _duration.stream;
+  @override
+  Stream<void> get completed => _completed.stream;
+  @override
+  Stream<String> get error => _error.stream;
+
+  @override
+  Future<void> open(String url, Map<String, String> headers) async =>
+      calls.add('open $url');
+  @override
+  Future<void> play() async {
+    calls.add('play');
+    _playing.add(true);
+  }
+
+  @override
+  Future<void> pause() async {
+    calls.add('pause');
+    _playing.add(false);
+  }
+
+  @override
+  Future<void> stop() async {
+    calls.add('stop');
+    _playing.add(false);
+  }
+
+  @override
+  Future<void> seek(Duration to) async => calls.add('seek ${to.inSeconds}');
+  @override
+  Future<void> dispose() async => calls.add('dispose');
+
+  void at(Duration d) => _position.add(d);
+  void finish() => _completed.add(null);
+  void fail(String e) => _error.add(e);
+}
+
+/// The demo library, recording stream requests and play reports; streams
+/// are `u:<track id>` so a test can tell which track was opened.
+class RecordingDemo extends DemoBackend {
+  RecordingDemo() : super(demoServer);
+  final resolved = <String>[];
+  final reports = <String>[];
+  int failNext = 0;
+
+  @override
+  Future<PlaybackSource> playback(MediaItem item, PlaybackRequest request) async {
+    resolved.add(item.id);
+    if (failNext > 0) {
+      failNext--;
+      throw DioException(
+          requestOptions: RequestOptions(path: '/x'),
+          type: DioExceptionType.connectionError);
+    }
+    return PlaybackSource(
+        url: 'u:${item.id}', method: PlayMethod.directPlay, sessionId: 's');
+  }
+
+  @override
+  Future<void> reportProgress(MediaItem item, PlaybackSource source,
+      Duration position, PlayState state) async {
+    reports.add('${item.id} ${state.name}');
+  }
 }
 
 void main() {
@@ -1075,6 +1156,116 @@ void main() {
         '{uri: server://mach/com.plexapp.plugins.library/library/metadata/42}');
     await plex.createPlaylist('Friday', movie);
     expect(calls.last, startsWith('POST /playlists {type: video, title: Friday, smart: 0'));
+  });
+
+  group('MusicEngine', () {
+    late RecordingDemo demo;
+    late FakeTrackPlayer player;
+    late MusicEngine engine;
+    late List<MediaItem> tracks;
+    final reconnects = <String>[];
+    Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 5));
+
+    setUp(() async {
+      demo = RecordingDemo();
+      player = FakeTrackPlayer();
+      reconnects.clear();
+      engine = MusicEngine(
+        player: player,
+        backendFor: (_) => demo,
+        reconnect: (id) async => reconnects.add(id),
+        reportEvery: const Duration(milliseconds: 30),
+      );
+      final lib = (await demo.libraries())
+          .firstWhere((l) => l.kind == LibraryKind.music);
+      tracks = [
+        for (final a in await demo.recentlyAdded(lib)) ...await demo.children(a)
+      ];
+      expect(tracks.length, greaterThan(5));
+    });
+    tearDown(() => engine.dispose());
+
+    test('starts at once: resolves the chosen track, then only the next',
+        () async {
+      await engine.playQueue(tracks, 2);
+      await settle();
+      expect(player.calls.take(2), ['open u:${tracks[2].id}', 'play']);
+      expect(demo.resolved, [tracks[2].id, tracks[3].id]);
+      expect(engine.state.current?.id, tracks[2].id);
+      expect(engine.state.playing, isTrue);
+      expect(demo.reports, ['${tracks[2].id} started']);
+    });
+
+    test('a finished track reports stopped and the next starts', () async {
+      await engine.playQueue(tracks, 0);
+      await settle();
+      player.finish();
+      await settle();
+      expect(engine.state.index, 1);
+      expect(player.calls, contains('open u:${tracks[1].id}'));
+      expect(demo.reports.take(3), [
+        '${tracks[0].id} started',
+        '${tracks[0].id} stopped',
+        '${tracks[1].id} started',
+      ]);
+      // The prefetched source was used, not resolved again.
+      expect(demo.resolved.where((id) => id == tracks[1].id), hasLength(1));
+    });
+
+    test('pause and play are reported; playing is reported while it plays',
+        () async {
+      await engine.playQueue(tracks, 0);
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(demo.reports, contains('${tracks[0].id} playing'));
+      engine.pause();
+      await settle();
+      expect(demo.reports.last, '${tracks[0].id} paused');
+      expect(engine.state.playing, isFalse);
+      engine.play();
+      await settle();
+      expect(demo.reports.last, '${tracks[0].id} playing');
+    });
+
+    test('a connection error reconnects once and retries the track', () async {
+      demo.failNext = 1;
+      await engine.playQueue(tracks, 0);
+      await settle();
+      expect(reconnects, ['demo']);
+      expect(player.calls.first, 'open u:${tracks[0].id}');
+      expect(engine.state.error, isNull);
+    });
+
+    test('a track failing twice is skipped with a message', () async {
+      demo.failNext = 2;
+      await engine.playQueue(tracks, 0);
+      await settle();
+      expect(engine.state.index, 1);
+      expect(engine.state.error, isNotNull);
+      expect(player.calls.first, 'open u:${tracks[1].id}');
+    });
+
+    test('previous restarts after 4 s, goes back before', () async {
+      await engine.playQueue(tracks, 3);
+      await settle();
+      player.at(const Duration(seconds: 10));
+      engine.previous();
+      await settle();
+      expect(engine.state.index, 3);
+      expect(player.calls.last, 'seek 0');
+      player.at(const Duration(seconds: 1));
+      engine.previous();
+      await settle();
+      expect(engine.state.index, 2);
+      expect(demo.reports, contains('${tracks[3].id} stopped'));
+    });
+
+    test('stop reports stopped and clears the queue', () async {
+      await engine.playQueue(tracks, 0);
+      await settle();
+      await engine.stop();
+      expect(demo.reports.last, '${tracks[0].id} stopped');
+      expect(engine.state.queue, isEmpty);
+    });
   });
 
   const musicLib = Library(serverId: 'p', id: '7', title: 'Music',
