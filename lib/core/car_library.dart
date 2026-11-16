@@ -67,7 +67,8 @@ class CarLibrary {
 
   // -- nodes ---------------------------------------------------------------------
 
-  static Uri? _art(MediaItem i) {
+  /// Square artwork for the car (album art for a track where the server has it).
+  static Uri? artOf(MediaItem i) {
     final img = i.poster ?? i.thumb;
     return img == null ? null : Uri.tryParse(img.url(320, aspect: 1));
   }
@@ -88,7 +89,7 @@ class CarLibrary {
         MediaKind.album => i.parentTitle,
         _ => null,
       },
-      art: _art(i),
+      art: artOf(i),
       playable: isTrack || playable,
       browsable: !isTrack && !playable,
     );

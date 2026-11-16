@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:audio_service/audio_service.dart' as as_;
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +11,7 @@ import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:marquee/app.dart';
+import 'package:marquee/core/audio_handler.dart';
 import 'package:marquee/core/backend.dart';
 import 'package:marquee/core/car_library.dart';
 import 'package:marquee/core/demo.dart';
@@ -1210,6 +1212,76 @@ void main() {
     expect(container.read(musicProvider).index, 1);
     await container.read(musicProvider.notifier).stop();
     await tester.pump();
+  });
+
+  group('MarqueeAudioHandler', () {
+    late RecordingDemo demo;
+    late FakeTrackPlayer player;
+    late MusicEngine engine;
+    late CarLibrary car;
+    late MarqueeAudioHandler handler;
+    final notified = <String>[];
+    Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 5));
+
+    setUp(() async {
+      demo = RecordingDemo();
+      player = FakeTrackPlayer();
+      notified.clear();
+      engine = MusicEngine(player: player, backendFor: (_) => demo);
+      final music = (await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+      car = CarLibrary(() => {'demo': demo}, (_) async => [music]);
+      handler = MarqueeAudioHandler(engine, car,
+          notifyChanged: (id) async => notified.add(id));
+    });
+    tearDown(() async {
+      await handler.dispose();
+      await engine.dispose();
+    });
+
+    test('the car browses the tabs', () async {
+      final root = await handler.getChildren('root');
+      expect(root.map((m) => m.title), ['Recent', 'Playlists', 'Artists', 'Albums']);
+      expect(root.every((m) => m.playable == false), isTrue);
+    });
+
+    test('a tapped track plays and the car sees it; pause shows Play',
+        () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      final tracks = await handler.getChildren(album.id);
+      await handler.playFromMediaId(tracks[2].id);
+      await settle();
+      expect(handler.mediaItem.value?.title, tracks[2].title);
+      expect(handler.playbackState.value.playing, isTrue);
+      expect(handler.playbackState.value.controls, contains(as_.MediaControl.pause));
+      expect(handler.queue.value, hasLength(tracks.length));
+      expect(handler.playbackState.value.queueIndex, 2);
+
+      await handler.pause();
+      await settle();
+      expect(handler.playbackState.value.playing, isFalse);
+      expect(handler.playbackState.value.controls, contains(as_.MediaControl.play));
+      await handler.skipToNext();
+      await settle();
+      expect(handler.mediaItem.value?.title, tracks[3].title);
+    });
+
+    test('voice: "play <album>" plays it; an empty query shuffles all',
+        () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      expect((await handler.search(album.title)).map((m) => m.title),
+          contains(album.title));
+      await handler.playFromSearch(album.title);
+      await settle();
+      expect(handler.playbackState.value.playing, isTrue);
+      await handler.playFromSearch('');
+      await settle();
+      expect(engine.state.queue, isNotEmpty);
+    });
+
+    test('refreshRoot tells the car the menu changed', () async {
+      await handler.refreshRoot();
+      expect(notified, ['root']);
+    });
   });
 
   group('CarLibrary', () {

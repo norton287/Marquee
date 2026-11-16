@@ -28,6 +28,7 @@ dependencies:
   window_manager: ^0.5.1
   file_picker: ^13.3.3
   qr_flutter: ^4.1.0
+  audio_service: ^0.18.19
 
 dev_dependencies:
   flutter_test:
