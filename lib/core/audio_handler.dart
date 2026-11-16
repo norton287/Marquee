@@ -12,8 +12,53 @@ import 'music_engine.dart';
 ///
 /// No QueueHandler/SeekHandler mixins: they edit a queue kept on the handler,
 /// while the engine owns the queue.
+/// How a car list row gets its art.
+enum CarArtMode {
+  /// Fetched before the list is answered.
+  wait,
+
+  /// Fetched in the background, shown next time.
+  background,
+
+  /// Only if fetched before: a long list mustn't start hundreds of downloads.
+  cachedOnly,
+}
+
+/// Artwork in the car's lists.
+abstract final class CarArt {
+  /// Rows waited for: about what a car screen shows.
+  static const waitFor = 40;
+
+  /// Rows fetched at all (the rest show art once fetched some other way).
+  static const prefetchTo = 120;
+
+  static CarArtMode modeFor(int row) => row < waitFor
+      ? CarArtMode.wait
+      : row < prefetchTo
+          ? CarArtMode.background
+          : CarArtMode.cachedOnly;
+}
+
+/// A car art file's name: a 64-bit FNV-1a hash of the image link, so it is
+/// the same every time, can't be guessed by other apps (the link holds the
+/// server token), and says nothing about the server.
+String carArtName(String url) {
+  var h = -3750763034362895579; // 0xcbf29ce484222325
+  for (final c in url.codeUnits) {
+    h ^= c;
+    h *= 0x100000001b3;
+  }
+  // Two 32-bit halves: a Dart int can't show 64 bits unsigned.
+  String half(int v) => (v & 0xffffffff).toRadixString(16).padLeft(8, '0');
+  return '${half(h >> 32)}${half(h)}.jpg';
+}
+
 class MarqueeAudioHandler extends as_.BaseAudioHandler {
-  MarqueeAudioHandler(this.engine, this.library, {this.notifyChanged, this.localArt}) {
+  MarqueeAudioHandler(this.engine, this.library,
+      {this.notifyChanged,
+      this.localArt,
+      this.carArt,
+      this.artDeadline = const Duration(seconds: 2)}) {
     _sub = engine.states.listen(_publish);
     _publish(engine.state);
   }
@@ -31,27 +76,53 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// browse rows and the queue get no art.
   final Future<Uri?> Function(Uri remote)? localArt;
 
+  /// A `content://` link to the app's own copy of a remote image, served by
+  /// its read-only provider (the car can't use server links, and they carry
+  /// the token); null while it isn't there yet (see [CarArtMode]).
+  final Future<Uri?> Function(Uri remote, {required CarArtMode mode})? carArt;
+
+  /// The most a car list waits for its artwork.
+  final Duration artDeadline;
+
   late final StreamSubscription<MusicState> _sub;
   List<MediaItem>? _lastQueue;
 
   // -- browsing --------------------------------------------------------------
 
-  static as_.MediaItem _fromNode(CarNode n) => as_.MediaItem(
+  static as_.MediaItem _fromNode(CarNode n, Uri? art) => as_.MediaItem(
         id: n.id,
         title: n.title,
         artist: n.subtitle,
+        artUri: art,
         playable: n.playable,
       );
+
+  Future<List<as_.MediaItem>> _withArt(List<CarNode> nodes) async {
+    final fetch = carArt;
+    Future<Uri?> artOf(int i) async {
+      final remote = nodes[i].art;
+      if (fetch == null || remote == null) return null;
+      try {
+        return await fetch(remote, mode: CarArt.modeFor(i))
+            .timeout(artDeadline, onTimeout: () => null);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    final art = await Future.wait([for (var i = 0; i < nodes.length; i++) artOf(i)]);
+    return [for (var i = 0; i < nodes.length; i++) _fromNode(nodes[i], art[i])];
+  }
 
   @override
   Future<List<as_.MediaItem>> getChildren(String parentMediaId,
           [Map<String, dynamic>? options]) async =>
-      [for (final n in await library.children(parentMediaId)) _fromNode(n)];
+      _withArt(await library.children(parentMediaId));
 
   @override
   Future<List<as_.MediaItem>> search(String query,
           [Map<String, dynamic>? extras]) async =>
-      [for (final n in await library.search(query)) _fromNode(n)];
+      _withArt(await library.search(query));
 
   /// A car that asked for the menu before the app was ready got an empty
   /// one (cold start); this makes it ask again.

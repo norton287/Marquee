@@ -1331,6 +1331,60 @@ void main() {
       await local.dispose();
     });
 
+    test('car lists get art through the in-app provider, never a server link',
+        () async {
+      final modes = <CarArtMode>[];
+      final withArt = MarqueeAudioHandler(engine, car,
+          carArt: (remote, {required mode}) async {
+            modes.add(mode);
+            return mode == CarArtMode.wait
+                ? Uri.parse('content://app.marquee.marquee.art/${remote.pathSegments.last}.jpg')
+                : null;
+          });
+      final albums = await withArt.getChildren('tab:albums');
+      expect(albums.first.artUri?.scheme, 'content');
+      expect(albums.every((m) => m.artUri == null || m.artUri!.scheme == 'content'), isTrue);
+      // Only what's on screen is waited for.
+      expect(modes.take(CarArt.waitFor).every((m) => m == CarArtMode.wait), isTrue);
+      expect(modes.skip(CarArt.waitFor).every((m) => m != CarArtMode.wait), isTrue);
+      expect((await withArt.search(albums.first.title)).first.artUri?.scheme, 'content');
+      await withArt.dispose();
+    });
+
+    test('a long list only fetches art near the top', () {
+      CarArtMode at(int row) => CarArt.modeFor(row);
+      expect(at(0), CarArtMode.wait);
+      expect(at(CarArt.waitFor - 1), CarArtMode.wait);
+      expect(at(CarArt.waitFor), CarArtMode.background);
+      expect(at(CarArt.prefetchTo - 1), CarArtMode.background);
+      // Further down: only what was fetched before (no flood of downloads).
+      expect(at(CarArt.prefetchTo), CarArtMode.cachedOnly);
+      expect(at(499), CarArtMode.cachedOnly);
+    });
+
+    test('car art file names are stable and reveal nothing', () {
+      const url = 'http://192.168.1.5:32400/photo/:/transcode?url=/x&X-Plex-Token=secret';
+      final a = carArtName(url), b = carArtName(url);
+      expect(a, b);
+      expect(a, matches(RegExp(r'^[0-9a-f]{16}\.jpg$')));
+      expect(carArtName('$url&w=1'), isNot(a));
+    });
+
+    test('slow artwork never holds up a car list', () async {
+      final slow = MarqueeAudioHandler(engine, car,
+          carArt: (remote, {required mode}) async {
+            await Future<void>.delayed(const Duration(seconds: 5));
+            return Uri.parse('content://x/y');
+          },
+          artDeadline: const Duration(milliseconds: 100));
+      final watch = Stopwatch()..start();
+      final albums = await slow.getChildren('tab:albums');
+      expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
+      expect(albums, isNotEmpty);
+      expect(albums.every((m) => m.artUri == null), isTrue);
+      await slow.dispose();
+    });
+
     test('refreshRoot tells the car the menu changed', () async {
       await handler.refreshRoot();
       expect(notified, ['root']);

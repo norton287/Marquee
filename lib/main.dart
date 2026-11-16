@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -92,6 +95,51 @@ Future<void> main() async {
   ));
 }
 
+/// The car's own art folder (`<cache>/car_art`), served by ArtProvider.kt.
+/// Only car art goes in it (the app's image cache holds everything else the
+/// user looked at), under unguessable names (`carArtName`).
+String? _carArtDir;
+var _carArtCopies = 0;
+
+/// The car's list art: [remote] downloaded (through audio_service's image
+/// cache) and copied into the car folder, as a `content://` link.
+Future<Uri?> _carArt(Uri remote, {required CarArtMode mode}) async {
+  final name = carArtName(remote.toString());
+  final link = Uri(
+      scheme: 'content', host: 'app.marquee.marquee.art', pathSegments: [name]);
+  final known = _carArtDir;
+  if (known != null && File('$known/$name').existsSync()) return link;
+  if (mode == CarArtMode.cachedOnly) return null;
+  Future<Uri?> fetch() async {
+    final file = await AudioService.cacheManager.getSingleFile(remote.toString());
+    // The image cache lives in <cache>/libCachedImageData.
+    final dir = _carArtDir ??= '${file.parent.parent.path}/car_art';
+    await Directory(dir).create(recursive: true);
+    await file.copy('$dir/$name');
+    if (++_carArtCopies % 50 == 0) unawaited(_pruneCarArt(dir));
+    return link;
+  }
+
+  if (mode == CarArtMode.background) {
+    // Ready for the next time this list is shown.
+    unawaited(fetch().then((_) {}, onError: (Object _) {}));
+    return null;
+  }
+  return fetch();
+}
+
+/// Keeps the car folder to the 1500 most recently fetched images.
+Future<void> _pruneCarArt(String dir) async {
+  try {
+    final files = Directory(dir).listSync().whereType<File>().toList();
+    if (files.length <= 1500) return;
+    files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+    for (final f in files.skip(1500)) {
+      f.deleteSync();
+    }
+  } catch (_) {}
+}
+
 Future<void> _startMusicSession(
     ProviderContainer container, AudioSession? focus) async {
   final engine = container.read(musicEngineProvider);
@@ -137,6 +185,7 @@ Future<void> _startMusicSession(
         // A private copy: artwork links carry the server token.
         localArt: (remote) async => Uri.file(
             (await AudioService.cacheManager.getSingleFile(remote.toString())).path),
+        carArt: _carArt,
       ),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'app.marquee.marquee.music',

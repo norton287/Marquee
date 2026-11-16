@@ -54,6 +54,12 @@
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </receiver>
+        <!-- Album art for Android Auto's lists, read from the app's image
+             cache (read only, images only, no network). The car's host app
+             must be able to open it, hence exported. -->
+        <provider android:name=".ArtProvider"
+            android:authorities="app.marquee.marquee.art"
+            android:exported="true" />
         <!-- Shows Marquee among Android Auto's media apps. -->
         <meta-data android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc"/>
