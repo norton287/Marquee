@@ -78,6 +78,10 @@ class ServersNotifier extends Notifier<List<ServerConfig>> {
           libraryQueries: {...s.libraryQueries}
             ..removeWhere((k, _) => k.startsWith(prefix))));
     }
+    // And the car's library choice, if it was on this server.
+    if (ref.read(settingsProvider).carMusicLibrary?.startsWith(prefix) ?? false) {
+      settings.change((s) => s.copyWith(carMusicLibrary: null));
+    }
     if (ref.read(settingsProvider).hiddenLibraries.containsKey(id)) {
       settings.change((s) => s.copyWith(
           hiddenLibraries: {...s.hiddenLibraries}..remove(id)));

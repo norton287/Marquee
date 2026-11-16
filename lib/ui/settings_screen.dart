@@ -400,15 +400,18 @@ class _CarLibraryChoice extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final chosen = ref.watch(settingsProvider.select((s) => s.carMusicLibrary));
     final options = <(String?, String)>[(null, 'All music libraries')];
+    var loading = false;
     for (final server in ref.watch(serversProvider)) {
-      final libs = ref.watch(librariesProvider(server.id)).value ?? const [];
+      final async = ref.watch(librariesProvider(server.id));
+      loading |= async.isLoading && !async.hasValue;
+      final libs = async.value ?? const [];
       for (final l in libs.where((l) => l.kind == LibraryKind.music)) {
         options.add((AppSettings.libraryKey(server.id, l.id), '${server.name} · ${l.title}'));
       }
     }
     // A choice whose library is gone still shows (the car then uses all).
     if (chosen != null && !options.any((o) => o.$1 == chosen)) {
-      options.add((chosen, 'Unavailable library'));
+      options.add((chosen, loading ? '…' : 'Unavailable library'));
     }
     return _Choice<String?>(
       title: 'Music in the car',
@@ -461,9 +464,15 @@ class _Choice<T> extends StatelessWidget {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(current,
-                style: const TextStyle(
-                    color: Palette.text, fontWeight: FontWeight.w600)),
+            // Long "Server · Library" names are cut, not overflowing.
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 180),
+              child: Text(current,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: Palette.text, fontWeight: FontWeight.w600)),
+            ),
             const SizedBox(width: 4),
             const Icon(Icons.unfold_more_rounded, size: 18),
           ],

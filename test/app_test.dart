@@ -299,6 +299,12 @@ class CountingDemo extends DemoBackend {
     calls++;
     return super.search(query);
   }
+
+  @override
+  Future<List<MediaItem>> randomTracks(Library library, {int limit = 200}) {
+    calls++;
+    return super.randomTracks(library, limit: limit);
+  }
 }
 
 void main() {
@@ -1140,6 +1146,18 @@ void main() {
         closeTo(poster, 0.5));
   });
 
+  test("removing a server forgets the car's library choice on it", () async {
+    final container = ProviderContainer(overrides: [
+      storageProvider.overrideWithValue(await _storage()),
+      deviceIsTvProvider.overrideWithValue(false),
+    ], retry: (_, _) => null);
+    addTearDown(container.dispose);
+    container.read(settingsProvider.notifier)
+        .change((s) => s.copyWith(carMusicLibrary: 'demo/music'));
+    await container.read(serversProvider.notifier).remove('demo');
+    expect(container.read(settingsProvider).carMusicLibrary, isNull);
+  });
+
   test('the car music library choice round-trips (null = all)', () async {
     expect(const AppSettings().carMusicLibrary, isNull);
     final store = MemoryStore();
@@ -1854,7 +1872,7 @@ void main() {
       expect(checked, ['demo']);
     });
 
-    test('a chosen library that is gone falls back to all', () async {
+    test('a chosen server that is gone falls back to all', () async {
       final other = CountingDemo();
       final car = CarLibrary(
         () => {'demo': demo, 'other': other},
@@ -1864,16 +1882,57 @@ void main() {
       );
       expect(await car.children('tab:albums'), isNotEmpty);
       expect(other.calls, greaterThan(0));
-      // Its server is there but the library isn't (hidden): all again.
-      final hidden = CarLibrary(
+      // Its server is there but the library was deleted there: still only
+      // that server (decided without the network), so the list is empty.
+      final deleted = CarLibrary(
         () => {'demo': demo, 'other': other},
         (id) async => [Library(serverId: id, id: music.id, title: 'Music',
             kind: LibraryKind.music)],
         only: () => 'demo/not-a-library',
       );
       other.calls = 0;
-      expect(await hidden.children('tab:albums'), isNotEmpty);
+      expect(await deleted.children('tab:albums'), isEmpty);
+      expect(other.calls, 0);
+    });
+
+    test("checking the chosen library never waits on the network", () async {
+      // The library list can't be read (bad address): the choice must not
+      // hold the tab up on its own.
+      final car = CarLibrary(
+        () => {'demo': demo},
+        (id) => Completer<List<Library>>().future, // never answers
+        only: () => 'demo/${music.id}',
+        timeout: const Duration(milliseconds: 300),
+      );
+      final watch = Stopwatch()..start();
+      await car.children('tab:playlists');
+      await car.search('a');
+      expect(watch.elapsed, lessThan(const Duration(seconds: 1)));
+    });
+
+    test('a chosen library the user hid falls back to all', () async {
+      final other = CountingDemo();
+      final car = CarLibrary(
+        () => {'demo': demo, 'other': other},
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        only: () => 'demo/${music.id}',
+        isHidden: (server, library) => server == 'demo' && library == music.id,
+      );
+      await car.children('tab:albums');
       expect(other.calls, greaterThan(0));
+    });
+
+    test("voice search keeps to the chosen library's music", () async {
+      final car = CarLibrary(
+        () => {'demo': demo},
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        only: () => 'demo/elsewhere',
+      );
+      final album = (await make().children('tab:albums')).first;
+      // The demo's music sits in another library than the chosen one.
+      expect(await car.search(album.title), isEmpty);
     });
 
     test('opening the car menu re-checks every server', () async {

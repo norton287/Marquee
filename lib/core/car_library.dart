@@ -31,7 +31,11 @@ class CarLibrary {
       {this.reconnect,
       this.timeout = const Duration(seconds: 12),
       this.probeAfter = const Duration(milliseconds: 1500),
-      this.only});
+      this.only,
+      this.isHidden});
+
+  /// Whether the user hid a library (from settings: no network needed).
+  final bool Function(String serverId, String libraryId)? isHidden;
 
   /// The one library the car uses (`<serverId>/<libraryId>`, Settings →
   /// Android Auto), or null for all. Other servers aren't contacted at all;
@@ -50,16 +54,13 @@ class CarLibrary {
   }
 
   /// Which servers to ask, and (when one library is chosen) which library.
+  /// Decided without the network: asking the server first stalled every tab
+  /// on a stale address. A library deleted on the server just lists nothing.
   Future<(Iterable<String>, String?)> _scope() async {
     final all = backends().keys;
     final chosen = _chosen;
     if (chosen == null) return (all, null);
-    try {
-      final libs = await visibleLibraries(chosen.$1);
-      if (!libs.any((l) => l.id == chosen.$2)) return (all, null); // hidden
-    } catch (_) {
-      // Unknown right now: still only that server.
-    }
+    if (isHidden?.call(chosen.$1, chosen.$2) ?? false) return (all, null);
     return ([chosen.$1], chosen.$2);
   }
 
@@ -297,9 +298,12 @@ class CarLibrary {
   Future<List<CarNode>> search(String query) async {
     final q = query.trim();
     if (q.isEmpty) return const [];
-    final hits = await _each((_, b) => b.search(q));
+    final (servers, library) = await _scope();
+    final hits = await _each(servers: servers, (_, b) => b.search(q));
     return [
       for (final h in hits)
+        // Keep to the chosen library (items that don't say stay).
+        if (library == null || h.libraryId == null || h.libraryId == library)
         if (h.kind == MediaKind.track)
           _node(h, container: h.parentId == null ? null : 'album:${h.parentId}')
         else if (h.kind == MediaKind.album || h.kind == MediaKind.artist)

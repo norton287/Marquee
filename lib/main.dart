@@ -169,6 +169,8 @@ Future<void> _startMusicSession(
           reconnect: (id) => container.read(serversProvider.notifier).revalidate(id),
           // Settings → Android Auto: one library, or all.
           only: () => container.read(settingsProvider).carMusicLibrary,
+          isHidden: (server, library) =>
+              container.read(settingsProvider).hiddenOn(server).contains(library),
         ),
         // ignore: deprecated_member_use
         notifyChanged: (id) => AudioServiceBackground.notifyChildrenChanged(id),
