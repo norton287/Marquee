@@ -18,7 +18,7 @@ class CarLogEntry {
 /// addresses.
 class CarLog {
   CarLog({
-    this.max = 300,
+    this.max = 600,
     this.save,
     this.saveAfter = const Duration(milliseconds: 500),
     this.saveAtLeastEvery = const Duration(seconds: 3),
@@ -135,7 +135,7 @@ class CarLog {
 
   /// What Copy sends: newest first and only the last [last], so a long
   /// paste that gets cut keeps the part that matters.
-  String toShareText({int last = 100}) =>
+  String toShareText({int last = 200}) =>
       toText().split('\n').reversed.take(last).join('\n');
 
   /// Saves what's pending, then ignores further entries.

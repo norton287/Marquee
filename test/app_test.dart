@@ -16,6 +16,7 @@ import 'package:marquee/core/audio_handler.dart';
 import 'package:marquee/core/backend.dart';
 import 'package:marquee/core/car_library.dart';
 import 'package:marquee/core/car_log.dart';
+import 'package:marquee/core/car_watch.dart';
 import 'package:marquee/core/demo.dart';
 import 'package:marquee/core/jellyfin.dart';
 import 'package:marquee/core/models.dart';
@@ -2031,15 +2032,50 @@ void main() {
       expect(text, contains('failed:'));
     });
 
-    test('what Copy sends: newest first, the last 100', () {
+    test('what Copy sends: newest first, the last 200', () {
       final log = CarLog();
-      for (var i = 0; i < 150; i++) {
+      for (var i = 0; i < 250; i++) {
         log.add('event $i');
       }
       final lines = log.toShareText().split('\n');
-      expect(lines, hasLength(100));
-      expect(lines.first, endsWith('event 149'));
+      expect(lines, hasLength(200));
+      expect(lines.first, endsWith('event 249'));
       expect(lines.last, endsWith('event 50'));
+    });
+
+    testWidgets('the session watch starts and logs what the car sees',
+        (tester) async {
+      const channel = MethodChannel('app.marquee.marquee/car_watch');
+      final calls = <String>[];
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final log = CarLog();
+      await watchCarSession(log);
+      expect(calls, ['start']);
+      // The native side reports a change.
+      await messenger.handlePlatformMessage(
+          channel.name,
+          const StandardMethodCodec().encodeMethodCall(
+              const MethodCall('log', 'state playing for=track:s:1 queue#0=track:s:1')),
+          (_) {});
+      expect(log.entries.single.message,
+          'car sees state playing for=track:s:1 queue#0=track:s:1');
+    });
+
+    testWidgets('no session watch (TV, desktop) is fine', (tester) async {
+      const channel = MethodChannel('app.marquee.marquee/car_watch');
+      final messenger = tester.binding.defaultBinaryMessenger;
+      // What a build without the native side answers.
+      messenger.setMockMethodCallHandler(
+          channel, (call) async => throw MissingPluginException());
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final log = CarLog();
+      await watchCarSession(log);
+      expect(log.entries, isEmpty);
     });
 
     test('connection errors keep no host, address or cookie', () {

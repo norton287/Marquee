@@ -15,6 +15,7 @@ import 'core/audio_handler.dart';
 import 'core/backend.dart';
 import 'core/car_library.dart';
 import 'core/car_log.dart';
+import 'core/car_watch.dart';
 import 'core/providers.dart';
 import 'core/storage.dart';
 import 'ui/music.dart';
@@ -210,6 +211,8 @@ Future<void> _startMusicSession(
     // A car that asked for the menu before Dart was ready may have an empty
     // one; and servers, libraries or the profile changing changes every list.
     await handler.refreshRoot();
+    // What the car actually receives, for the car log.
+    await watchCarSession(container.read(carLogProvider));
     container.listen(backendsProvider, (_, _) => handler.refreshAll());
     container.listen(settingsProvider.select((s) => s.carMusicLibrary),
         (_, _) => handler.refreshAll(clear: true));

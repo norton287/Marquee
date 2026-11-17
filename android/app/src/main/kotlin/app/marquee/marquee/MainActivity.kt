@@ -1,6 +1,7 @@
 package app.marquee.marquee
 
 import com.ryanheise.audioservice.AudioServiceActivity
+import io.flutter.embedding.engine.FlutterEngine
 import com.ryanheise.audioservice.AudioServicePlugin
 
 /**
@@ -12,6 +13,13 @@ import com.ryanheise.audioservice.AudioServicePlugin
  * (and its plugins have detached) the shared engine is destroyed.
  */
 class MainActivity : AudioServiceActivity() {
+    // A new engine after the old one was thrown away: the car log's session
+    // watch must talk to it (MarqueeApplication attaches only the first).
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        if (!MarqueeApplication.isTv(this)) CarWatch.attach(this, flutterEngine)
+    }
+
     override fun onDestroy() {
         val finishing = isFinishing
         super.onDestroy()
