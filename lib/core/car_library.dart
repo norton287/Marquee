@@ -103,6 +103,9 @@ class CarLibrary {
   /// that left the car on an old state for seconds). The newest 50.
   final _containerTracks = <String, List<MediaItem>>{};
 
+  /// Forget the remembered container tracks (a tap then looks them up).
+  void forgetTracks() => _containerTracks.clear();
+
   void _rememberTracks(String key, List<MediaItem> tracks) {
     _containerTracks.remove(key);
     _containerTracks[key] = tracks;

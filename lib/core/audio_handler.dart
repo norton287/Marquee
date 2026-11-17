@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:audio_service/audio_service.dart' as as_;
+import 'package:flutter/foundation.dart';
 
 import 'car_library.dart';
 import 'car_log.dart';
@@ -65,6 +66,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       this.answerWithin = const Duration(seconds: 8),
       this.log,
       this.remember,
+      this.rememberKey,
       this.rememberAfter = const Duration(seconds: 2)}) {
     _sub = engine.states.listen(_publish);
     _publish(engine.state);
@@ -106,6 +108,37 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// the app itself, and lists that need the server came back empty at first.
   final Future<void> Function(String json)? remember;
   final Duration rememberAfter;
+
+  /// What the remembered lists belong to (car library, servers, profiles):
+  /// lists saved for something else aren't restored.
+  final String Function()? rememberKey;
+
+  @visibleForTesting
+  void forgetTracksForTest() => library.forgetTracks();
+
+  @visibleForTesting
+  static String rememberJsonForTest(Map<String, List<as_.MediaItem>> lists, String key) =>
+      _rememberJson(lists, key);
+
+  /// Rows saved per list, and about the most saved in all (it lives in the
+  /// app's preferences, read at every start).
+  static const _rememberRows = 100;
+  static const _rememberBytes = 300 * 1024;
+
+  static String _rememberJson(Map<String, List<as_.MediaItem>> lists, String key) {
+    final out = <String, Object>{};
+    var size = 0;
+    // Newest first, so the cap drops the oldest.
+    for (final id in lists.keys.toList().reversed) {
+      final rows = [for (final m in lists[id]!.take(_rememberRows)) _itemJson(m)];
+      size += jsonEncode(rows).length;
+      if (size > _rememberBytes) break;
+      out[id] = rows;
+    }
+    return jsonEncode({'v': 1, 'key': key, 'lists': out});
+  }
+
+  String? _lastKey;
   Timer? _remembering;
 
   /// The lists remembered: the menu plus the most recently used ones.
@@ -132,19 +165,19 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     final save = remember;
     if (save == null) return;
     final ids = _kept.keys.toList().reversed.take(_rememberAtMost).toList().reversed;
-    final json = jsonEncode({
-      for (final id in ids)
-        if (_kept[id]!.length <= CarLibrary.listCap)
-          id: [for (final m in _kept[id]!) _itemJson(m)],
-    });
+    final json = _rememberJson({for (final id in ids) id: _kept[id]!}, rememberKey?.call() ?? '');
     unawaited(Future(() => save(json)).catchError((Object _) {}));
   }
 
   /// Lists from the last run: shown at once, refreshed on first look.
   void restore(String? json) {
     if (json == null) return;
+    _lastKey = rememberKey?.call();
     try {
-      final map = jsonDecode(json) as Map<String, dynamic>;
+      final saved = jsonDecode(json) as Map<String, dynamic>;
+      // Saved for another car library, set of servers or profile: not ours.
+      if (saved['v'] != 1 || saved['key'] != (rememberKey?.call() ?? '')) return;
+      final map = saved['lists'] as Map<String, dynamic>;
       for (final e in map.entries) {
         final list = [
           for (final raw in e.value as List)
@@ -368,13 +401,18 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// Servers, libraries or the profile changed: every list may differ.
   /// [clear]: what was kept no longer applies (the car's library changed).
   Future<void> refreshAll({bool clear = false}) async {
+    // Servers or the profile changed what the lists belong to: start over.
+    final key = rememberKey?.call();
+    if (key != null && _lastKey != null && key != _lastKey) clear = true;
+    _lastKey = key;
     // Lists the car may be showing below the tabs (an A–Z folder, an album).
     final shown = clear ? [..._kept.keys] : const <String>[];
     if (clear) {
       _epoch++;
       _kept.clear();
       _keptAt.clear();
-      _scheduleRemember();
+      library.forgetTracks();
+      _rememberNow(); // at once: the old lists mustn't come back after a restart
     } else {
       // Servers or the profile changed: everything kept is looked at again
       // when next shown, and the lists on screen are checked now (redrawn
@@ -409,8 +447,19 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   String? _tappedList;
   List<MediaItem>? _tappedQueue;
 
+  /// While a tap resolves, the old song's updates mustn't replace the tapped
+  /// item (the car would see another id than it tapped).
+  bool _holding = false;
+
+  /// A "prepare" waiting for its "play" (prepare never starts music).
+  ({String id, Future<(List<MediaItem>, int)?> queue})? _prepared;
+  Timer? _preparedExpiry;
+  DateTime? _startedAt;
+
   Future<void> _play((List<MediaItem>, int)? queue, {String? tapped}) async {
+    _holding = false;
     if (queue == null) return;
+    _startedAt = DateTime.now();
     _tappedQueue = tapped == null ? null : queue.$1;
     _tappedId = tapped;
     _tappedIndex = queue.$2;
@@ -437,40 +486,96 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   @override
   Future<void> playFromMediaId(String mediaId,
       [Map<String, dynamic>? extras]) async {
+    // The play after a prepare of the same item: start what was prepared.
+    if (_prepared?.id == mediaId) {
+      log?.add('tap $mediaId (prepared)');
+      return _playPrepared();
+    }
+    // The same tap again right after it started (prepare + play + play…).
+    if (mediaId == _tappedId &&
+        identical(engine.state.queue, _tappedQueue) &&
+        _startedAt != null &&
+        DateTime.now().difference(_startedAt!) < const Duration(seconds: 10)) {
+      log?.add('tap $mediaId (already started)');
+      return;
+    }
     _tapError = null;
     log?.add('tap $mediaId');
     final took = Stopwatch()..start();
-    final tapped = await _item(mediaId);
-    if (tapped != null) mediaItem.add(tapped);
-    playbackState.add(playbackState.value.copyWith(
-        processingState: as_.AudioProcessingState.loading, errorMessage: null));
-    _logState();
+    await _showTapped(mediaId);
     final queue = await library.resolve(mediaId);
     log?.add(queue == null
         ? 'tap → nothing to play (${took.elapsedMilliseconds} ms)'
         : 'tap → ${queue.$1.length} tracks from #${queue.$2} (${took.elapsedMilliseconds} ms)');
-    if (queue == null) {
-      _tapError = "Couldn't play that. Check the connection to your server.";
-      _publish(engine.state);
-      return;
-    }
+    if (queue == null) return _cantPlay();
     await _play(queue, tapped: mediaId);
+  }
+
+  /// The tapped item, loading, at once (and held until it plays).
+  Future<void> _showTapped(String mediaId) async {
+    final tapped = await _item(mediaId);
+    _holding = true;
+    if (tapped != null) mediaItem.add(tapped);
+    playbackState.add(playbackState.value.copyWith(
+        processingState: as_.AudioProcessingState.loading, errorMessage: null));
+    _logState();
+  }
+
+  void _cantPlay() {
+    _holding = false;
+    _tapError = "Couldn't play that. Check the connection to your server.";
+    _publish(engine.state);
+  }
+
+  Future<void> _playPrepared() async {
+    final p = _prepared!;
+    _prepared = null;
+    _preparedExpiry?.cancel();
+    final queue = await p.queue;
+    if (queue == null) return _cantPlay();
+    await _play(queue, tapped: p.id);
   }
 
   /// Some Android Auto versions send "prepare" for a tap and "play" after;
   /// preparing the tapped item means starting it (play then just carries on).
+  /// "Prepare" (Assistant, some cars and controllers): show the item and
+  /// look its queue up, but start nothing until "play" (MediaSession's rule;
+  /// a car may prepare on its own). Dropped if no play follows in 30 s.
   @override
   Future<void> prepareFromMediaId(String mediaId,
       [Map<String, dynamic>? extras]) async {
     log?.add('prepare $mediaId');
-    await playFromMediaId(mediaId, extras);
+    _tapError = null;
+    await _showTapped(mediaId);
+    final queue = library.resolve(mediaId);
+    _prepared = (id: mediaId, queue: queue);
+    _preparedExpiry?.cancel();
+    _preparedExpiry = Timer(const Duration(seconds: 30), () {
+      if (_prepared?.id != mediaId) return;
+      _prepared = null;
+      _holding = false;
+      _publish(engine.state);
+    });
+    final q = await queue;
+    if (_prepared?.id != mediaId) return; // played or replaced meanwhile
+    if (q == null) {
+      _prepared = null;
+      return _cantPlay();
+    }
+    playbackState.add(playbackState.value.copyWith(
+        processingState: as_.AudioProcessingState.ready, playing: false));
+    _logState();
   }
 
   @override
   Future<void> prepareFromSearch(String query,
       [Map<String, dynamic>? extras]) async {
     log?.add('prepare search "$query"');
-    await playFromSearch(query, extras);
+    final hit = query.trim().isEmpty
+        ? 'shuffle:all'
+        : (await library.search(query)).firstOrNull?.id;
+    if (hit == null) return;
+    await prepareFromMediaId(hit, extras);
   }
 
   /// On connect, with nothing named: nothing to start (no surprise music).
@@ -505,6 +610,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   @override
   Future<void> play() async {
     log?.add('control play');
+    if (_prepared != null) return _playPrepared();
     engine.play();
   }
 
@@ -586,6 +692,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   }
 
   void _publish(MusicState s) {
+    if (_holding) return; // a tap is loading: keep showing it
     if (s.playing) _tapError = null;
     if (!identical(s.queue, _lastQueue)) {
       _lastQueue = s.queue;
@@ -640,6 +747,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   }
 
   Future<void> dispose() async {
+    _preparedExpiry?.cancel();
     if (_remembering != null) _rememberNow();
     await _sub.cancel();
   }

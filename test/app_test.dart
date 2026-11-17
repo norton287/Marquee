@@ -1862,23 +1862,87 @@ void main() {
       expect(handler.mediaItem.value?.id, album.id);
     });
 
-    test("the car's prepare-then-play is handled (and logged)", () async {
+    test('prepare gets the tapped song ready; play starts it, once', () async {
       final log = CarLog();
       final logged = MarqueeAudioHandler(engine, car, log: log);
       final album = (await logged.getChildren('tab:albums')).first;
       final tracks = await logged.getChildren(album.id);
       await logged.prepareFromMediaId(tracks[1].id);
       await settle();
+      // Ready, shown, but not playing: prepare never starts music by itself.
+      expect(logged.mediaItem.value?.id, tracks[1].id);
+      expect(player.calls, isNot(contains('play')));
+      expect(demo.resolved, isEmpty);
       await logged.play();
       await settle();
       expect(engine.state.current?.title, tracks[1].title);
       expect(logged.mediaItem.value?.id, tracks[1].id);
+      // The same tap's play right after prepare doesn't start it again.
+      await logged.playFromMediaId(tracks[1].id);
+      await settle();
+      expect(demo.resolved.where((id) => id.endsWith('-2')), hasLength(1));
+      expect(demo.reports.where((r) => r.endsWith(' started')), hasLength(1));
       expect(log.toText(), contains('prepare ${tracks[1].id}'));
       await logged.prepare(); // on connect, nothing named: no surprise playback
       await logged.playFromUri(Uri.parse('content://x/y'));
       expect(log.toText(), contains('prepare (nothing named)'));
       expect(log.toText(), contains('play from a link: not supported'));
       await logged.dispose();
+    });
+
+    test('a tap while a song plays keeps showing the tapped one while it loads',
+        () async {
+      final album = (await handler.getChildren('tab:albums')).first;
+      final tracks = await handler.getChildren(album.id);
+      await handler.playFromMediaId(tracks[0].id);
+      await settle();
+      // Another album, slow to look up, while track 0 plays on.
+      final other = (await handler.getChildren('tab:albums'))[1];
+      final others = await handler.getChildren(other.id);
+      demo.childrenGate = Completer<void>();
+      handler.forgetTracksForTest();
+      final tapping = handler.playFromMediaId(others[0].id);
+      await settle();
+      player.at(const Duration(seconds: 5)); // the old song moves on
+      player.at(const Duration(seconds: 7));
+      await settle();
+      expect(handler.mediaItem.value?.id, others[0].id);
+      expect(handler.playbackState.value.processingState, as_.AudioProcessingState.loading);
+      demo.childrenGate!.complete();
+      demo.childrenGate = null;
+      await tapping;
+      await settle();
+      expect(handler.mediaItem.value?.id, others[0].id);
+    });
+
+    test("remembered lists from another library or profile aren't used",
+        () async {
+      String? saved;
+      var key = 'demo/music|demo|u1';
+      final first = MarqueeAudioHandler(engine, car,
+          remember: (json) async => saved = json,
+          rememberKey: () => key,
+          rememberAfter: const Duration(milliseconds: 10));
+      final big = await first.getChildren('tab:albums');
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await first.dispose();
+      final restored = MarqueeAudioHandler(engine, car, rememberKey: () => key)
+        ..restore(saved);
+      expect(restored.keptLists, greaterThan(0));
+      key = 'demo/other|demo|u1';
+      final other = MarqueeAudioHandler(engine, car, rememberKey: () => key)
+        ..restore(saved);
+      expect(other.keptLists, 0);
+      expect(big, isNotEmpty);
+    });
+
+    test('a long list is remembered in part (the saved lists stay small)', () {
+      final rows = [
+        for (var i = 0; i < 300; i++) as_.MediaItem(id: 'track:s:$i', title: 'Song $i', playable: true),
+      ];
+      final json = MarqueeAudioHandler.rememberJsonForTest({'az:tracks:B': rows}, 'k');
+      final back = jsonDecode(json) as Map<String, dynamic>;
+      expect(((back['lists'] as Map)['az:tracks:B'] as List), hasLength(100));
     });
 
     test('car lists are remembered across restarts (answered at once)',

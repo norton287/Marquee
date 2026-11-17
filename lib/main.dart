@@ -188,6 +188,14 @@ Future<void> _startMusicSession(
         carArt: _carArt,
         log: container.read(carLogProvider),
         remember: storage.saveCarLists,
+        // The lists belong to this car library, these servers and profiles.
+        rememberKey: () {
+          final library = container.read(settingsProvider).carMusicLibrary ?? 'all';
+          final servers = [
+            for (final s in container.read(serversProvider)) '${s.id}:${s.userId ?? ''}',
+          ]..sort();
+          return '$library|${servers.join(',')}';
+        },
       )..restore(lastLists),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'app.marquee.marquee.music',
