@@ -503,9 +503,10 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     log?.add('tap $mediaId');
     final took = Stopwatch()..start();
     await _showTapped(mediaId);
-    final queue = await library.resolve(mediaId);
+    String? why;
+    final queue = await library.resolve(mediaId, whyNot: (w) => why = w);
     log?.add(queue == null
-        ? 'tap → nothing to play (${took.elapsedMilliseconds} ms)'
+        ? 'tap → nothing to play (${took.elapsedMilliseconds} ms): ${why ?? '?'}'
         : 'tap → ${queue.$1.length} tracks from #${queue.$2} (${took.elapsedMilliseconds} ms)');
     if (queue == null) return _cantPlay();
     await _play(queue, tapped: mediaId);
@@ -547,7 +548,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     log?.add('prepare $mediaId');
     _tapError = null;
     await _showTapped(mediaId);
-    final queue = library.resolve(mediaId);
+    final queue = library.resolve(mediaId,
+        whyNot: (why) => log?.add('prepare $mediaId → nothing to play: $why'));
     _prepared = (id: mediaId, queue: queue);
     _preparedExpiry?.cancel();
     _preparedExpiry = Timer(const Duration(seconds: 30), () {

@@ -12,11 +12,16 @@ Future<void> watchCarSession(CarLog log,
   channel.setMethodCallHandler((call) async {
     if (call.method == 'log') log.add('car sees ${call.arguments}');
   });
+  // Logged so a log without "car sees" lines tells an old build (no line)
+  // from a watch that couldn't start (says why).
+  log.add('session watch: starting');
   try {
     await channel.invokeMethod<void>('start');
   } on MissingPluginException {
     channel.setMethodCallHandler(null);
-  } on PlatformException {
+    log.add('session watch unavailable: no native side');
+  } on PlatformException catch (e) {
     channel.setMethodCallHandler(null);
+    log.add('session watch unavailable: ${e.message}');
   }
 }

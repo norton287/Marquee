@@ -332,6 +332,16 @@ class BrokenCarLibrary extends CarLibrary {
   Future<List<CarNode>> search(String query) => Future.error(StateError('boom'));
 }
 
+/// A server that refuses to list an album's tracks.
+class AlbumFailsDemo extends DemoBackend {
+  AlbumFailsDemo() : super(demoServer);
+  @override
+  Future<List<MediaItem>> children(MediaItem parent) async {
+    if (parent.kind == MediaKind.album) throw StateError('album gone');
+    return super.children(parent);
+  }
+}
+
 /// Records the limits the car asks for.
 class LimitDemo extends DemoBackend {
   LimitDemo(this.limits) : super(demoServer);
@@ -2062,11 +2072,13 @@ void main() {
           const StandardMethodCodec().encodeMethodCall(
               const MethodCall('log', 'state playing for=track:s:1 queue#0=track:s:1')),
           (_) {});
-      expect(log.entries.single.message,
-          'car sees state playing for=track:s:1 queue#0=track:s:1');
+      expect(log.entries.map((e) => e.message), [
+        'session watch: starting',
+        'car sees state playing for=track:s:1 queue#0=track:s:1',
+      ]);
     });
 
-    testWidgets('no session watch (TV, desktop) is fine', (tester) async {
+    testWidgets('no session watch (TV, desktop) is fine and logged', (tester) async {
       const channel = MethodChannel('app.marquee.marquee/car_watch');
       final messenger = tester.binding.defaultBinaryMessenger;
       // What a build without the native side answers.
@@ -2075,7 +2087,9 @@ void main() {
       addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
       final log = CarLog();
       await watchCarSession(log);
-      expect(log.entries, isEmpty);
+      // Says so, rather than going quiet.
+      expect(log.entries.map((e) => e.message),
+          ['session watch: starting', contains('session watch unavailable')]);
     });
 
     test('connection errors keep no host, address or cookie', () {
@@ -2086,14 +2100,15 @@ void main() {
       log.add('SocketException: Connection refused (OS Error: x), address = 203.0.113.9, port = 32400');
       log.add('tried 192.168.1.5:32400 and [2001:db8::1]:32400 and fe80::1ff:fe23:4567:890a');
       log.add('Authorization: Bearer abc.def.ghi; Cookie: connect.sid=s%3Aqqq');
+      log.add('SocketException: Connection timed out, host: music.example.org, port: 32400');
       final text = log.toText();
       for (final secret in ['plex.direct', '192-168-1-5', '0123456789abcdef', '203.0.113.9',
-          '192.168.1.5', '2001:db8', 'fe80', 'abc.def.ghi', 's%3Aqqq']) {
+          '192.168.1.5', '2001:db8', 'fe80', 'abc.def.ghi', 's%3Aqqq', 'music.example.org']) {
         expect(text, isNot(contains(secret)), reason: secret);
       }
       // One line per entry, even for an error spanning several.
       expect(log.entries.every((e) => !e.message.contains('\n')), isTrue);
-      expect(text.split('\n'), hasLength(4));
+      expect(text.split('\n'), hasLength(5));
     });
 
     test('a steady stream of events still saves now and then', () async {
@@ -2142,6 +2157,30 @@ void main() {
       await handler.dispose();
       await engine.dispose();
     });
+  });
+
+  test('a tap that finds nothing to play logs why', () async {
+    final log = CarLog();
+    final demo = AlbumFailsDemo();
+    final engine = MusicEngine(player: FakeTrackPlayer(), backendFor: (_) => demo);
+    final music = (await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+    final handler = MarqueeAudioHandler(engine,
+        CarLibrary(() => {'demo': demo}, (_) async => [music]), log: log);
+    final album = (await handler.getChildren('tab:albums')).first;
+    await handler.playFromMediaId(album.id);
+    final line = log.entries.map((e) => e.message).firstWhere((m) => m.contains('nothing to play'));
+    expect(line, contains('album gone'));
+    // The same through "prepare" (some cars prepare, then play).
+    await handler.prepareFromMediaId(album.id);
+    expect(log.entries.map((e) => e.message),
+        contains('prepare ${album.id} → nothing to play: Bad state: album gone'));
+    // A server that's gone has its own reason.
+    await handler.playFromMediaId('album:nowhere:1');
+    expect(log.entries.last.message, isNot(contains('album gone')));
+    expect(log.entries.map((e) => e.message).where((m) => m.contains('nothing to play')).last,
+        endsWith('that server is no longer signed in'));
+    await handler.dispose();
+    await engine.dispose();
   });
 
   testWidgets('Settings: the car log lists entries and copies them',

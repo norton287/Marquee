@@ -416,18 +416,25 @@ class CarLibrary {
   }
 
   /// The queue a tap on [id] plays, and where in it to start.
-  Future<(List<MediaItem>, int)?> resolve(String id) async {
+  /// [whyNot] hears why, when there's nothing to play (for the car log).
+  Future<(List<MediaItem>, int)?> resolve(String id,
+      {void Function(String why)? whyNot}) async {
+    Null none(String why) {
+      whyNot?.call(why);
+      return null;
+    }
+
     if (id == 'shuffle:all') {
       final tracks = await _eachMusicLibrary(
           (b, l) => b.randomTracks(l, limit: shuffleCap));
-      if (tracks.isEmpty) return null;
+      if (tracks.isEmpty) return none('no tracks from any music library');
       return ((tracks..shuffle()).take(shuffleCap).toList(), 0);
     }
     final parsed = _parse(id);
-    if (parsed == null) return null;
+    if (parsed == null) return none('not something to play');
     final (kind, serverId, itemId, container) = parsed;
     final backend = backends()[serverId];
-    if (backend == null) return null;
+    if (backend == null) return none('that server is no longer signed in');
     // A playlist is read a page at a time: a smart one can match a whole
     // library. Every track the car shows is within that page.
     Future<List<MediaItem>> tracksOf(MediaKind k, String of) async => [
@@ -441,12 +448,12 @@ class CarLibrary {
         case 'shuffle':
           final tracks = await tracksOf(MediaKind.playlist, itemId);
           return tracks.isEmpty
-              ? null
+              ? none('the playlist has no tracks')
               : ((tracks..shuffle()).take(shuffleCap).toList(), 0);
         case 'album' || 'playlist':
           final tracks = await tracksOf(
               kind == 'album' ? MediaKind.album : MediaKind.playlist, itemId);
-          return tracks.isEmpty ? null : (tracks, 0);
+          return tracks.isEmpty ? none('no tracks') : (tracks, 0);
         case 'artist':
           final albums =
               await backend.children(_ref(serverId, itemId, MediaKind.artist));
@@ -457,7 +464,9 @@ class CarLibrary {
                   .catchError((Object _) => <MediaItem>[]),
           ]);
           final tracks = [for (final p in parts) ...p];
-          return tracks.isEmpty ? null : (tracks.take(shuffleCap).toList(), 0);
+          return tracks.isEmpty
+              ? none('no tracks (or no album could be read)')
+              : (tracks.take(shuffleCap).toList(), 0);
         case 'track':
           // A list the car just showed (Tracks: recent, most played, A–Z);
           // forgotten (many lists later, or a restart): build it again.
@@ -484,7 +493,9 @@ class CarLibrary {
           final track = await backend.item(itemId, kind: MediaKind.track);
           return ([track], 0);
       }
-    } catch (_) {}
-    return null;
+    } catch (e) {
+      return none('$e');
+    }
+    return none('not something to play');
   }
 }

@@ -43,7 +43,11 @@ object CarWatch {
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL).apply {
             setMethodCallHandler { call, result ->
                 if (call.method == "start") {
-                    start(app)
+                    try {
+                        start(app)
+                    } catch (e: Exception) {
+                        log("watch: couldn't start: ${e.javaClass.simpleName} ${e.message}")
+                    }
                     result.success(null)
                 } else {
                     result.notImplemented()
@@ -57,7 +61,9 @@ object CarWatch {
     }
 
     private fun start(context: Context) {
-        if (controller != null || browser != null) return
+        if (controller != null) return log("watch: already watching")
+        if (browser != null) return log("watch: still connecting")
+        log("watch: connecting")
         // Connect like a car would, take the session token, then let go of
         // the service (a bound service would outlive "stop").
         val b = MediaBrowser(
@@ -68,7 +74,8 @@ object CarWatch {
                     val token = browser?.sessionToken
                     browser?.disconnect()
                     browser = null
-                    if (token != null) watch(context, token)
+                    if (token == null) log("watch: connected without a session")
+                    else watch(context, token)
                 }
 
                 override fun onConnectionFailed() {

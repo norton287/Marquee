@@ -110,6 +110,7 @@ class CarLog {
       .replaceAll(RegExp(r"Failed host lookup: '[^']*'", caseSensitive: false),
           'Failed host lookup: <host>')
       .replaceAll(RegExp(r'address = \S+, port = \d+'), 'address = <address>')
+      .replaceAll(RegExp(r'host: \S+, port: \d+'), 'host: <host>')
       // IPv4 (with a port) and IPv6.
       .replaceAll(RegExp(r'\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b'), '<address>')
       .replaceAll(
