@@ -378,4 +378,9 @@ class AppStorage {
   /// holds no tokens or addresses (CarLog scrubs them).
   Future<String?> readCarLog() => _store.read('carLog');
   Future<void> saveCarLog(String json) => _store.write('carLog', json);
+
+  /// The car's lists from the last run (titles, ids, art links to the app's
+  /// own provider; no tokens or addresses).
+  Future<String?> readCarLists() => _store.read('carLists');
+  Future<void> saveCarLists(String json) => _store.write('carLists', json);
 }

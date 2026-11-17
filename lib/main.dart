@@ -164,6 +164,9 @@ Future<void> _startMusicSession(
     }
   });
 
+  // The car's lists from the last run: there for the car's first request.
+  final storage = container.read(storageProvider);
+  final lastLists = await storage.readCarLists();
   try {
     final handler = await AudioService.init(
       builder: () => MarqueeAudioHandler(
@@ -184,7 +187,8 @@ Future<void> _startMusicSession(
             (await AudioService.cacheManager.getSingleFile(remote.toString())).path),
         carArt: _carArt,
         log: container.read(carLogProvider),
-      ),
+        remember: storage.saveCarLists,
+      )..restore(lastLists),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'app.marquee.marquee.music',
         androidNotificationChannelName: 'Music',

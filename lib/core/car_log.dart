@@ -133,6 +133,11 @@ class CarLog {
               '${e.at.millisecond.toString().padLeft(3, '0')} ${e.message}',
       ].join('\n');
 
+  /// What Copy sends: newest first and only the last [last], so a long
+  /// paste that gets cut keeps the part that matters.
+  String toShareText({int last = 100}) =>
+      toText().split('\n').reversed.take(last).join('\n');
+
   /// Saves what's pending, then ignores further entries.
   void dispose() {
     if (_closed) return;

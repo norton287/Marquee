@@ -331,6 +331,23 @@ class BrokenCarLibrary extends CarLibrary {
   Future<List<CarNode>> search(String query) => Future.error(StateError('boom'));
 }
 
+/// Records the limits the car asks for.
+class LimitDemo extends DemoBackend {
+  LimitDemo(this.limits) : super(demoServer);
+  final Map<String, int> limits;
+  @override
+  Future<List<MediaItem>> recentTracks(Library library, {int limit = 200}) {
+    limits['recent'] = limit;
+    return super.recentTracks(library, limit: limit);
+  }
+
+  @override
+  Future<List<MediaItem>> topTracks(Library library, {int limit = 200}) {
+    limits['top'] = limit;
+    return super.topTracks(library, limit: limit);
+  }
+}
+
 void main() {
   const sizes = {
     'phone': (Size(390, 844), false),
@@ -1845,6 +1862,51 @@ void main() {
       expect(handler.mediaItem.value?.id, album.id);
     });
 
+    test("the car's prepare-then-play is handled (and logged)", () async {
+      final log = CarLog();
+      final logged = MarqueeAudioHandler(engine, car, log: log);
+      final album = (await logged.getChildren('tab:albums')).first;
+      final tracks = await logged.getChildren(album.id);
+      await logged.prepareFromMediaId(tracks[1].id);
+      await settle();
+      await logged.play();
+      await settle();
+      expect(engine.state.current?.title, tracks[1].title);
+      expect(logged.mediaItem.value?.id, tracks[1].id);
+      expect(log.toText(), contains('prepare ${tracks[1].id}'));
+      await logged.prepare(); // on connect, nothing named: no surprise playback
+      await logged.playFromUri(Uri.parse('content://x/y'));
+      expect(log.toText(), contains('prepare (nothing named)'));
+      expect(log.toText(), contains('play from a link: not supported'));
+      await logged.dispose();
+    });
+
+    test('car lists are remembered across restarts (answered at once)',
+        () async {
+      String? saved;
+      final first = MarqueeAudioHandler(engine, car,
+          remember: (json) async => saved = json,
+          rememberAfter: const Duration(milliseconds: 10));
+      final albums = await first.getChildren('tab:albums');
+      await first.getChildren('root');
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(saved, isNotNull);
+      await first.dispose();
+      // Next start: the server isn't reachable yet, the lists are there.
+      final servers = <String, MediaBackend>{'demo': UnreachableDemo()};
+      final music = (await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+      final next = MarqueeAudioHandler(engine,
+          CarLibrary(() => servers, (_) async => [music],
+              timeout: const Duration(milliseconds: 200)))
+        ..restore(saved);
+      final again = await next
+          .getChildren('tab:albums')
+          .timeout(const Duration(milliseconds: 100));
+      expect(again.map((m) => m.id), albums.map((m) => m.id));
+      expect(again.first.title, albums.first.title);
+      await next.dispose();
+    });
+
     test('refreshRoot tells the car the menu changed', () async {
       await handler.refreshRoot();
       expect(notified, ['root']);
@@ -1903,6 +1965,17 @@ void main() {
       expect(text, isNot(contains('zzz')));
       expect(text, isNot(contains('secret')));
       expect(text, contains('failed:'));
+    });
+
+    test('what Copy sends: newest first, the last 100', () {
+      final log = CarLog();
+      for (var i = 0; i < 150; i++) {
+        log.add('event $i');
+      }
+      final lines = log.toShareText().split('\n');
+      expect(lines, hasLength(100));
+      expect(lines.first, endsWith('event 149'));
+      expect(lines.last, endsWith('event 50'));
     });
 
     test('connection errors keep no host, address or cookie', () {
@@ -2322,6 +2395,36 @@ void main() {
       final album = (await make().children('tab:albums')).first;
       // The demo's music sits in another library than the chosen one.
       expect(await car.search(album.title), isEmpty);
+    });
+
+    test('a list asked while the address check runs waits for it', () async {
+      // The car starts the app: root starts the check, the tabs follow at once.
+      final servers = <String, MediaBackend>{'home': UnreachableDemo()};
+      final car = CarLibrary(
+        () => servers,
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        // Like ServersNotifier.revalidate: a Future.wait underneath.
+        reconnect: (id) => Future.wait([
+          Future<void>.delayed(const Duration(milliseconds: 100), () => servers[id] = demo),
+        ]),
+        probeAfter: const Duration(seconds: 10), // no help from that here
+        timeout: const Duration(seconds: 3),
+      );
+      await car.children('root');
+      final watch = Stopwatch()..start();
+      expect(await car.children('tab:albums'), isNotEmpty);
+      expect(watch.elapsed, lessThan(const Duration(seconds: 1)));
+    });
+
+    test('Recently added and Most played ask for 100 tracks', () async {
+      final limits = <String, int>{};
+      final counting = LimitDemo(limits);
+      final car = CarLibrary(() => {'demo': counting}, (id) async => [
+            Library(serverId: id, id: music.id, title: 'Music', kind: LibraryKind.music)]);
+      await car.children('tracks:recent');
+      await car.children('tracks:top');
+      expect(limits, {'recent': 100, 'top': 100});
     });
 
     test('opening the car menu re-checks every server', () async {

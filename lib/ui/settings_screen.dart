@@ -475,7 +475,7 @@ class _CarLogPanel extends StatelessWidget {
                     onPressed: lines.isEmpty
                         ? null
                         : () async {
-                            await Clipboard.setData(ClipboardData(text: log.toText()));
+                            await Clipboard.setData(ClipboardData(text: log.toShareText()));
                             if (context.mounted) {
                               (panelMessenger(context)..hideCurrentSnackBar()).showSnackBar(
                                   const SnackBar(content: Text('Copied: paste it to send it')));

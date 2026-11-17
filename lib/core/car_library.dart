@@ -76,7 +76,10 @@ class CarLibrary {
   Future<void> _probe(String id) {
     final reconnect = this.reconnect;
     if (reconnect == null) return Future.value();
+    // `.then((_) {})`: a plain Future<void> (revalidate is a Future.wait
+    // underneath, and its List type broke `.timeout(onTimeout:)` later).
     return _probing[id] ??= reconnect(id)
+        .then((_) {})
         .catchError((Object _) {})
         // A block, not `=>`: remove() returns this very future, and
         // whenComplete would wait for it (forever).
@@ -125,7 +128,13 @@ class CarLibrary {
     /// connection (and two checks can save in turn).
     Future<List<T>> one(String id) async {
       var probed = false;
-      Future<void>? check;
+      Future<void>? check = _probing[id];
+      // A check already running (the car just opened Marquee): wait for it
+      // rather than ask the old address and hang.
+      if (check != null) {
+        probed = true;
+        await check.timeout(timeout, onTimeout: () {});
+      }
       for (var tries = 0; tries < 4; tries++) {
         final b = backends()[id];
         if (b == null) return <T>[];
@@ -294,10 +303,10 @@ class CarLibrary {
         ];
       case 'tracks:recent':
         return _trackList(parentId,
-            await _eachMusicLibrary((b, l) => b.recentTracks(l, limit: 200)));
+            await _eachMusicLibrary((b, l) => b.recentTracks(l, limit: 100)));
       case 'tracks:top':
         return _trackList(parentId,
-            await _eachMusicLibrary((b, l) => b.topTracks(l, limit: 200)));
+            await _eachMusicLibrary((b, l) => b.topTracks(l, limit: 100)));
       // All artists / albums in one list (not in the menu any more; the
       // letter folders replace them).
       case 'tab:artists':

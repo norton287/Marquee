@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:audio_service/audio_service.dart' as as_;
 
@@ -62,7 +63,9 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       this.artDeadline = const Duration(seconds: 2),
       this.keepFreshFor = const Duration(minutes: 1),
       this.answerWithin = const Duration(seconds: 8),
-      this.log}) {
+      this.log,
+      this.remember,
+      this.rememberAfter = const Duration(seconds: 2)}) {
     _sub = engine.states.listen(_publish);
     _publish(engine.state);
   }
@@ -99,6 +102,69 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// What the car asked and what was answered (Settings → Car log).
   final CarLog? log;
 
+  /// Saves the car's lists so they survive a restart: the car often starts
+  /// the app itself, and lists that need the server came back empty at first.
+  final Future<void> Function(String json)? remember;
+  final Duration rememberAfter;
+  Timer? _remembering;
+
+  /// The lists remembered: the menu plus the most recently used ones.
+  static const _rememberAtMost = 40;
+
+  static List<Object?> _itemJson(as_.MediaItem m) => [
+        m.id,
+        m.title,
+        m.artist,
+        // Only links the car can open; a private file isn't one.
+        m.artUri?.scheme == 'content' ? '${m.artUri}' : null,
+        m.playable ?? false,
+      ];
+
+  void _scheduleRemember() {
+    if (remember == null) return;
+    _remembering?.cancel();
+    _remembering = Timer(rememberAfter, _rememberNow);
+  }
+
+  void _rememberNow() {
+    _remembering?.cancel();
+    _remembering = null;
+    final save = remember;
+    if (save == null) return;
+    final ids = _kept.keys.toList().reversed.take(_rememberAtMost).toList().reversed;
+    final json = jsonEncode({
+      for (final id in ids)
+        if (_kept[id]!.length <= CarLibrary.listCap)
+          id: [for (final m in _kept[id]!) _itemJson(m)],
+    });
+    unawaited(Future(() => save(json)).catchError((Object _) {}));
+  }
+
+  /// Lists from the last run: shown at once, refreshed on first look.
+  void restore(String? json) {
+    if (json == null) return;
+    try {
+      final map = jsonDecode(json) as Map<String, dynamic>;
+      for (final e in map.entries) {
+        final list = [
+          for (final raw in e.value as List)
+            as_.MediaItem(
+              id: (raw as List)[0] as String,
+              title: raw[1] as String,
+              artist: raw[2] as String?,
+              artUri: raw[3] == null ? null : Uri.parse(raw[3] as String),
+              playable: raw[4] as bool,
+            ),
+        ];
+        if (list.isEmpty) continue;
+        _kept[e.key] = list;
+        _keptAt[e.key] = DateTime(0); // stale: refreshed when next shown
+      }
+    } catch (_) {
+      // A bad save: start without it.
+    }
+  }
+
   Future<void> _notify(String id) async {
     log?.add('redraw $id');
     await notifyChanged?.call(id);
@@ -128,6 +194,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     _kept.remove(id);
     _kept[id] = list;
     _keptAt[id] = DateTime.now();
+    _scheduleRemember();
     while (_kept.length > _keepAtMost) {
       final oldest = _kept.keys.first;
       _kept.remove(oldest);
@@ -307,6 +374,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       _epoch++;
       _kept.clear();
       _keptAt.clear();
+      _scheduleRemember();
     } else {
       // Servers or the profile changed: everything kept is looked at again
       // when next shown, and the lists on screen are checked now (redrawn
@@ -388,6 +456,34 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     }
     await _play(queue, tapped: mediaId);
   }
+
+  /// Some Android Auto versions send "prepare" for a tap and "play" after;
+  /// preparing the tapped item means starting it (play then just carries on).
+  @override
+  Future<void> prepareFromMediaId(String mediaId,
+      [Map<String, dynamic>? extras]) async {
+    log?.add('prepare $mediaId');
+    await playFromMediaId(mediaId, extras);
+  }
+
+  @override
+  Future<void> prepareFromSearch(String query,
+      [Map<String, dynamic>? extras]) async {
+    log?.add('prepare search "$query"');
+    await playFromSearch(query, extras);
+  }
+
+  /// On connect, with nothing named: nothing to start (no surprise music).
+  @override
+  Future<void> prepare() async => log?.add('prepare (nothing named)');
+
+  @override
+  Future<void> playFromUri(Uri uri, [Map<String, dynamic>? extras]) async =>
+      log?.add('play from a link: not supported');
+
+  @override
+  Future<void> prepareFromUri(Uri uri, [Map<String, dynamic>? extras]) async =>
+      log?.add('play from a link: not supported');
 
   /// "Hey Google, play … on Marquee". Nothing named → shuffle everything.
   @override
@@ -543,5 +639,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     _logState();
   }
 
-  Future<void> dispose() => _sub.cancel();
+  Future<void> dispose() async {
+    if (_remembering != null) _rememberNow();
+    await _sub.cancel();
+  }
 }
