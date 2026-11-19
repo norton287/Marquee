@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- audio_service finds its control icons by name at run time
+     (getIdentifier("audio_service_stop") etc., names sent from Dart), so the
+     release build's resource shrinker saw them as unused and removed them.
+     Without the Stop icon every play state failed to build ("You must specify
+     an icon resource id to build a CustomAction") before reaching Android:
+     Android Auto never saw anything playing ("Could not load your selection"). -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/audio_service_*" />
