@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:audio_service/audio_service.dart' as as_;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import 'car_library.dart';
 import 'car_log.dart';
@@ -55,6 +56,21 @@ String carArtName(String url) {
   String half(int v) => (v & 0xffffffff).toRadixString(16).padLeft(8, '0');
   return '${half(h >> 32)}${half(h)}.jpg';
 }
+
+/// Tells Android Auto that a list changed, so it asks for it again.
+///
+/// audio_service's own `AudioServiceBackground.notifyChildrenChanged` sends
+/// no options, its native side passes them on as null, and androidx's
+/// `MediaBrowserServiceCompat.notifyChildrenChanged(id, options)` throws
+/// "options cannot be null": no redraw ever reached the car. This is the
+/// same call on the plugin's own channel (audio_service 0.18.19), with
+/// empty options. (`subscribeToChildren` only covers lists the car has
+/// already opened: the cold-start root redraw needs this.)
+Future<void> notifyCarListChanged(String parentId,
+        {MethodChannel channel =
+            const MethodChannel('com.ryanheise.audio_service.handler.methods')}) =>
+    channel.invokeMethod<void>('notifyChildrenChanged',
+        {'parentMediaId': parentId, 'options': <String, dynamic>{}});
 
 class MarqueeAudioHandler extends as_.BaseAudioHandler {
   MarqueeAudioHandler(this.engine, this.library,
@@ -198,9 +214,16 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     }
   }
 
+  /// Never throws: a failed redraw only means the car shows the old list
+  /// (and in main() a throw here once skipped the rest of the session's
+  /// start-up). Logged, since every redraw used to fail unseen.
   Future<void> _notify(String id) async {
     log?.add('redraw $id');
-    await notifyChanged?.call(id);
+    try {
+      await notifyChanged?.call(id);
+    } catch (e) {
+      log?.add('redraw $id failed: $e');
+    }
   }
 
   /// Car lists kept while the app runs (never empty ones: those may be a

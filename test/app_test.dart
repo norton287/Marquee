@@ -1528,6 +1528,38 @@ void main() {
       await engine.dispose();
     });
 
+    // The deprecated notifyChildrenChanged sent no options, androidx threw
+    // ("options cannot be null"), and the failed first redraw ended the music
+    // session's start-up in main() before the session watch and the refresh
+    // hooks were set up (two drives with no "car sees" line).
+    test('a redraw that fails is logged and never throws', () async {
+      final log = CarLog();
+      final failing = MarqueeAudioHandler(engine, car,
+          log: log,
+          notifyChanged: (id) async => throw PlatformException(
+              code: 'options cannot be null in notifyChildrenChanged'));
+      await failing.refreshRoot();
+      await failing.refreshAll(clear: true);
+      expect(log.entries.map((e) => e.message),
+          contains(allOf(startsWith('redraw root failed'), contains('options cannot be null'))));
+      await failing.dispose();
+    });
+
+    testWidgets('list changes reach Android with options', (tester) async {
+      const channel = MethodChannel('com.ryanheise.audio_service.handler.methods');
+      final messenger = tester.binding.defaultBinaryMessenger;
+      final calls = <MethodCall>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      await notifyCarListChanged('root');
+      expect(calls.single.method, 'notifyChildrenChanged');
+      expect(calls.single.arguments,
+          {'parentMediaId': 'root', 'options': <String, dynamic>{}});
+    });
+
     test('the car browses the tabs', () async {
       final root = await handler.getChildren('root');
       expect(root.map((m) => m.title), ['Recent', 'Playlists', 'Library', 'Tracks']);

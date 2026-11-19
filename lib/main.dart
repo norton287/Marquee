@@ -181,8 +181,9 @@ Future<void> _startMusicSession(
           isHidden: (server, library) =>
               container.read(settingsProvider).hiddenOn(server).contains(library),
         ),
-        // ignore: deprecated_member_use
-        notifyChanged: (id) => AudioServiceBackground.notifyChildrenChanged(id),
+        // Not audio_service's own notifyChildrenChanged: it sends null
+        // options, which androidx refuses (see notifyCarListChanged).
+        notifyChanged: notifyCarListChanged,
         // A private copy: artwork links carry the server token.
         localArt: (remote) async => Uri.file(
             (await AudioService.cacheManager.getSingleFile(remote.toString())).path),
@@ -208,12 +209,14 @@ Future<void> _startMusicSession(
         androidBrowsableRootExtras: {'android.media.browse.SEARCH_SUPPORTED': true},
       ),
     );
-    // A car that asked for the menu before Dart was ready may have an empty
-    // one; and servers, libraries or the profile changing changes every list.
-    await handler.refreshRoot();
-    // What the car actually receives, for the car log.
+    // What the car actually receives, for the car log: first, so nothing
+    // after it can keep the diagnostics from starting.
     await watchCarSession(container.read(carLogProvider),
         errors: AudioService.asyncError);
+    // A car that asked for the menu before Dart was ready may have an empty
+    // one (never throws); and servers, libraries or the profile changing
+    // changes every list.
+    await handler.refreshRoot();
     container.listen(backendsProvider, (_, _) => handler.refreshAll());
     container.listen(settingsProvider.select((s) => s.carMusicLibrary),
         (_, _) => handler.refreshAll(clear: true));
