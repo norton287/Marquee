@@ -126,62 +126,64 @@ class CarLibrary {
   Future<List<T>> _each<T>(
       Future<List<T>> Function(String serverId, MediaBackend b) read,
       {Iterable<String>? servers}) async {
-    /// [read] at the server's current address. Never holds a server object
-    /// across a wait: an address check replaces it and closes the old one's
-    /// connection (and two checks can save in turn).
-    Future<List<T>> one(String id) async {
-      var probed = false;
-      Future<void>? check = _probing[id];
-      // A check already running (the car just opened Marquee): wait for it
-      // rather than ask the old address and hang.
-      if (check != null) {
-        probed = true;
-        await check.timeout(timeout, onTimeout: () {});
-      }
-      for (var tries = 0; tries < 4; tries++) {
-        final b = backends()[id];
-        if (b == null) return <T>[];
-        final attempt = read(id, b);
-        // If it's overtaken, its late error must go nowhere.
-        unawaited(attempt.then((_) {}, onError: (Object _) {}));
-        try {
-          if (probed || reconnect == null) return await attempt;
-          try {
-            return await attempt.timeout(probeAfter);
-          } on TimeoutException {
-            // Slow or unreachable: check its addresses while it carries on.
-            probed = true;
-            check = _probe(id);
-            final probe = check.then((_) => _probed);
-            final first = await Future.any<Object?>([attempt, probe]);
-            if (!identical(first, _probed)) return first as List<T>;
-            // Same address: the running read is all there is.
-            if (identical(backends()[id], b)) return await attempt;
-            continue; // new address: read there
-          }
-        } catch (e) {
-          if (!isConnectionError(e)) rethrow;
-          // A check still running may be about to find the working address
-          // (the home one failed before it finished): wait for it.
-          await check;
-          // The address changed meanwhile: try the current one.
-          if (!identical(backends()[id], b)) continue;
-          if (probed || reconnect == null) rethrow;
-          probed = true;
-          // Then once more, at the new address or (a passing glitch) the same.
-          await (check = _probe(id));
-        }
-      }
-      return <T>[];
-    }
-
     final parts = await Future.wait([
       for (final id in [...(servers ?? (await _scope()).$1)])
-        one(id)
+        _on(id, (b) => read(id, b))
             .timeout(timeout, onTimeout: () => <T>[])
             .catchError((Object _) => <T>[]),
     ]);
     return [for (final p in parts) ...p];
+  }
+
+  /// [read] at server [id]'s current address: every read of a server goes
+  /// through here (lists and taps alike). Never holds a server object across
+  /// a wait: an address check replaces it and closes the old one's connection
+  /// (and two checks can save in turn). Throws [StateError] when the server
+  /// is signed out, and the read's own error when it can't be reached.
+  Future<T> _on<T>(String id, Future<T> Function(MediaBackend b) read) async {
+    var probed = false;
+    Future<void>? check = _probing[id];
+    // A check already running (the car just opened Marquee): wait for it
+    // rather than ask the old address and hang.
+    if (check != null) {
+      probed = true;
+      await check.timeout(timeout, onTimeout: () {});
+    }
+    for (var tries = 0; tries < 4; tries++) {
+      final b = backends()[id];
+      if (b == null) throw StateError('that server is no longer signed in');
+      final attempt = read(b);
+      // If it's overtaken, its late error must go nowhere.
+      unawaited(attempt.then((_) {}, onError: (Object _) {}));
+      try {
+        if (probed || reconnect == null) return await attempt;
+        try {
+          return await attempt.timeout(probeAfter);
+        } on TimeoutException {
+          // Slow or unreachable: check its addresses while it carries on.
+          probed = true;
+          check = _probe(id);
+          final probe = check.then((_) => _probed);
+          final first = await Future.any<Object?>([attempt, probe]);
+          if (!identical(first, _probed)) return first as T;
+          // Same address: the running read is all there is.
+          if (identical(backends()[id], b)) return await attempt;
+          continue; // new address: read there
+        }
+      } catch (e) {
+        if (!isConnectionError(e)) rethrow;
+        // A check still running may be about to find the working address
+        // (the home one failed before it finished): wait for it.
+        await check;
+        // The address changed meanwhile: try the current one.
+        if (!identical(backends()[id], b)) continue;
+        if (probed || reconnect == null) rethrow;
+        probed = true;
+        // Then once more, at the new address or (a passing glitch) the same.
+        await (check = _probe(id));
+      }
+    }
+    throw StateError("the server's address kept changing");
   }
 
   Future<List<T>> _eachMusicLibrary<T>(
@@ -337,24 +339,28 @@ class CarLibrary {
     final parsed = _parse(parentId);
     if (parsed == null) return const [];
     final (kind, serverId, id, _) = parsed;
-    final backend = backends()[serverId];
-    if (backend == null) return const [];
+    if (!backends().containsKey(serverId)) return const [];
+    // At the server's current address, after any running address check.
+    Future<List<MediaItem>> read(Future<List<MediaItem>> Function(MediaBackend b) r) =>
+        _on(serverId, r).timeout(timeout);
     try {
       switch (kind) {
         case 'artist':
-          final albums = await backend.children(_ref(serverId, id, MediaKind.artist));
+          final albums =
+              await read((b) => b.children(_ref(serverId, id, MediaKind.artist)));
           return [for (final a in albums.take(listCap)) _node(a)];
         case 'album':
-          final tracks = await backend.children(_ref(serverId, id, MediaKind.album));
+          final tracks =
+              await read((b) => b.children(_ref(serverId, id, MediaKind.album)));
           _rememberTracks('album:$serverId:$id',
               [for (final t in tracks) if (t.kind == MediaKind.track) t]);
           return [
             for (final t in tracks.take(listCap)) _node(t, container: 'album:$id')
           ];
         case 'playlist':
-          final tracks = await backend.playlistTracks(
+          final tracks = await read((b) => b.playlistTracks(
               _ref(serverId, id, MediaKind.playlist),
-              limit: listCap);
+              limit: listCap));
           _rememberTracks('playlist:$serverId:$id',
               [for (final t in tracks) if (t.kind == MediaKind.track) t]);
           return [
@@ -433,14 +439,20 @@ class CarLibrary {
     final parsed = _parse(id);
     if (parsed == null) return none('not something to play');
     final (kind, serverId, itemId, container) = parsed;
-    final backend = backends()[serverId];
-    if (backend == null) return none('that server is no longer signed in');
+    if (!backends().containsKey(serverId)) {
+      return none('that server is no longer signed in');
+    }
+    // Every read at the server's current address, after any running address
+    // check (the car often taps right after starting Marquee, while the
+    // check may move the server and close the old connection).
+    Future<R> on<R>(Future<R> Function(MediaBackend b) read) =>
+        _on(serverId, read).timeout(timeout);
     // A playlist is read a page at a time: a smart one can match a whole
     // library. Every track the car shows is within that page.
     Future<List<MediaItem>> tracksOf(MediaKind k, String of) async => [
-          for (final t in k == MediaKind.playlist
-              ? await backend.playlistTracks(_ref(serverId, of, k), limit: listCap)
-              : await backend.children(_ref(serverId, of, k)))
+          for (final t in await on((b) => k == MediaKind.playlist
+              ? b.playlistTracks(_ref(serverId, of, k), limit: listCap)
+              : b.children(_ref(serverId, of, k))))
             if (t.kind == MediaKind.track) t,
         ];
     try {
@@ -456,7 +468,7 @@ class CarLibrary {
           return tracks.isEmpty ? none('no tracks') : (tracks, 0);
         case 'artist':
           final albums =
-              await backend.children(_ref(serverId, itemId, MediaKind.artist));
+              await on((b) => b.children(_ref(serverId, itemId, MediaKind.artist)));
           // All albums at once: one after another made "play <artist>" slow.
           final parts = await Future.wait([
             for (final a in albums)
@@ -490,7 +502,7 @@ class CarLibrary {
             final at = tracks.indexWhere((t) => t.id == itemId);
             if (at >= 0) return (tracks, at);
           }
-          final track = await backend.item(itemId, kind: MediaKind.track);
+          final track = await on((b) => b.item(itemId, kind: MediaKind.track));
           return ([track], 0);
       }
     } catch (e) {

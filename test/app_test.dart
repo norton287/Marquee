@@ -259,6 +259,37 @@ class ClosedDemo extends DemoBackend {
   }
 }
 
+/// A server object whose connection was closed, for what a tap reads (an
+/// album's or playlist's tracks, one track).
+class ClosedReadsDemo extends DemoBackend {
+  ClosedReadsDemo() : super(demoServer);
+  int calls = 0;
+  Never _closed() => throw DioException(
+      requestOptions: RequestOptions(path: '/x'),
+      type: DioExceptionType.connectionError,
+      message: "Dio can't establish a new connection after it was closed.");
+  @override
+  Future<List<MediaItem>> children(MediaItem parent) async {
+    calls++;
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    _closed();
+  }
+
+  @override
+  Future<List<MediaItem>> playlistTracks(MediaItem playlist, {int? limit}) async {
+    calls++;
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    _closed();
+  }
+
+  @override
+  Future<MediaItem> item(String id, {MediaKind? kind}) async {
+    calls++;
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    _closed();
+  }
+}
+
 /// The saved address fails (not hangs) after a while: "no route to host".
 class FailsLaterDemo extends DemoBackend {
   FailsLaterDemo() : super(demoServer);
@@ -2078,6 +2109,26 @@ void main() {
       ]);
     });
 
+    // audio_service catches every native failure (play state, song info,
+    // queue) and only puts it on AudioService.asyncError: unheard, a failed
+    // session start left no trace in the car log.
+    testWidgets("the music session's own errors reach the car log", (tester) async {
+      const channel = MethodChannel('app.marquee.marquee/car_watch');
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async => null);
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final errors = StreamController<Object>();
+      addTearDown(errors.close);
+      final log = CarLog();
+      await watchCarSession(log, errors: errors.stream);
+      errors.add(PlatformException(
+          code: 'android.app.ForegroundServiceStartNotAllowedException: '
+              'startForegroundService() not allowed'));
+      await tester.pump();
+      expect(log.entries.last.message,
+          allOf(startsWith('session error: '), contains('ForegroundServiceStartNotAllowed')));
+    });
+
     testWidgets('no session watch (TV, desktop) is fine and logged', (tester) async {
       const channel = MethodChannel('app.marquee.marquee/car_watch');
       final messenger = tester.binding.defaultBinaryMessenger;
@@ -2449,6 +2500,78 @@ void main() {
         timeout: const Duration(seconds: 3),
       );
       expect(await car.children('tab:albums'), isNotEmpty);
+    });
+
+    // The car started Marquee (opening the root checks every server's
+    // address) and the user tapped an album at once: the tap must wait for
+    // the check and read at the new address, not the closed old one.
+    test('a tap while the address check runs plays from the new address',
+        () async {
+      final albumId = (await make().children('tab:albums')).first.id;
+      final id = albumId.replaceFirst(':demo:', ':home:');
+      final closed = ClosedReadsDemo();
+      final servers = <String, MediaBackend>{'home': closed};
+      final car = CarLibrary(
+        () => servers,
+        (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+            kind: LibraryKind.music)],
+        reconnect: (id) async {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          servers[id] = demo;
+        },
+        timeout: const Duration(seconds: 3),
+      );
+      await car.children('root'); // starts the check
+      String? why;
+      final queue = await car.resolve(id, whyNot: (w) => why = w);
+      expect(why, isNull);
+      expect(queue!.$1, isNotEmpty);
+      expect(closed.calls, 0); // never asked the old address
+    });
+
+    test('a tap whose connection was closed reconnects and plays', () async {
+      final albumId = (await make().children('tab:albums')).first.id;
+      // A track with no list to play from (looked up on its own).
+      final trackId = (await make().children(albumId)).first.id.split('@').first;
+      for (final tapped in [albumId, trackId]) {
+        final closed = ClosedReadsDemo();
+        final servers = <String, MediaBackend>{'home': closed};
+        final reconnects = <String>[];
+        final car = CarLibrary(
+          () => servers,
+          (id) async => const [],
+          reconnect: (id) async {
+            reconnects.add(id);
+            servers[id] = demo;
+          },
+          timeout: const Duration(seconds: 3),
+        );
+        String? why;
+        final queue = await car.resolve(tapped.replaceFirst(':demo:', ':home:'),
+            whyNot: (w) => why = w);
+        expect(why, isNull, reason: tapped);
+        expect(queue!.$1, isNotEmpty, reason: tapped);
+        expect(reconnects, ['home'], reason: tapped);
+        expect(closed.calls, 1, reason: tapped);
+      }
+    });
+
+    test("an album's list waits for the address check too", () async {
+      final albumId = (await make().children('tab:albums')).first.id;
+      final closed = ClosedReadsDemo();
+      final servers = <String, MediaBackend>{'home': closed};
+      final car = CarLibrary(
+        () => servers,
+        (id) async => const [],
+        reconnect: (id) async {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          servers[id] = demo;
+        },
+        timeout: const Duration(seconds: 3),
+      );
+      await car.children('root');
+      expect(await car.children(albumId.replaceFirst(':demo:', ':home:')), isNotEmpty);
+      expect(closed.calls, 0); // never asked the old address
     });
 
     test('with one library chosen, only its server is asked (and checked)',

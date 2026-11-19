@@ -212,7 +212,8 @@ Future<void> _startMusicSession(
     // one; and servers, libraries or the profile changing changes every list.
     await handler.refreshRoot();
     // What the car actually receives, for the car log.
-    await watchCarSession(container.read(carLogProvider));
+    await watchCarSession(container.read(carLogProvider),
+        errors: AudioService.asyncError);
     container.listen(backendsProvider, (_, _) => handler.refreshAll());
     container.listen(settingsProvider.select((s) => s.carMusicLibrary),
         (_, _) => handler.refreshAll(clear: true));

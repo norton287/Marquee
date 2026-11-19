@@ -7,8 +7,15 @@ import 'car_log.dart';
 /// it sees becomes a "car sees …" line in the car log. Comparing those with
 /// the handler's own "state …" lines shows what actually reached Android and
 /// in which order. Phones only; elsewhere there's no native side.
+///
+/// [errors]: audio_service's `AudioService.asyncError`. It catches every
+/// native failure (play state, song info, queue) and reports it only there,
+/// so a session that failed to start (e.g. Android refusing the foreground
+/// service, which also skips making the session active) left no trace.
 Future<void> watchCarSession(CarLog log,
-    {MethodChannel channel = const MethodChannel('app.marquee.marquee/car_watch')}) async {
+    {MethodChannel channel = const MethodChannel('app.marquee.marquee/car_watch'),
+    Stream<Object>? errors}) async {
+  errors?.listen((e) => log.add('session error: $e'));
   channel.setMethodCallHandler((call) async {
     if (call.method == 'log') log.add('car sees ${call.arguments}');
   });

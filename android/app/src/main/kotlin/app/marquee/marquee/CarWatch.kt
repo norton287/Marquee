@@ -167,13 +167,64 @@ object CarWatch {
                 ?.firstOrNull { it.queueId == active }
                 ?.description?.mediaId ?: "-"
             val error = p.errorMessage?.let { " error=\"$it\"" } ?: ""
+            val on = when (ensureActive(p.state)) {
+                true -> "yes"
+                false -> "no"
+                null -> "?"
+            }
             // The queue is read now, not when the state was sent.
-            "state ${stateName(p.state)} for=$stateId queue#$active=$activeId (queue now)$error"
+            "state ${stateName(p.state)} for=$stateId queue#$active=$activeId (queue now) active=$on$error"
         }
         if (line == lastState) return
         lastState = line
         log(line)
     }
+
+    /**
+     * Whether audio_service's session is active (null: can't tell), making it
+     * active first if music is starting or playing and it isn't.
+     *
+     * Android Auto waits for the app's session to become active and playing
+     * after a tap ("Getting your selection…", then "Could not load your
+     * selection"). audio_service makes it active only in enterPlayingState,
+     * *after* `startForegroundService`, which Android 12+ may refuse while the
+     * app is in the background; the exception is caught and swallowed, the
+     * session stays inactive while the music plays, and audio_service never
+     * tries again (it already counts itself as playing). This callback runs
+     * on the main thread after audio_service's own handling of each state.
+     *
+     * The session is a private field: reflection, for audio_service 0.18.19
+     * (names kept in release builds by proguard-rules.pro).
+     */
+    private fun ensureActive(state: Int): Boolean? {
+        val session = try {
+            val cls = Class.forName("com.ryanheise.audioservice.AudioService")
+            val service = cls.getDeclaredField("instance").apply { isAccessible = true }.get(null)
+                ?: return null
+            cls.getDeclaredField("mediaSession").apply { isAccessible = true }.get(service)
+                ?: return null
+        } catch (e: Exception) {
+            if (!reflectionFailed) log("watch: can't see the session: ${e.javaClass.simpleName}")
+            reflectionFailed = true
+            return null
+        }
+        return try {
+            val active = session.javaClass.getMethod("isActive").invoke(session) as Boolean
+            val starting = state == PlaybackState.STATE_PLAYING ||
+                state == PlaybackState.STATE_BUFFERING ||
+                state == PlaybackState.STATE_CONNECTING
+            if (active || !starting) return active
+            session.javaClass.getMethod("setActive", Boolean::class.javaPrimitiveType)
+                .invoke(session, true)
+            log("watch: session was inactive while ${stateName(state)}: made it active")
+            true
+        } catch (e: Exception) {
+            log("watch: couldn't make the session active: ${e.javaClass.simpleName} ${e.message}")
+            null
+        }
+    }
+
+    private var reflectionFailed = false
 
     private fun queue() {
         val q = controller?.queue
