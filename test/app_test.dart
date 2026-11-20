@@ -169,6 +169,18 @@ class OfflineDemo extends DemoBackend {
   OfflineDemo() : super(demoServer);
   Never _down() => throw StateError('offline');
   @override
+  Future<List<FilterValue>> musicGenres(Library library) async => _down();
+  @override
+  Future<int> genreAlbumCount(Library library, FilterValue genre) async => _down();
+  @override
+  Future<List<MediaItem>> genreAlbums(Library library, FilterValue genre,
+          {String? letter, int limit = 500}) async =>
+      _down();
+  @override
+  Future<List<MediaItem>> genreTracks(Library library, FilterValue genre,
+          {int limit = 200}) async =>
+      _down();
+  @override
   Future<Paged> libraryItems(Library library,
           {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) async =>
       _down();
@@ -288,6 +300,20 @@ class ClosedReadsDemo extends DemoBackend {
     await Future<void>.delayed(const Duration(milliseconds: 40));
     _closed();
   }
+}
+
+/// The demo's music genres under other names ([names]: demo genre id →
+/// title); [count] overrides the album count (a "big" genre).
+class NamedGenresDemo extends DemoBackend {
+  NamedGenresDemo(this.names, {this.count}) : super(demoServer);
+  final Map<String, String> names;
+  final int? count;
+  @override
+  Future<List<FilterValue>> musicGenres(Library library) async =>
+      [for (final e in names.entries) FilterValue(e.key, e.value)];
+  @override
+  Future<int> genreAlbumCount(Library library, FilterValue genre) async =>
+      count ?? await super.genreAlbumCount(library, genre);
 }
 
 /// A car list's song rows: an album's list starts with a Shuffle row.
@@ -2849,13 +2875,15 @@ void main() {
       expect(artists, isNotEmpty);
     });
 
-    test('Tracks: Recently added, Most played, then A–Z; a tap plays that list',
+    test('Tracks: Recently added, Most played, Genres, then A–Z; a tap plays that list',
         () async {
       final car = make();
       final tracks = await car.children('tab:tracks');
-      expect(tracks.take(2).map((n) => n.title), ['Recently added', 'Most played']);
-      expect(tracks.skip(2).map((n) => n.title).first, '#');
-      expect(tracks, hasLength(2 + 27));
+      expect(tracks.take(3).map((n) => n.title), ['Recently added', 'Most played', 'Genres']);
+      expect(tracks[2].id, 'tracks:genres');
+      expect(tracks[2].browsable, isTrue);
+      expect(tracks.skip(3).map((n) => n.title).first, '#');
+      expect(tracks, hasLength(3 + 27));
       final recent = await car.children(tracks[0].id);
       expect(recent, isNotEmpty);
       expect(recent.every((n) => n.playable), isTrue);
@@ -2868,6 +2896,105 @@ void main() {
       final (tq, ti) = (await car.resolve(t[5].id))!;
       expect(tq[ti].title, t[5].title);
       expect(tq, hasLength(t.length));
+    });
+
+    test('Genres lists each name once across libraries, A–Z, case ignored',
+        () async {
+      final car = CarLibrary(
+          () => {
+                'a': NamedGenresDemo({'g-indie': 'Rock', 'g-folk': 'folk'}),
+                'b': NamedGenresDemo({'g-indie': 'rock', 'g-electronic': 'Electronic'}),
+              },
+          (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+              kind: LibraryKind.music)]);
+      final genres = await car.children('tracks:genres');
+      expect(genres.map((g) => g.title), ['Electronic', 'folk', 'Rock']);
+      expect(genres.every((g) => g.browsable && g.id.startsWith('genre:')), isTrue);
+      // Opening "Rock" reads both servers: the 3 demo "indie" albums from each
+      // (demo items always say server "demo", so count them).
+      final rock = await car.children(genres.last.id);
+      expect(rock.first.id, startsWith('shufflegenre:'));
+      expect(rock.skip(1).where((r) => r.id.startsWith('album:')), hasLength(6));
+    });
+
+    test('a small genre shows Shuffle then its albums', () async {
+      final car = make();
+      final genres = await car.children('tracks:genres');
+      expect(genres.map((g) => g.title), ['Electronic', 'Folk', 'Indie']);
+      final indie = await car.children('genre:Indie');
+      expect(indie.first.id, 'shufflegenre:Indie');
+      expect(indie.first.title, 'Shuffle Indie');
+      expect(indie.first.playable, isTrue);
+      final albums = indie.skip(1).toList();
+      expect(albums.map((a) => a.title), ['Night Bus Home', 'Rooms', 'Slow Weather']);
+      expect(albums.every((a) => a.browsable && a.id.startsWith('album:demo:')), isTrue);
+      // An album opens its normal list.
+      expect(songNodes(await car.children(albums.first.id)), isNotEmpty);
+    });
+
+    test('a big genre shows Shuffle then # and A–Z', () async {
+      final car = CarLibrary(() => {'demo': NamedGenresDemo({'g-indie': 'Indie'}, count: 101)},
+          (_) async => [music]);
+      final rows = await car.children('genre:Indie');
+      expect(rows.first.id, 'shufflegenre:Indie');
+      expect(rows.skip(1).map((r) => r.title), CarLibrary.letters);
+      expect(rows[1].id, 'genreaz:#:Indie');
+      expect(rows.skip(1).every((r) => r.browsable), isTrue);
+    });
+
+    test("a big genre's letter shows its albums under that letter", () async {
+      final car = CarLibrary(() => {'demo': NamedGenresDemo({'g-indie': 'Indie'}, count: 101)},
+          (_) async => [music]);
+      final s = await car.children('genreaz:S:Indie');
+      expect(s.map((a) => a.title), ['Slow Weather']);
+      expect(s.single.id, startsWith('album:demo:'));
+    });
+
+    test('Shuffle <genre> plays up to 200 random songs of the genre', () async {
+      final car = CarLibrary(
+          () => {
+                'a': NamedGenresDemo({'g-indie': 'Indie'}),
+                'b': NamedGenresDemo({'g-indie': 'Indie'}),
+              },
+          (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+              kind: LibraryKind.music)]);
+      final (queue, at) = (await car.resolve('shufflegenre:Indie'))!;
+      expect(at, 0);
+      // 3 indie albums × 8 songs on each of the two servers.
+      expect(queue, hasLength(48));
+      expect(queue.length, lessThanOrEqualTo(CarLibrary.shuffleCap));
+      expect(queue.every((t) => t.parentTitle != null), isTrue);
+    });
+
+    test("a genre name with ':' and '/' resolves", () async {
+      const name = 'Comedy/Spoken: Live';
+      final car = CarLibrary(() => {'demo': NamedGenresDemo({'g-indie': name})},
+          (_) async => [music]);
+      final genres = await car.children('tracks:genres');
+      expect(genres.single.id, 'genre:$name');
+      final rows = await car.children(genres.single.id);
+      expect(rows.first.id, 'shufflegenre:$name');
+      expect(rows.length, 4);
+      expect(await car.resolve('shufflegenre:$name'), isNotNull);
+    });
+
+    test('a genre row works after a restart', () async {
+      // A fresh library (the car's lists were restored): Genres not read yet.
+      final car = make();
+      final rows = await car.children('genre:Indie');
+      expect(rows.length, 4);
+      expect(await car.resolve('shufflegenre:Indie'), isNotNull);
+      expect(await make().children('genreaz:S:Indie'), isNotEmpty);
+    });
+
+    test('an offline server only leaves out its own genres', () async {
+      final car = CarLibrary(
+          () => {'up': NamedGenresDemo({'g-indie': 'Indie'}), 'down': OfflineDemo()},
+          (id) async => [Library(serverId: id, id: music.id, title: 'Music',
+              kind: LibraryKind.music)]);
+      final genres = await car.children('tracks:genres');
+      expect(genres.map((g) => g.title), ['Indie']);
+      expect((await car.children('genre:Indie')).length, 4);
     });
 
     test('a tap on a Tracks list it no longer remembers rebuilds the list',

@@ -103,8 +103,101 @@ class CarLibrary {
   /// that left the car on an old state for seconds). The newest 50.
   final _containerTracks = <String, List<MediaItem>>{};
 
-  /// Forget the remembered container tracks (a tap then looks them up).
-  void forgetTracks() => _containerTracks.clear();
+  /// Forget the remembered container tracks (a tap then looks them up), and
+  /// where each genre lives (the car's library or servers changed).
+  void forgetTracks() {
+    _containerTracks.clear();
+    _genres.clear();
+  }
+
+  // -- genres ------------------------------------------------------------------
+
+  /// A genre with more albums than this (summed over libraries) opens to
+  /// `#`/A–Z folders instead of tiles (user's pick 2026-11-20: Pop/Rock holds
+  /// 2,222 of their 2,994 albums).
+  static const bigGenre = 100;
+
+  /// Genre name (lower case) → its title and where it is: each music
+  /// library holding it, with that library's own genre id.
+  final _genres = <String, (String, List<(Library, FilterValue)>)>{};
+
+  static String _genreKey(String name) => name.trim().toLowerCase();
+
+  /// Reads every music library's genres (in scope), one row per name.
+  Future<List<CarNode>> _genreList() async {
+    final found = await _eachMusicLibrary<(Library, FilterValue)>(
+        (b, l) async => [for (final g in await b.musicGenres(l)) (l, g)]);
+    _genres.clear();
+    for (final (l, g) in found) {
+      final key = _genreKey(g.title);
+      if (key.isEmpty) continue;
+      final known = _genres[key];
+      _genres[key] = (known?.$1 ?? g.title, [...?known?.$2, (l, g)]);
+    }
+    final keys = _genres.keys.toList()..sort();
+    return [
+      for (final k in keys) CarNode('genre:${_genres[k]!.$1}', _genres[k]!.$1, browsable: true),
+    ];
+  }
+
+  /// Where genre [name] is; reads the genres when not known yet (a restart).
+  Future<(String, List<(Library, FilterValue)>)?> _genre(String name) async {
+    if (!_genres.containsKey(_genreKey(name))) await _genreList();
+    return _genres[_genreKey(name)];
+  }
+
+  /// [read] for each library holding a genre, each caught on its own.
+  Future<List<T>> _eachGenre<T>(List<(Library, FilterValue)> where,
+      Future<List<T>> Function(MediaBackend b, Library l, FilterValue g) read) async {
+    final parts = await Future.wait([
+      for (final (l, g) in where)
+        _on(l.serverId, (b) => read(b, l, g))
+            .timeout(timeout)
+            .catchError((Object _) => <T>[]),
+    ]);
+    return [for (final p in parts) ...p];
+  }
+
+  static String _titleKey(MediaItem i) {
+    final t = i.title.toLowerCase().trim();
+    return t.startsWith('the ') ? t.substring(4) : t;
+  }
+
+  List<CarNode> _albumTiles(List<MediaItem> albums) => [
+        for (final a in (albums..sort((a, b) => _titleKey(a).compareTo(_titleKey(b))))
+            .take(listCap))
+          _node(a),
+      ];
+
+  Future<List<CarNode>> _genrePage(String name) async {
+    final found = await _genre(name);
+    if (found == null) return const [];
+    final (title, where) = found;
+    final shuffle = CarNode('shufflegenre:$name', 'Shuffle $title', playable: true);
+    final counts = await Future.wait([
+      for (final (l, g) in where)
+        _on(l.serverId, (b) => b.genreAlbumCount(l, g))
+            .timeout(timeout)
+            .catchError((Object _) => 0),
+    ]);
+    if (counts.fold(0, (a, b) => a + b) > bigGenre) {
+      return [
+        shuffle,
+        for (final letter in letters) CarNode('genreaz:$letter:$name', letter, browsable: true),
+      ];
+    }
+    return [
+      shuffle,
+      ..._albumTiles(await _eachGenre(where, (b, l, g) => b.genreAlbums(l, g))),
+    ];
+  }
+
+  Future<List<CarNode>> _genreLetter(String letter, String name) async {
+    final found = await _genre(name);
+    if (found == null || !letters.contains(letter)) return const [];
+    return _albumTiles(await _eachGenre(
+        found.$2, (b, l, g) => b.genreAlbums(l, g, letter: letter, limit: listCap)));
+  }
 
   void _rememberTracks(String key, List<MediaItem> tracks) {
     _containerTracks.remove(key);
@@ -304,6 +397,7 @@ class CarLibrary {
         return [
           const CarNode('tracks:recent', 'Recently added', browsable: true),
           const CarNode('tracks:top', 'Most played', browsable: true),
+          const CarNode('tracks:genres', 'Genres', browsable: true),
           ..._letterFolders('tracks'),
         ];
       case 'tracks:recent':
@@ -312,12 +406,24 @@ class CarLibrary {
       case 'tracks:top':
         return _trackList(parentId,
             await _eachMusicLibrary((b, l) => b.topTracks(l, limit: 100)));
+      case 'tracks:genres':
+        return _genreList();
       // All artists / albums in one list (not in the menu any more; the
       // letter folders replace them).
       case 'tab:artists':
         return _browse(LibraryView.artists);
       case 'tab:albums':
         return _browse(LibraryView.albums);
+    }
+    // Genre names may hold ':' (and '/'): the name is the rest of the id.
+    if (parentId.startsWith('genre:')) {
+      return _genrePage(parentId.substring('genre:'.length));
+    }
+    if (parentId.startsWith('genreaz:')) {
+      final rest = parentId.substring('genreaz:'.length);
+      final colon = rest.indexOf(':');
+      if (colon < 0) return const [];
+      return _genreLetter(rest.substring(0, colon), rest.substring(colon + 1));
     }
     if (parentId.startsWith('az:')) {
       final parts = parentId.split(':');
@@ -443,6 +549,14 @@ class CarLibrary {
       final tracks = await _eachMusicLibrary(
           (b, l) => b.randomTracks(l, limit: shuffleCap));
       if (tracks.isEmpty) return none('no tracks from any music library');
+      return ((tracks..shuffle()).take(shuffleCap).toList(), 0);
+    }
+    if (id.startsWith('shufflegenre:')) {
+      final found = await _genre(id.substring('shufflegenre:'.length));
+      if (found == null) return none('that genre is no longer there');
+      final tracks = await _eachGenre(
+          found.$2, (b, l, g) => b.genreTracks(l, g, limit: shuffleCap));
+      if (tracks.isEmpty) return none('no songs in that genre');
       return ((tracks..shuffle()).take(shuffleCap).toList(), 0);
     }
     final parsed = _parse(id);
