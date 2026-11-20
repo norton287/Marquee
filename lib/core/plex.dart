@@ -720,7 +720,9 @@ class PlexBackend extends MediaBackend {
     };
     final c = await _get('/library/sections/${library.id}/all', {
       'type': _typeFor(library.kind, query.view),
-      'sort': '$sort${query.descending ? ':desc' : ''}',
+      // Most played: most songs share a count; ties by title keep pages stable.
+      'sort': '$sort${query.descending ? ':desc' : ''}'
+          '${query.sort == SortField.plays ? ',titleSort' : ''}',
       'includeCollections': 0,
       if (query.unwatchedOnly)
         library.kind == LibraryKind.shows ? 'unwatchedLeaves' : 'unwatched': 1,

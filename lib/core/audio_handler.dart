@@ -739,6 +739,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     _artFor = t.id;
     final Future<Uri?> link = car != null
         ? car(remote, mode: CarArtMode.wait)
+            .then<Uri?>((u) => u)
+            .catchError((Object _) => null) // the copy failed: private file
             .then((u) async => u ?? await localArt?.call(remote))
         : localArt!(remote);
     link.then((file) {

@@ -199,14 +199,29 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   /// Plays up to 200 random songs of the library, or (filtered) the songs
   /// shown, shuffled.
   Future<void> _shuffleSongs(Library lib) async {
-    final music = ref.read(musicProvider.notifier);
-    if (_query.filterCount > 0) {
-      if (_items.isNotEmpty) await music.playQueue([..._items]..shuffle(), 0);
-      return;
+    // Stays enabled (a disabled chip drops the remote's focus): repeat
+    // presses are ignored while the songs are fetched.
+    if (_shuffling) return;
+    setState(() => _shuffling = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final music = ref.read(musicProvider.notifier);
+      if (_query.filterCount > 0) {
+        if (_items.isNotEmpty) await music.playQueue([..._items]..shuffle(), 0);
+        return;
+      }
+      final songs = await ref.read(backendsProvider)[lib.serverId]!.randomTracks(lib);
+      if (songs.isNotEmpty) await music.playQueue(songs, 0);
+    } catch (e) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(friendlyError(e))));
+    } finally {
+      if (mounted) setState(() => _shuffling = false);
     }
-    final songs = await ref.read(backendsProvider)[lib.serverId]!.randomTracks(lib);
-    if (songs.isNotEmpty) await music.playQueue(songs, 0);
   }
+
+  bool _shuffling = false;
 
   @override
   Widget build(BuildContext context) {
@@ -271,7 +286,11 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                     if (tab == _Tab.tracks && lib != null) ...[
                       const SizedBox(width: 8),
                       ActionChip(
-                        avatar: const Icon(Icons.shuffle_rounded, size: 18),
+                        avatar: _shuffling
+                            ? const SizedBox.square(
+                                dimension: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.shuffle_rounded, size: 18),
                         label: const Text('Shuffle'),
                         onPressed: () => _shuffleSongs(lib),
                       ),
@@ -481,7 +500,8 @@ class _SortButton extends StatelessWidget {
     return SelectMenu(
       items: [
         for (final f in SortField.values)
-          if (songs || f != SortField.plays)
+          // Most played is for songs; Rating means nothing for them.
+          if (songs ? f != SortField.rating : f != SortField.plays)
           SelectMenuItem(
             label: f.label,
             selected: query.sort == f,

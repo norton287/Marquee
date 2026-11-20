@@ -1315,6 +1315,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(ActionChip, 'Title'));
       await tester.pumpAndSettle();
+      expect(find.text('Rating'), findsNothing); // means nothing for songs
       await tester.tap(find.text('Most played').last);
       await tester.pumpAndSettle();
       expect(find.widgetWithText(ActionChip, 'Most played'), findsOneWidget);
@@ -1335,6 +1336,16 @@ void main() {
       await tester.pumpAndSettle();
       expect(c.read(musicProvider).queue, isNotEmpty);
       expect(c.read(musicProvider).queue.every((t) => t.kind == MediaKind.track), isTrue);
+    });
+
+    testWidgets("Shuffle says why when the server can't be reached", (tester) async {
+      final c = await openMusic(tester, backend: ShuffleFailsDemo());
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ActionChip, 'Shuffle'));
+      await tester.pumpAndSettle();
+      expect(find.text('Server unreachable'), findsOneWidget);
+      expect(c.read(musicProvider).queue, isEmpty);
     });
 
     testWidgets('a song without album, artist or length shows no "null"', (tester) async {
@@ -1832,6 +1843,20 @@ void main() {
       expect(both.mediaItem.value?.id, tracks.first.id);
       expect(both.mediaItem.value?.artUri?.scheme, 'content');
       expect(both.mediaItem.value?.artUri?.host, 'app.marquee.marquee.art');
+      await both.dispose();
+    });
+
+    test("the playing song's art falls back to the private copy if the car's copy fails", () async {
+      final both = MarqueeAudioHandler(engine, car,
+          localArt: (remote) async => Uri.file('/cache/${remote.pathSegments.last}.jpg'),
+          // Typed like the app's own (a Future<Never> breaks timeout's null fallback).
+          carArt: (remote, {required mode}) =>
+              Future<Uri?>.error(const FileSystemException('disk full')));
+      final album = (await both.getChildren('tab:albums')).first;
+      final tracks = songsOf(await both.getChildren(album.id));
+      await both.playFromMediaId(tracks.first.id);
+      await settle();
+      expect(both.mediaItem.value?.artUri?.scheme, 'file');
       await both.dispose();
     });
 
@@ -5608,7 +5633,8 @@ void main() {
         filters: {'genre': [FilterValue('36814', 'Pop/Rock')]}));
     expect(page.items.single.kind, MediaKind.track);
     expect(uris.last.queryParameters, allOf(containsPair('type', '10'),
-        containsPair('sort', 'viewCount:desc'), containsPair('genre', '36814')));
+        // Ties (most songs share a play count) by title: pages stay stable.
+        containsPair('sort', 'viewCount:desc,titleSort'), containsPair('genre', '36814')));
     await plex.filterCategories(music, view: LibraryView.tracks);
     expect(uris.last.path, '/library/sections/7/filters');
     expect(uris.last.queryParameters['type'], '10');
@@ -6383,4 +6409,13 @@ class BareSongDemo extends DemoBackend {
       MediaItem(serverId: 'demo', id: 'bare', kind: MediaKind.track, title: 'Bare Song'),
     ], 1);
   }
+}
+
+
+/// Its random-songs read fails (Shuffle on an unreachable server).
+class ShuffleFailsDemo extends DemoBackend {
+  ShuffleFailsDemo() : super(demoServer);
+  @override
+  Future<List<MediaItem>> randomTracks(Library library, {int limit = 200}) async =>
+      throw const BackendException('Server unreachable');
 }
