@@ -708,6 +708,7 @@ class JellyfinBackend extends MediaBackend {
       SortField.added => 'DateCreated,SortName',
       SortField.released => 'PremiereDate,SortName',
       SortField.rating => 'CommunityRating,SortName',
+      SortField.plays => 'PlayCount,SortName',
     };
     final common = <String, dynamic>{
       'userId': _uid,
@@ -724,7 +725,7 @@ class JellyfinBackend extends MediaBackend {
       // Comma-separated: Jellyfin drops an id list joined with '|' (it
       // only splits on ','); official ratings are the '|'-separated one.
       // The Artists view isn't filtered (filters belong to the main grid).
-      if (query.view == LibraryView.items)
+      if (query.view == LibraryView.items || query.view == LibraryView.tracks)
         for (final e in query.filters.entries)
           if (e.value.isNotEmpty && _filterParams[e.key] != null)
             _filterParams[e.key]!: e.value
@@ -739,7 +740,8 @@ class JellyfinBackend extends MediaBackend {
       final types = switch (library.kind) {
         LibraryKind.movies => 'Movie',
         LibraryKind.shows => 'Series',
-        LibraryKind.music => 'MusicAlbum',
+        LibraryKind.music =>
+          query.view == LibraryView.tracks ? 'Audio' : 'MusicAlbum',
         LibraryKind.other => null,
       };
       r = await _dio.get('/Items', queryParameters: {
@@ -761,7 +763,8 @@ class JellyfinBackend extends MediaBackend {
   };
 
   @override
-  Future<List<FilterCategory>> filterCategories(Library library) async =>
+  Future<List<FilterCategory>> filterCategories(Library library,
+          {LibraryView view = LibraryView.items}) async =>
       library.kind == LibraryKind.music
           ? const [FilterCategory('genre', 'Genre'), FilterCategory('year', 'Year')]
           : const [

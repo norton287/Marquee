@@ -489,7 +489,9 @@ class DemoBackend extends MediaBackend {
       final artists = _artists()..sort((a, b) => a.title.compareTo(b.title));
       return Paged(artists.skip(start).take(limit).toList(), artists.length);
     }
-    var list = _liveAll(_of(library));
+    var list = library.kind == LibraryKind.music && query.view == LibraryView.tracks
+        ? _liveAll(_allTracks)
+        : _liveAll(_of(library));
     if (query.unwatchedOnly) list = list.where((i) => !i.played).toList();
     final genres = {...?query.filters['genre']?.map((v) => v.id)};
     final years = {...?query.filters['year']?.map((v) => v.id)};
@@ -505,14 +507,20 @@ class DemoBackend extends MediaBackend {
               .compareTo(b.addedAt ?? DateTime(0)),
           SortField.released => (a.year ?? 0).compareTo(b.year ?? 0),
           SortField.rating => (a.rating ?? 0).compareTo(b.rating ?? 0),
+          // Played songs count as one play each in the demo.
+          SortField.plays => (a.played ? 1 : 0).compareTo(b.played ? 1 : 0),
         };
     list.sort(query.descending ? (a, b) => cmp(b, a) : cmp);
     return Paged(list.skip(start).take(limit).toList(), list.length);
   }
 
   @override
-  Future<List<FilterCategory>> filterCategories(Library library) async =>
-      const [FilterCategory('genre', 'Genre'), FilterCategory('year', 'Year')];
+  Future<List<FilterCategory>> filterCategories(Library library,
+          {LibraryView view = LibraryView.items}) async =>
+      // Demo songs carry no genres or years of their own.
+      view == LibraryView.tracks
+          ? const []
+          : const [FilterCategory('genre', 'Genre'), FilterCategory('year', 'Year')];
 
   @override
   Future<List<FilterValue>> filterValues(

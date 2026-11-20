@@ -5479,6 +5479,69 @@ void main() {
     expect(uris.last.queryParameters.containsKey('year'), isFalse);
   });
 
+  test("Plex lists a music library's songs", () async {
+    final uris = <Uri>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        uris.add(o.uri);
+        h.resolve(Response(requestOptions: o, data: jsonDecode(jsonEncode({
+          'MediaContainer': {'totalSize': 1, 'Directory': [], 'Metadata': [
+            {'ratingKey': '9', 'type': 'track', 'title': 'Song'}]}})), statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P', baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    const music = Library(serverId: 'p', id: '7', title: 'Music', kind: LibraryKind.music);
+    final page = await plex.libraryItems(music, query: const LibraryQuery(
+        view: LibraryView.tracks, sort: SortField.plays, descending: true,
+        filters: {'genre': [FilterValue('36814', 'Pop/Rock')]}));
+    expect(page.items.single.kind, MediaKind.track);
+    expect(uris.last.queryParameters, allOf(containsPair('type', '10'),
+        containsPair('sort', 'viewCount:desc'), containsPair('genre', '36814')));
+    await plex.filterCategories(music, view: LibraryView.tracks);
+    expect(uris.last.path, '/library/sections/7/filters');
+    expect(uris.last.queryParameters['type'], '10');
+  });
+
+  test("Jellyfin lists a music library's songs", () async {
+    final calls = <Map<String, dynamic>>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add({'path': o.path, ...o.queryParameters});
+        h.resolve(Response(requestOptions: o,
+            data: jsonDecode(jsonEncode({'Items': [], 'TotalRecordCount': 0})), statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const music = Library(serverId: 'j', id: 'M', title: 'Music', kind: LibraryKind.music);
+    await jf.libraryItems(music, query: const LibraryQuery(
+        view: LibraryView.tracks, sort: SortField.plays, descending: true,
+        filters: {'genre': [FilterValue('g1', 'Rock')]}));
+    expect(calls.last, allOf(containsPair('path', '/Items'), containsPair('includeItemTypes', 'Audio'),
+        containsPair('recursive', true), containsPair('sortBy', 'PlayCount,SortName'),
+        containsPair('sortOrder', 'Descending'), containsPair('genreIds', 'g1')));
+    final cats = await jf.filterCategories(music, view: LibraryView.tracks);
+    expect(cats.map((c) => c.id), ['genre', 'year']);
+  });
+
+  test('Demo lists songs and sorts by plays', () async {
+    final demo = DemoBackend(demoServer);
+    final music = (await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+    final all = await demo.libraryItems(music, limit: 500,
+        query: const LibraryQuery(view: LibraryView.tracks));
+    expect(all.items, isNotEmpty);
+    expect(all.items.every((t) => t.kind == MediaKind.track), isTrue);
+    expect(all.total, all.items.length);
+    final titles = all.items.map((t) => t.title).toList();
+    expect(titles, [...titles]..sort());
+    await demo.setPlayed(all.items.last, true);
+    final top = await demo.libraryItems(music,
+        query: const LibraryQuery(view: LibraryView.tracks, sort: SortField.plays, descending: true));
+    expect(top.items.first.id, all.items.last.id);
+  });
+
   // The car's Genres: artist genres (verified on the user's PMS 2026-11-20:
   // 21 clean artist genres vs 190 album ones), albums/songs by artist.genre.
   test('Plex genre reads use artist genres', () async {
@@ -6161,7 +6224,8 @@ class _CountingDemo extends DemoBackend {
   int valueCalls = 0;
 
   @override
-  Future<List<FilterCategory>> filterCategories(Library library) async => const [
+  Future<List<FilterCategory>> filterCategories(Library library,
+          {LibraryView view = LibraryView.items}) async => const [
         FilterCategory('genre', 'Genre', searchable: true),
         FilterCategory('year', 'Year'),
       ];

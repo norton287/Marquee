@@ -198,7 +198,8 @@ abstract class MediaBackend {
 
   /// The ways [library]'s All view can be filtered; [LibraryQuery.filters]
   /// keys are their ids. Empty = no Filter button.
-  Future<List<FilterCategory>> filterCategories(Library library) async =>
+  Future<List<FilterCategory>> filterCategories(Library library,
+          {LibraryView view = LibraryView.items}) async =>
       const [];
 
   /// The choices in [category] (for a searchable one, those matching

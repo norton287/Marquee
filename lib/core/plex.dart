@@ -696,7 +696,11 @@ class PlexBackend extends MediaBackend {
   static int _typeFor(LibraryKind kind, LibraryView view) => switch (kind) {
         LibraryKind.movies => 1,
         LibraryKind.shows => 2,
-        LibraryKind.music => view == LibraryView.artists ? 8 : 9,
+        LibraryKind.music => switch (view) {
+            LibraryView.artists => 8,
+            LibraryView.tracks => 10,
+            _ => 9,
+          },
         LibraryKind.other => 1,
       };
 
@@ -712,6 +716,7 @@ class PlexBackend extends MediaBackend {
       SortField.added => 'addedAt',
       SortField.released => 'originallyAvailableAt',
       SortField.rating => 'audienceRating',
+      SortField.plays => 'viewCount',
     };
     final c = await _get('/library/sections/${library.id}/all', {
       'type': _typeFor(library.kind, query.view),
@@ -721,7 +726,7 @@ class PlexBackend extends MediaBackend {
         library.kind == LibraryKind.shows ? 'unwatchedLeaves' : 'unwatched': 1,
       // `genre=6,203`: either genre; separate keys must all match. Only
       // the main grid is filtered (not a music library's Artists view).
-      if (query.view == LibraryView.items)
+      if (query.view == LibraryView.items || query.view == LibraryView.tracks)
         for (final e in query.filters.entries)
           if (e.value.isNotEmpty) e.key: e.value.map((v) => v.id).join(','),
       'X-Plex-Container-Start': start,
@@ -741,11 +746,12 @@ class PlexBackend extends MediaBackend {
   static const _searchableFilters = {'actor', 'director', 'writer', 'producer'};
 
   @override
-  Future<List<FilterCategory>> filterCategories(Library library) async {
-    // For the grid's own type: a music library's plain /filters lists
-    // artist filters, but the grid shows albums (type 9).
+  Future<List<FilterCategory>> filterCategories(Library library,
+      {LibraryView view = LibraryView.items}) async {
+    // For the view's own type: a music library's plain /filters lists
+    // artist filters, but the grid shows albums (type 9), Tracks songs (10).
     final c = await _get('/library/sections/${library.id}/filters',
-        {'type': _typeFor(library.kind, LibraryView.items)});
+        {'type': _typeFor(library.kind, view)});
     final cats = [
       for (final d in ((c['Directory'] as List?) ?? const []).whereType<Map>())
         // Yes/no filters have no value list (Unwatched has its own switch).

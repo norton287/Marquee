@@ -273,12 +273,14 @@ final libraryProvider =
   return libs.firstWhere((l) => l.id == key.libraryId);
 });
 
-/// How a library's All view can be filtered (empty: no Filter button).
-final filterCategoriesProvider =
-    FutureProvider.family<List<FilterCategory>, LibraryRef>((ref, key) async {
-  final lib = await ref.watch(libraryProvider(key).future);
+/// How a library's All view (or a music library's Tracks) can be filtered
+/// (empty: no Filter button). Songs have their own filters on the server.
+final filterCategoriesProvider = FutureProvider.family<List<FilterCategory>,
+    (LibraryRef, LibraryView)>((ref, key) async {
+  final (libRef, view) = key;
+  final lib = await ref.watch(libraryProvider(libRef).future);
   try {
-    return await ref.backend(key.serverId).filterCategories(lib);
+    return await ref.backend(libRef.serverId).filterCategories(lib, view: view);
   } catch (_) {
     return const []; // no Filter button rather than an error
   }

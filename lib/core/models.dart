@@ -524,14 +524,17 @@ enum SortField {
   title('Title'),
   added('Date added'),
   released('Release date'),
-  rating('Rating');
+  rating('Rating'),
+
+  /// Songs only (a music library's Tracks tab).
+  plays('Most played');
 
   const SortField(this.label);
   final String label;
 }
 
 /// What a library grid is showing.
-enum LibraryView { items, albums, artists }
+enum LibraryView { items, albums, artists, tracks }
 
 /// One way a library can be filtered (Plex `/filters`, Jellyfin's lists).
 @immutable

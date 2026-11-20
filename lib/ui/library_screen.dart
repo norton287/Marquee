@@ -245,7 +245,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                     ],
                     if (lib != null &&
                         _query.view == LibraryView.items &&
-                        (ref.watch(filterCategoriesProvider(widget.libraryRef))
+                        (ref.watch(filterCategoriesProvider((widget.libraryRef, LibraryView.items)))
                                     .value ??
                                 const [])
                             .isNotEmpty) ...[
@@ -259,7 +259,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                         onPressed: () => _openFilters(
                             lib,
                             ref
-                                .read(filterCategoriesProvider(widget.libraryRef))
+                                .read(filterCategoriesProvider((widget.libraryRef, LibraryView.items)))
                                 .value!),
                       ),
                     ],
