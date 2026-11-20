@@ -15,4 +15,15 @@
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
         <item name="android:windowBackground">?android:colorBackground</item>
     </style>
+    <!-- Android Auto's theme for Marquee (manifest meta-data
+         com.google.android.gms.car.application.theme): its accent styles the
+         playback controls and highlights in the car. Marquee's orange. -->
+    <style name="CarTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:colorAccent">#FF6A3D</item>
+        <item name="android:colorPrimary">#15171C</item>
+        <item name="android:colorPrimaryDark">#0B0C0F</item>
+        <item name="colorAccent">#FF6A3D</item>
+        <item name="colorPrimary">#15171C</item>
+        <item name="colorPrimaryDark">#0B0C0F</item>
+    </style>
 </resources>
