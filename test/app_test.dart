@@ -290,6 +290,32 @@ class ClosedReadsDemo extends DemoBackend {
   }
 }
 
+/// A car list's song rows: an album's list starts with a Shuffle row.
+List<as_.MediaItem> songsOf(List<as_.MediaItem> rows) =>
+    [for (final r in rows) if (r.id.startsWith('track:')) r];
+List<CarNode> songNodes(List<CarNode> rows) =>
+    [for (final r in rows) if (r.id.startsWith('track:')) r];
+
+/// A music library whose every album holds one song: no Shuffle rows.
+/// [knownCount] false: artists' albums don't say how many songs they hold.
+class OneSongDemo extends DemoBackend {
+  OneSongDemo({this.knownCount = true}) : super(demoServer);
+  final bool knownCount;
+  @override
+  Future<List<MediaItem>> children(MediaItem parent) async {
+    final all = await super.children(parent);
+    return switch (parent.kind) {
+      MediaKind.album => all.take(1).toList(),
+      MediaKind.artist => [
+          for (final a in all.take(1))
+            MediaItem(serverId: a.serverId, id: a.id, kind: a.kind, title: a.title,
+                parentTitle: a.parentTitle, childCount: knownCount ? 1 : null),
+        ],
+      _ => all,
+    };
+  }
+}
+
 /// The saved address fails (not hangs) after a while: "no route to host".
 class FailsLaterDemo extends DemoBackend {
   FailsLaterDemo() : super(demoServer);
@@ -1569,7 +1595,7 @@ void main() {
     test('a tapped track plays and the car sees it; pause shows Play',
         () async {
       final album = (await handler.getChildren('tab:albums')).first;
-      final tracks = await handler.getChildren(album.id);
+      final tracks = songsOf(await handler.getChildren(album.id));
       await handler.playFromMediaId(tracks[2].id);
       await settle();
       expect(handler.mediaItem.value?.title, tracks[2].title);
@@ -1593,7 +1619,7 @@ void main() {
         () async {
       demo.failNext = 2; // the first track fails twice and is skipped
       final album = (await handler.getChildren('tab:albums')).first;
-      final tracks = await handler.getChildren(album.id);
+      final tracks = songsOf(await handler.getChildren(album.id));
       await handler.playFromMediaId(tracks.first.id);
       await settle();
       expect(engine.state.error, isNotNull); // the app still says why
@@ -1689,7 +1715,7 @@ void main() {
 
     test('the car shows loading while a track starts', () async {
       final album = (await handler.getChildren('tab:albums')).first;
-      final tracks = await handler.getChildren(album.id);
+      final tracks = songsOf(await handler.getChildren(album.id));
       demo.gate = Completer<void>();
       final playing = handler.playFromMediaId(tracks.first.id);
       await settle();
@@ -1769,7 +1795,7 @@ void main() {
 
     test('the car can ask what the playing item is, and resume it', () async {
       final album = (await handler.getChildren('tab:albums')).first;
-      final tracks = await handler.getChildren(album.id);
+      final tracks = songsOf(await handler.getChildren(album.id));
       await handler.playFromMediaId(tracks[1].id);
       await settle();
       final now = handler.mediaItem.value!;
@@ -1805,7 +1831,7 @@ void main() {
     test('a track just browsed plays without looking its album up again',
         () async {
       final album = (await handler.getChildren('tab:albums')).first;
-      final tracks = await handler.getChildren(album.id);
+      final tracks = songsOf(await handler.getChildren(album.id));
       demo.childrenGate = Completer<void>(); // the server is slow now
       await handler.playFromMediaId(tracks[2].id).timeout(const Duration(milliseconds: 300));
       demo.childrenGate!.complete();
@@ -1822,7 +1848,7 @@ void main() {
 
     test('an error reaches the car only when nothing can play', () async {
       final album = (await handler.getChildren('tab:albums')).first;
-      final tracks = await handler.getChildren(album.id);
+      final tracks = songsOf(await handler.getChildren(album.id));
       demo.failNext = 2; // first track skipped, the next plays
       await handler.playFromMediaId(tracks.first.id);
       await settle();
@@ -1844,7 +1870,7 @@ void main() {
       final local = MarqueeAudioHandler(engine, car,
           localArt: (remote) async => Uri.file('/private/art.jpg'));
       final album = (await local.getChildren('tab:albums')).first;
-      final tracks = await local.getChildren(album.id);
+      final tracks = songsOf(await local.getChildren(album.id));
       await local.playFromMediaId(tracks.first.id);
       await settle();
       final id = local.mediaItem.value!.id;
@@ -1921,7 +1947,7 @@ void main() {
     test('the playing item has the id the car tapped (else "Could not load")',
         () async {
       final album = (await handler.getChildren('tab:albums')).first;
-      final tracks = await handler.getChildren(album.id);
+      final tracks = songsOf(await handler.getChildren(album.id));
       await handler.playFromMediaId(tracks[2].id);
       await settle();
       expect(handler.mediaItem.value?.id, tracks[2].id);
@@ -1940,7 +1966,7 @@ void main() {
       final log = CarLog();
       final logged = MarqueeAudioHandler(engine, car, log: log);
       final album = (await logged.getChildren('tab:albums')).first;
-      final tracks = await logged.getChildren(album.id);
+      final tracks = songsOf(await logged.getChildren(album.id));
       await logged.prepareFromMediaId(tracks[1].id);
       await settle();
       // Ready, shown, but not playing: prepare never starts music by itself.
@@ -1967,7 +1993,7 @@ void main() {
     test('a tap while a song plays keeps showing the tapped one while it loads',
         () async {
       final album = (await handler.getChildren('tab:albums')).first;
-      final tracks = await handler.getChildren(album.id);
+      final tracks = songsOf(await handler.getChildren(album.id));
       await handler.playFromMediaId(tracks[0].id);
       await settle();
       // Another album, slow to look up, while track 0 plays on.
@@ -2226,7 +2252,7 @@ void main() {
       final handler = MarqueeAudioHandler(engine,
           CarLibrary(() => {'demo': demo}, (_) async => [music]), log: log);
       final album = (await handler.getChildren('tab:albums')).first;
-      final tracks = await handler.getChildren(album.id);
+      final tracks = songsOf(await handler.getChildren(album.id));
       await handler.playFromMediaId(tracks[1].id);
       await Future<void>.delayed(const Duration(milliseconds: 5));
       await handler.pause();
@@ -2339,7 +2365,7 @@ void main() {
       expect(names, [...names]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase())));
       final album = albums.first;
       expect(album.browsable, isTrue);
-      final tracks = await car.children(album.id);
+      final tracks = songNodes(await car.children(album.id));
       expect(tracks.length, greaterThan(1));
       expect(tracks.every((t) => t.playable), isTrue);
       final (queue, start) = (await car.resolve(tracks[1].id))!;
@@ -2351,9 +2377,10 @@ void main() {
       final car = make();
       final artists = await car.children('tab:artists');
       expect(artists, isNotEmpty);
-      final albums = await car.children(artists.first.id);
+      final rows = await car.children(artists.first.id);
+      final albums = rows.where((r) => r.id.startsWith('album:'));
       expect(albums, isNotEmpty);
-      expect(albums.first.browsable, isTrue);
+      expect(albums.every((a) => a.browsable), isTrue);
     });
 
     test('a huge playlist is read a page at a time and shuffles 200',
@@ -2434,13 +2461,77 @@ void main() {
       expect(reconnected, ['home']);
     });
 
+    test('an album with several songs starts with Shuffle', () async {
+      final car = make();
+      final album = (await car.children('tab:albums')).first;
+      final rows = await car.children(album.id);
+      final albumId = album.id.split(':').last;
+      expect(rows.first.id, 'shufflealbum:demo:$albumId');
+      expect(rows.first.title, 'Shuffle');
+      expect(rows.first.playable, isTrue);
+      expect(rows.skip(1).every((r) => r.id.startsWith('track:')), isTrue);
+      expect(rows.length, 9); // Shuffle + 8 songs
+    });
+
+    test('a one-song album has no Shuffle', () async {
+      final car = CarLibrary(() => {'demo': OneSongDemo()}, (_) async => [music]);
+      final album = (await car.children('tab:albums')).first;
+      final rows = await car.children(album.id);
+      expect(rows.single.id, startsWith('track:'));
+    });
+
+    test('an artist with several songs starts with Shuffle', () async {
+      final car = make();
+      final artist = (await car.children('tab:artists')).first;
+      final rows = await car.children(artist.id);
+      expect(rows.first.id, 'shuffleartist:demo:${artist.id.substring('artist:demo:'.length)}');
+      expect(rows.first.playable, isTrue);
+      expect(rows.skip(1).every((r) => r.id.startsWith('album:')), isTrue);
+    });
+
+    test('an artist with one one-song album has no Shuffle', () async {
+      final car = CarLibrary(() => {'demo': OneSongDemo()}, (_) async => [music]);
+      final artist = (await car.children('tab:artists')).first;
+      final rows = await car.children(artist.id);
+      expect(rows.single.id, startsWith('album:'));
+    });
+
+    test("an artist whose song count isn't known shows Shuffle", () async {
+      final car = CarLibrary(
+          () => {'demo': OneSongDemo(knownCount: false)}, (_) async => [music]);
+      final artist = (await car.children('tab:artists')).first;
+      final rows = await car.children(artist.id);
+      expect(rows.first.id, startsWith('shuffleartist:'));
+    });
+
+    test("Shuffle plays the album's or the artist's songs in random order", () async {
+      final car = make();
+      final album = (await car.children('tab:albums')).first;
+      final albumSongs = {
+        for (final t in await demo.children(MediaItem(
+            serverId: 'demo', id: album.id.split(':').last, kind: MediaKind.album, title: '')))
+          t.id
+      };
+      final (aq, ai) = (await car.resolve('shufflealbum:demo:${album.id.split(':').last}'))!;
+      expect(ai, 0);
+      expect(aq.map((t) => t.id).toSet(), albumSongs);
+
+      final artist = (await car.children('tab:artists')).first;
+      final (full, _) = (await car.resolve(artist.id))!; // plays all, in order
+      final (sq, si) = (await car.resolve(
+          'shuffleartist:demo:${artist.id.substring('artist:demo:'.length)}'))!;
+      expect(si, 0);
+      expect(sq.map((t) => t.id).toSet(), full.map((t) => t.id).toSet());
+      expect(sq.length, lessThanOrEqualTo(CarLibrary.shuffleCap));
+    });
+
     test('playing an artist plays all their albums', () async {
       final car = make();
       final artist = (await car.children('tab:artists')).first;
       final albums = await car.children(artist.id);
       var expected = 0;
-      for (final a in albums) {
-        expected += (await car.children(a.id)).length;
+      for (final a in albums.where((r) => r.id.startsWith('album:'))) {
+        expected += songNodes(await car.children(a.id)).length;
       }
       final hits = await car.search(artist.title);
       final hit = hits.firstWhere((h) => h.id == artist.id, orElse: () => artist);

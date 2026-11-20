@@ -348,13 +348,22 @@ class CarLibrary {
         case 'artist':
           final albums =
               await read((b) => b.children(_ref(serverId, id, MediaKind.artist)));
-          return [for (final a in albums.take(listCap)) _node(a)];
+          // More than one song: several albums, or one whose count isn't
+          // known or is over one.
+          final several = albums.length > 1 ||
+              (albums.length == 1 && (albums.single.childCount ?? 2) > 1);
+          return [
+            if (several) CarNode('shuffleartist:$serverId:$id', 'Shuffle', playable: true),
+            for (final a in albums.take(listCap)) _node(a),
+          ];
         case 'album':
           final tracks =
               await read((b) => b.children(_ref(serverId, id, MediaKind.album)));
-          _rememberTracks('album:$serverId:$id',
-              [for (final t in tracks) if (t.kind == MediaKind.track) t]);
+          final songs = [for (final t in tracks) if (t.kind == MediaKind.track) t];
+          _rememberTracks('album:$serverId:$id', songs);
           return [
+            if (songs.length > 1)
+              CarNode('shufflealbum:$serverId:$id', 'Shuffle', playable: true),
             for (final t in tracks.take(listCap)) _node(t, container: 'album:$id')
           ];
         case 'playlist':
@@ -466,6 +475,15 @@ class CarLibrary {
           final tracks = await tracksOf(
               kind == 'album' ? MediaKind.album : MediaKind.playlist, itemId);
           return tracks.isEmpty ? none('no tracks') : (tracks, 0);
+        case 'shufflealbum':
+          final tracks = await tracksOf(MediaKind.album, itemId);
+          return tracks.isEmpty
+              ? none('no tracks')
+              : ((tracks..shuffle()).take(shuffleCap).toList(), 0);
+        case 'shuffleartist':
+          final all = await resolve('artist:$serverId:$itemId', whyNot: whyNot);
+          if (all == null) return null;
+          return ([...all.$1]..shuffle(), 0);
         case 'artist':
           final albums =
               await on((b) => b.children(_ref(serverId, itemId, MediaKind.artist)));
