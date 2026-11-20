@@ -122,7 +122,7 @@ abstract class MediaBackend {
           {String? letter, int limit = 500}) async =>
       const [];
 
-  /// Up to [limit] random songs of [genre] in [library] (car: Shuffle <genre>).
+  /// Up to [limit] random songs of [genre] in [library] (car: "Shuffle" of a genre).
   Future<List<MediaItem>> genreTracks(Library library, FilterValue genre,
           {int limit = 200}) async =>
       const [];
