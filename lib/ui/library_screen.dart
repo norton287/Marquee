@@ -5,11 +5,13 @@ import '../core/models.dart';
 import '../core/providers.dart';
 import '../core/storage.dart';
 import 'libraries_screen.dart';
+import 'music.dart';
+import 'nav.dart';
 import 'phone_input.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-enum _Tab { recommended, browse, artists, collections, folders }
+enum _Tab { recommended, browse, artists, tracks, collections, folders }
 
 bool _isVideo(LibraryKind k) =>
     k == LibraryKind.movies || k == LibraryKind.shows;
@@ -29,8 +31,12 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   static const _pageSize = 60;
   final _scroll = ScrollController();
   final _items = <MediaItem>[];
-  String get _savedKey => AppSettings.libraryKey(
-      widget.libraryRef.serverId, widget.libraryRef.libraryId);
+  /// Where a tab's sort and filters are saved: Tracks keeps its own (song
+  /// filters differ from album filters on the server).
+  String _savedKeyFor(_Tab t) =>
+      AppSettings.libraryKey(widget.libraryRef.serverId, widget.libraryRef.libraryId) +
+      (t == _Tab.tracks ? '#tracks' : '');
+  String get _savedKey => _savedKeyFor(_tab);
 
   /// Each library's sort, Unwatched and filters, saved in settings so they
   /// survive a restart. (Without the view: the tab decides that, so a
@@ -69,7 +75,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
   _Tab get _tab => _tabFor(_library?.kind);
 
-  bool get _paged => _tab == _Tab.browse || _tab == _Tab.artists;
+  bool get _paged =>
+      _tab == _Tab.browse || _tab == _Tab.artists || _tab == _Tab.tracks;
 
   bool get _done => _library != null && _items.length >= _total;
 
@@ -173,10 +180,32 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
   void _setTab(_Tab t) {
     if (t == _tab) return;
+    final leavingTracks = _tab == _Tab.tracks;
     _picked = t;
+    // Tracks and Albums each have their own saved sort and filters.
+    if (t == _Tab.tracks || leavingTracks) {
+      _query = ref.read(settingsProvider).libraryQueries[_savedKeyFor(t)] ??
+          const LibraryQuery();
+    }
     _query = _query.copyWith(
-        view: t == _Tab.artists ? LibraryView.artists : LibraryView.items);
+        view: switch (t) {
+          _Tab.artists => LibraryView.artists,
+          _Tab.tracks => LibraryView.tracks,
+          _ => LibraryView.items,
+        });
     _reload();
+  }
+
+  /// Plays up to 200 random songs of the library, or (filtered) the songs
+  /// shown, shuffled.
+  Future<void> _shuffleSongs(Library lib) async {
+    final music = ref.read(musicProvider.notifier);
+    if (_query.filterCount > 0) {
+      if (_items.isNotEmpty) await music.playQueue([..._items]..shuffle(), 0);
+      return;
+    }
+    final songs = await ref.read(backendsProvider)[lib.serverId]!.randomTracks(lib);
+    if (songs.isNotEmpty) await music.playQueue(songs, 0);
   }
 
   @override
@@ -192,10 +221,15 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       if (_isVideo(kind)) (_Tab.recommended, 'Recommended'),
       (_Tab.browse, kind == LibraryKind.music ? 'Albums' : 'All'),
       if (kind == LibraryKind.music) (_Tab.artists, 'Artists'),
+      if (kind == LibraryKind.music) (_Tab.tracks, 'Tracks'),
       if (kind != LibraryKind.other) (_Tab.collections, 'Collections'),
       if (kind != LibraryKind.other) (_Tab.folders, 'Folders'),
     ];
-    final paged = tab == _Tab.browse || tab == _Tab.artists;
+    final paged = tab == _Tab.browse || tab == _Tab.artists || tab == _Tab.tracks;
+    // The tabs that can be filtered, and which filters they use.
+    final filterable = _query.view == LibraryView.items || _query.view == LibraryView.tracks;
+    final filterKey = (widget.libraryRef,
+        _query.view == LibraryView.tracks ? LibraryView.tracks : LibraryView.items);
 
     return Scaffold(
       appBar: AppBar(
@@ -232,7 +266,16 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                   ],
                   if (paged) ...[
                     const SizedBox(width: 8),
-                    _SortButton(query: _query, onChanged: _setQuery),
+                    _SortButton(
+                        query: _query, onChanged: _setQuery, songs: tab == _Tab.tracks),
+                    if (tab == _Tab.tracks && lib != null) ...[
+                      const SizedBox(width: 8),
+                      ActionChip(
+                        avatar: const Icon(Icons.shuffle_rounded, size: 18),
+                        label: const Text('Shuffle'),
+                        onPressed: () => _shuffleSongs(lib),
+                      ),
+                    ],
                     if (kind == LibraryKind.movies ||
                         kind == LibraryKind.shows) ...[
                       const SizedBox(width: 8),
@@ -244,8 +287,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                       ),
                     ],
                     if (lib != null &&
-                        _query.view == LibraryView.items &&
-                        (ref.watch(filterCategoriesProvider((widget.libraryRef, LibraryView.items)))
+                        filterable &&
+                        (ref.watch(filterCategoriesProvider(filterKey))
                                     .value ??
                                 const [])
                             .isNotEmpty) ...[
@@ -259,7 +302,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                         onPressed: () => _openFilters(
                             lib,
                             ref
-                                .read(filterCategoriesProvider((widget.libraryRef, LibraryView.items)))
+                                .read(filterCategoriesProvider(filterKey))
                                 .value!),
                       ),
                     ],
@@ -269,9 +312,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
             ),
           ),
           // What's filtered, each removable (OK on a chip removes it).
-          if (paged &&
-              _query.view == LibraryView.items &&
-              _query.filterCount > 0)
+          if (paged && filterable && _query.filterCount > 0)
             SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(l.gutter, 2, l.gutter, 6),
@@ -323,8 +364,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
           else if (_items.isEmpty && !_loading && _library != null)
             SliverFillRemaining(
               hasScrollBody: false,
-              child: _query.filterCount > 0 &&
-                      _query.view == LibraryView.items
+              child: _query.filterCount > 0 && filterable
                   ? MessageView(
                       icon: Icons.filter_list_off_rounded,
                       title: 'Nothing matches these filters',
@@ -344,7 +384,14 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                     ),
             )
           else ...[
-            MediaSliverGrid(items: _items, autofocusFirst: l.tv),
+            if (tab == _Tab.tracks)
+              _SongList(
+                songs: _items,
+                autofocusFirst: l.tv,
+                onPlay: (song) => playItem(context, song, queue: _items),
+              )
+            else
+              MediaSliverGrid(items: _items, autofocusFirst: l.tv),
             if (_loading)
               const SliverToBoxAdapter(
                 child: Padding(padding: EdgeInsets.all(24), child: Loading()),
@@ -422,15 +469,19 @@ class _ProviderGrid extends StatelessWidget {
 }
 
 class _SortButton extends StatelessWidget {
-  const _SortButton({required this.query, required this.onChanged});
+  const _SortButton({required this.query, required this.onChanged, this.songs = false});
   final LibraryQuery query;
   final ValueChanged<LibraryQuery> onChanged;
+
+  /// The Tracks tab: Most played is offered (songs only).
+  final bool songs;
 
   @override
   Widget build(BuildContext context) {
     return SelectMenu(
       items: [
         for (final f in SortField.values)
+          if (songs || f != SortField.plays)
           SelectMenuItem(
             label: f.label,
             selected: query.sort == f,
@@ -738,6 +789,62 @@ class _FilterPanelState extends ConsumerState<_FilterPanel> {
             ),
           ),
       ],
+    );
+  }
+}
+
+
+/// A music library's songs: one row each (album art, title, "artist ·
+/// album", length); selecting one plays the shown list from it.
+class _SongList extends StatelessWidget {
+  const _SongList({required this.songs, required this.onPlay, this.autofocusFirst = false});
+  final List<MediaItem> songs;
+  final ValueChanged<MediaItem> onPlay;
+  final bool autofocusFirst;
+
+  static String _length(Duration d) {
+    final s = d.inSeconds;
+    String two(int n) => n.toString().padLeft(2, '0');
+    return s >= 3600
+        ? '${s ~/ 3600}:${two(s ~/ 60 % 60)}:${two(s % 60)}'
+        : '${s ~/ 60}:${two(s % 60)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLayout.of(context);
+    return SliverPadding(
+      padding: EdgeInsets.fromLTRB(l.gutter - 16, 4, l.gutter - 16, 32),
+      sliver: SliverList.builder(
+        itemCount: songs.length,
+        itemBuilder: (context, i) {
+          final song = songs[i];
+          final by = [
+            song.grandparentTitle,
+            song.parentTitle,
+          ].whereType<String>().where((t) => t.isNotEmpty).join(' · ');
+          final length = song.duration;
+          return ListTile(
+            autofocus: autofocusFirst && i == 0,
+            leading: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: SizedBox.square(
+                dimension: 44,
+                child: Artwork(
+                    image: song.poster, aspect: 1, icon: Icons.music_note, seed: song.title),
+              ),
+            ),
+            title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: by.isEmpty
+                ? null
+                : Text(by, maxLines: 1, overflow: TextOverflow.ellipsis),
+            trailing: length == null || length == Duration.zero
+                ? null
+                : Text(_length(length), style: const TextStyle(color: Palette.muted)),
+            onTap: () => onPlay(song),
+          );
+        },
+      ),
     );
   }
 }

@@ -1260,6 +1260,117 @@ void main() {
     expect(grid.position.maxScrollExtent, greaterThan(0));
   });
 
+
+  group('Music Tracks tab', () {
+    Future<ProviderContainer> openMusic(WidgetTester tester,
+        {Size size = const Size(1440, 900), bool tv = false, MediaBackend? backend}) async {
+      final fake = FakeTrackPlayer();
+      await _pump(tester, size, tv: tv, overrides: [
+        trackPlayerFactoryProvider.overrideWithValue(() => fake),
+        if (backend != null)
+          backendsProvider.overrideWithValue(<String, MediaBackend>{'demo': backend}),
+      ]);
+      await tester.tap(find.text('Libraries').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Music').last);
+      await tester.pumpAndSettle();
+      return ProviderScope.containerOf(tester.element(find.byType(MarqueeApp)));
+    }
+
+    testWidgets('music libraries have a Tracks tab', (tester) async {
+      await openMusic(tester);
+      expect(find.widgetWithText(ChoiceChip, 'Albums'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Artists'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Tracks'), findsOneWidget);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Movies').last);
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ChoiceChip, 'Tracks'), findsNothing);
+    });
+
+    testWidgets('Tracks lists songs and plays from the one selected', (tester) async {
+      final c = await openMusic(tester);
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      final rows = find.byType(ListTile);
+      expect(rows, findsWidgets);
+      final fourth = tester.widget<ListTile>(rows.at(3));
+      await tester.tap(rows.at(3));
+      await tester.pumpAndSettle();
+      final music = c.read(musicProvider);
+      expect(music.index, 3);
+      expect(music.queue[3].title, (fourth.title! as Text).data);
+      expect(music.queue.length, greaterThan(3));
+    });
+
+    testWidgets("Tracks Sort offers Most played; Albums doesn't; each keeps its own", (tester) async {
+      await openMusic(tester);
+      await tester.tap(find.widgetWithText(ActionChip, 'Title'));
+      await tester.pumpAndSettle();
+      expect(find.text('Most played'), findsNothing); // Albums
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ActionChip, 'Title'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Most played').last);
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ActionChip, 'Most played'), findsOneWidget);
+      // Albums keeps its own sort; Tracks keeps Most played.
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Albums'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ActionChip, 'Title'), findsOneWidget);
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ActionChip, 'Most played'), findsOneWidget);
+    });
+
+    testWidgets('Shuffle plays songs', (tester) async {
+      final c = await openMusic(tester);
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ActionChip, 'Shuffle'));
+      await tester.pumpAndSettle();
+      expect(c.read(musicProvider).queue, isNotEmpty);
+      expect(c.read(musicProvider).queue.every((t) => t.kind == MediaKind.track), isTrue);
+    });
+
+    testWidgets('a song without album, artist or length shows no "null"', (tester) async {
+      await openMusic(tester, backend: BareSongDemo());
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      expect(find.text('Bare Song'), findsOneWidget);
+      expect(find.textContaining('null'), findsNothing);
+    });
+
+    testWidgets('TV: Tracks rows take focus and Down moves row to row', (tester) async {
+      tester.view.devicePixelRatio = 2;
+      await openMusic(tester, size: const Size(1920, 1080), tv: true);
+      tester.view.devicePixelRatio = 2;
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      // Demo songs share titles ("Track 1" on every album): compare where the
+      // focused row is, and that it is a song row.
+      double? focusedRowTop() {
+        final ctx = FocusManager.instance.primaryFocus?.context;
+        if (ctx == null || ctx.findAncestorWidgetOfExactType<ListTile>() == null) return null;
+        return (ctx.findRenderObject() as RenderBox).localToGlobal(Offset.zero).dy;
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      final first = focusedRowTop();
+      expect(first, isNotNull);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      final second = focusedRowTop();
+      expect(second, isNotNull);
+      expect(second, greaterThan(first!));
+    });
+  });
+
   testWidgets('TV library grid fits seven posters across', (tester) async {
     // A 1080p TV at the usual 2x density: 960x540 logical pixels.
     tester.view.devicePixelRatio = 2;
@@ -6255,5 +6366,21 @@ class ManyAlbumsLibraryDemo extends DemoBackend {
             parentTitle: 'Artist $i'),
     ];
     return Paged(all.skip(start).take(limit).toList(), all.length);
+  }
+}
+
+
+/// A music library whose songs include one with no album, artist or length.
+class BareSongDemo extends DemoBackend {
+  BareSongDemo() : super(demoServer);
+  @override
+  Future<Paged> libraryItems(Library library,
+      {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) async {
+    if (query.view != LibraryView.tracks) {
+      return super.libraryItems(library, start: start, limit: limit, query: query);
+    }
+    return const Paged([
+      MediaItem(serverId: 'demo', id: 'bare', kind: MediaKind.track, title: 'Bare Song'),
+    ], 1);
   }
 }
