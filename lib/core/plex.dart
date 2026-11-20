@@ -549,8 +549,14 @@ class PlexBackend extends MediaBackend {
   /// where Plex puts titles in other scripts (日本語, Кириллица).
   @override
   Future<List<MediaItem>> musicStartingWith(
-      Library library, MusicList kind, String letter,
-      {int limit = 500}) async {
+          Library library, MusicList kind, String letter,
+          {int limit = 500}) =>
+      _startingWith(library, kind, letter, limit);
+
+  /// [musicStartingWith] with [extra] filters (a genre's A–Z folders).
+  Future<List<MediaItem>> _startingWith(
+      Library library, MusicList kind, String letter, int limit,
+      {Map<String, dynamic> extra = const {}}) async {
     final starts = letter == '#'
         ? _hashStarts
         : [letter, 'The $letter', ...MediaBackend.accentsOf(letter)];
@@ -572,6 +578,7 @@ class PlexBackend extends MediaBackend {
         'type': _musicType(kind),
         'sort': 'titleSort',
         'title<': starts.join(','),
+        ...extra,
         'X-Plex-Container-Start': start,
         'X-Plex-Container-Size': limit,
       });
@@ -584,12 +591,62 @@ class PlexBackend extends MediaBackend {
       keep(_items(await _get(path, {
         'type': _musicType(kind),
         'sort': 'titleSort:desc',
+        ...extra,
         'X-Plex-Container-Start': 0,
         'X-Plex-Container-Size': 100,
       })));
     }
     return kept;
   }
+
+  // -- genres (car: Tracks → Genres) ------------------------------------------
+  // Artist genres: on the user's PMS (2026-11-20) 21 clean ones vs 190 messy
+  // album genres; albums and songs filter across levels with artist.genre.
+
+  @override
+  Future<List<FilterValue>> musicGenres(Library library) async {
+    final c = await _get('/library/sections/${library.id}/genre', {'type': 8});
+    return [
+      for (final d in (c['Directory'] as List? ?? const []).cast<Map<String, dynamic>>())
+        if (d['key'] != null && d['title'] != null)
+          FilterValue('${d['key']}'.split('/').last, '${d['title']}'),
+    ];
+  }
+
+  @override
+  Future<int> genreAlbumCount(Library library, FilterValue genre) async =>
+      asInt((await _get('/library/sections/${library.id}/all', {
+        'type': 9,
+        'artist.genre': genre.id,
+        'X-Plex-Container-Start': 0,
+        'X-Plex-Container-Size': 0,
+      }))['totalSize']) ??
+      0;
+
+  @override
+  Future<List<MediaItem>> genreAlbums(Library library, FilterValue genre,
+          {String? letter, int limit = 500}) async =>
+      letter != null
+          ? _startingWith(library, MusicList.albums, letter, limit,
+              extra: {'artist.genre': genre.id})
+          : _items(await _get('/library/sections/${library.id}/all', {
+              'type': 9,
+              'artist.genre': genre.id,
+              'sort': 'titleSort',
+              'X-Plex-Container-Start': 0,
+              'X-Plex-Container-Size': limit,
+            }));
+
+  @override
+  Future<List<MediaItem>> genreTracks(Library library, FilterValue genre,
+          {int limit = 200}) async =>
+      _items(await _get('/library/sections/${library.id}/all', {
+        'type': 10,
+        'artist.genre': genre.id,
+        'sort': 'random',
+        'X-Plex-Container-Start': 0,
+        'X-Plex-Container-Size': limit,
+      }));
 
   @override
   Future<List<MediaItem>> recentTracks(Library library, {int limit = 200}) async =>

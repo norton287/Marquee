@@ -5048,6 +5048,125 @@ void main() {
     expect(uris.last.queryParameters.containsKey('year'), isFalse);
   });
 
+  // The car's Genres: artist genres (verified on the user's PMS 2026-11-20:
+  // 21 clean artist genres vs 190 album ones), albums/songs by artist.genre.
+  test('Plex genre reads use artist genres', () async {
+    final uris = <Uri>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        uris.add(o.uri);
+        final q = o.queryParameters;
+        final data = switch (o.path) {
+          '/library/sections/7/genre' => {'MediaContainer': {'Directory': [
+              {'key': '35408', 'title': 'blues'}, {'key': '36814', 'title': 'Pop/Rock'}]}},
+          _ when '${q['X-Plex-Container-Size']}' == '0' => {'MediaContainer': {'size': 0, 'totalSize': 9}},
+          _ => {'MediaContainer': {'totalSize': 3, 'Metadata': [
+              {'ratingKey': '1', 'type': q['type'] == 9 || q['type'] == '9' ? 'album' : 'track', 'title': 'Brothers'},
+              {'ratingKey': '2', 'type': q['type'] == 9 || q['type'] == '9' ? 'album' : 'track', 'title': 'The Blues Brothers'},
+              {'ratingKey': '3', 'type': q['type'] == 9 || q['type'] == '9' ? 'album' : 'track', 'title': 'Cream'},
+            ]}},
+        };
+        h.resolve(Response(requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P', baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    const music = Library(serverId: 'p', id: '7', title: 'Music', kind: LibraryKind.music);
+
+    final genres = await plex.musicGenres(music);
+    expect(genres.map((g) => (g.id, g.title)), [('35408', 'blues'), ('36814', 'Pop/Rock')]);
+    expect(uris.last.path, '/library/sections/7/genre');
+    expect(uris.last.queryParameters['type'], '8');
+
+    const blues = FilterValue('35408', 'blues');
+    expect(await plex.genreAlbumCount(music, blues), 9);
+    expect(uris.last.queryParameters,
+        allOf(containsPair('type', '9'), containsPair('artist.genre', '35408'),
+            containsPair('X-Plex-Container-Size', '0')));
+
+    final albums = await plex.genreAlbums(music, blues);
+    expect(albums.map((a) => a.title), ['Brothers', 'The Blues Brothers', 'Cream']);
+    expect(uris.last.queryParameters,
+        allOf(containsPair('type', '9'), containsPair('artist.genre', '35408'),
+            containsPair('sort', 'titleSort')));
+
+    // A letter: the A–Z rules ("The Blues Brothers" under B), same filter.
+    final underB = await plex.genreAlbums(music, blues, letter: 'B');
+    expect(underB.map((a) => a.title), ['Brothers', 'The Blues Brothers']);
+    expect(uris.last.queryParameters,
+        allOf(containsPair('artist.genre', '35408'), contains('title<')));
+    expect(uris.last.queryParameters['title<'], startsWith('B,The B'));
+
+    await plex.genreTracks(music, blues);
+    expect(uris.last.queryParameters,
+        allOf(containsPair('type', '10'), containsPair('artist.genre', '35408'),
+            containsPair('sort', 'random'), containsPair('X-Plex-Container-Size', '200')));
+  });
+
+  test('Jellyfin genre reads', () async {
+    final calls = <Map<String, dynamic>>[];
+    final dio = Dio(BaseOptions(baseUrl: 'http://jf'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        calls.add({'path': o.path, ...o.queryParameters});
+        final data = switch (o.path) {
+          '/MusicGenres' => {'Items': [{'Id': 'g1', 'Name': 'Jazz'}, {'Id': 'g2', 'Name': 'Rock'}]},
+          _ => {'Items': [], 'TotalRecordCount': 42},
+        };
+        h.resolve(Response(requestOptions: o, data: jsonDecode(jsonEncode(data)), statusCode: 200));
+      }));
+    final jf = JellyfinBackend(
+        const ServerConfig(id: 'j', kind: ServerKind.jellyfin, name: 'J',
+            baseUrl: 'http://jf', token: 't', userId: 'u'),
+        dio: dio);
+    const music = Library(serverId: 'j', id: 'M', title: 'Music', kind: LibraryKind.music);
+    final genres = await jf.musicGenres(music);
+    expect(genres.map((g) => (g.id, g.title)), [('g1', 'Jazz'), ('g2', 'Rock')]);
+    expect(calls.last['parentId'], 'M');
+
+    const jazz = FilterValue('g1', 'Jazz');
+    expect(await jf.genreAlbumCount(music, jazz), 42);
+    expect(calls.last, allOf(containsPair('path', '/Items'), containsPair('includeItemTypes', 'MusicAlbum'),
+        containsPair('genreIds', 'g1'), containsPair('recursive', true), containsPair('limit', 0)));
+
+    await jf.genreAlbums(music, jazz);
+    expect(calls.last, allOf(containsPair('includeItemTypes', 'MusicAlbum'),
+        containsPair('genreIds', 'g1'), containsPair('sortBy', 'SortName')));
+    await jf.genreAlbums(music, jazz, letter: 'B');
+    expect(calls.last, containsPair('nameStartsWith', 'B'));
+    await jf.genreAlbums(music, jazz, letter: '#');
+    expect(calls.last, containsPair('nameLessThan', 'A'));
+
+    await jf.genreTracks(music, jazz);
+    expect(calls.last, allOf(containsPair('includeItemTypes', 'Audio'), containsPair('genreIds', 'g1'),
+        containsPair('sortBy', 'Random'), containsPair('limit', 200)));
+  });
+
+  test('Demo has music genres', () async {
+    final demo = DemoBackend(demoServer);
+    final music = (await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+    final genres = await demo.musicGenres(music);
+    expect(genres, isNotEmpty);
+    final seen = <String>{};
+    for (final g in genres) {
+      final albums = await demo.genreAlbums(music, g);
+      expect(albums, isNotEmpty, reason: g.title);
+      expect(await demo.genreAlbumCount(music, g), albums.length);
+      // Each album in exactly one demo genre.
+      for (final a in albums) {
+        expect(seen.add(a.id), isTrue, reason: a.title);
+      }
+      final albumTracks = {
+        for (final a in albums) ...(await demo.children(a)).map((t) => t.id)
+      };
+      final songs = await demo.genreTracks(music, g);
+      expect(songs, isNotEmpty);
+      expect(songs.every((t) => albumTracks.contains(t.id)), isTrue);
+    }
+    // Letters: albums under 'A' only.
+    final some = await demo.genreAlbums(music, genres.first, letter: 'A');
+    expect(some.every((a) => MediaBackend.underLetter(a.title, 'A')), isTrue);
+  });
+
   test('Jellyfin applies filters with or within, and across', () async {
     final calls = <Map<String, dynamic>>[];
     final dio = Dio(BaseOptions(baseUrl: 'http://jf'))

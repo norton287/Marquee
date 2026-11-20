@@ -581,6 +581,60 @@ class JellyfinBackend extends MediaBackend {
     };
   }
 
+  // -- genres (car: Tracks → Genres) ------------------------------------------
+  // Jellyfin's music genres come from albums and songs (not artists as on
+  // Plex); untested against a real server.
+
+  Map<String, dynamic> _genreScope(Library library, FilterValue genre, String type) => {
+        'parentId': library.id,
+        'recursive': true,
+        'includeItemTypes': type,
+        'genreIds': genre.id,
+      };
+
+  @override
+  Future<List<FilterValue>> musicGenres(Library library) async {
+    final r = await _dio.get<Map<String, dynamic>>('/MusicGenres', queryParameters: {
+      'userId': _uid,
+      'parentId': library.id,
+      'sortBy': 'SortName',
+    });
+    return [
+      for (final i in ((r.data?['Items'] as List?) ?? const []).whereType<Map>())
+        FilterValue('${i['Id']}', '${i['Name']}'),
+    ];
+  }
+
+  @override
+  Future<int> genreAlbumCount(Library library, FilterValue genre) async {
+    final r = await _dio.get<Map<String, dynamic>>('/Items', queryParameters: {
+      'userId': _uid,
+      ..._genreScope(library, genre, 'MusicAlbum'),
+      'limit': 0,
+    });
+    return asInt(r.data?['TotalRecordCount']) ?? 0;
+  }
+
+  @override
+  Future<List<MediaItem>> genreAlbums(Library library, FilterValue genre,
+          {String? letter, int limit = 500}) =>
+      _list('/Items', {
+        ..._genreScope(library, genre, 'MusicAlbum'),
+        'sortBy': 'SortName',
+        'limit': limit,
+        if (letter == '#') 'nameLessThan': 'A',
+        if (letter != null && letter != '#') 'nameStartsWith': letter,
+      });
+
+  @override
+  Future<List<MediaItem>> genreTracks(Library library, FilterValue genre,
+          {int limit = 200}) =>
+      _list('/Items', {
+        ..._genreScope(library, genre, 'Audio'),
+        'sortBy': 'Random',
+        'limit': limit,
+      });
+
   @override
   Future<List<MediaItem>> recentTracks(Library library, {int limit = 200}) =>
       _list('/Items', {

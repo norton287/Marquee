@@ -405,6 +405,48 @@ class DemoBackend extends MediaBackend {
         .toList();
   }
 
+  /// The demo's music genres: album index → genre (each album in one).
+  static const _musicGenres = {
+    'g-indie': ('Indie', [0, 1, 3]),
+    'g-electronic': ('Electronic', [2, 4]),
+    'g-folk': ('Folk', [5]),
+  };
+
+  List<MediaItem> _albumsOf(FilterValue genre) => [
+        for (final i in _musicGenres[genre.id]?.$2 ?? const <int>[])
+          if (i < _albums.length) _albums[i],
+      ];
+
+  @override
+  Future<List<FilterValue>> musicGenres(Library library) async =>
+      library.kind != LibraryKind.music
+          ? const []
+          : [for (final e in _musicGenres.entries) FilterValue(e.key, e.value.$1)];
+
+  @override
+  Future<int> genreAlbumCount(Library library, FilterValue genre) async =>
+      library.kind != LibraryKind.music ? 0 : _albumsOf(genre).length;
+
+  @override
+  Future<List<MediaItem>> genreAlbums(Library library, FilterValue genre,
+      {String? letter, int limit = 500}) async {
+    if (library.kind != LibraryKind.music) return const [];
+    return _liveAll([
+      for (final a in _albumsOf(genre))
+        if (letter == null || MediaBackend.underLetter(a.title, letter)) a
+    ]..sort((a, b) => a.title.compareTo(b.title)))
+        .take(limit)
+        .toList();
+  }
+
+  @override
+  Future<List<MediaItem>> genreTracks(Library library, FilterValue genre,
+      {int limit = 200}) async {
+    if (library.kind != LibraryKind.music) return const [];
+    final all = [for (final a in _albumsOf(genre)) ...?_tracks[a.id]]..shuffle();
+    return _liveAll(all.take(limit));
+  }
+
   @override
   Future<List<MediaItem>> recentTracks(Library library, {int limit = 200}) async =>
       library.kind != LibraryKind.music

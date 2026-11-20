@@ -109,6 +109,24 @@ abstract class MediaBackend {
           {int limit = 500}) async =>
       const [];
 
+  /// A music [library]'s genres for the car's Tracks → Genres (Plex: artist
+  /// genres; Jellyfin: music genres). Empty: no Genres from this server.
+  Future<List<FilterValue>> musicGenres(Library library) async => const [];
+
+  /// How many albums [genre] holds in [library] (decides tiles vs A–Z).
+  Future<int> genreAlbumCount(Library library, FilterValue genre) async => 0;
+
+  /// [genre]'s albums in [library], by title; [letter] keeps one A–Z folder
+  /// (the [musicStartingWith] rules).
+  Future<List<MediaItem>> genreAlbums(Library library, FilterValue genre,
+          {String? letter, int limit = 500}) async =>
+      const [];
+
+  /// Up to [limit] random songs of [genre] in [library] (car: Shuffle <genre>).
+  Future<List<MediaItem>> genreTracks(Library library, FilterValue genre,
+          {int limit = 200}) async =>
+      const [];
+
   /// A music [library]'s newest tracks (car: Tracks → Recently added).
   Future<List<MediaItem>> recentTracks(Library library, {int limit = 200}) async =>
       const [];
