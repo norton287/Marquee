@@ -7,7 +7,15 @@
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M12,2l-5.5,9h11zM17.5,13a4.5,4.5 0,1 0,0 9a4.5,4.5 0,1 0,0 -9zM3,13.5h8v8H3z" />
+    <!-- Drawn at 65% around the centre: Android Auto fills the row's whole
+         icon slot, so the symbol looked too big (user, 2026-11-20). -->
+    <group
+        android:pivotX="12"
+        android:pivotY="12"
+        android:scaleX="0.65"
+        android:scaleY="0.65">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M12,2l-5.5,9h11zM17.5,13a4.5,4.5 0,1 0,0 9a4.5,4.5 0,1 0,0 -9zM3,13.5h8v8H3z" />
+    </group>
 </vector>
