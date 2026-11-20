@@ -5,17 +5,57 @@ import 'package:flutter/foundation.dart';
 import 'backend.dart';
 import 'models.dart';
 
+/// How Android Auto shows rows: list rows, art tiles, or small-icon
+/// ("category") rows/tiles. [value] is Android's constant.
+enum CarStyle {
+  list(1),
+  grid(2),
+  categoryList(3),
+  categoryGrid(4);
+
+  const CarStyle(this.value);
+  final int value;
+}
+
 /// One row in the car's media browser.
 @immutable
 class CarNode {
   const CarNode(this.id, this.title,
-      {this.subtitle, this.art, this.playable = false, this.browsable = false});
+      {this.subtitle,
+      this.art,
+      this.playable = false,
+      this.browsable = false,
+      this.browsableStyle,
+      this.playableStyle,
+      this.icon,
+      this.group});
   final String id;
   final String title;
   final String? subtitle;
   final Uri? art;
   final bool playable;
   final bool browsable;
+
+  /// How this row's own children show (Android Auto styles a list from the
+  /// row that opened it): its browsable and its playable children.
+  final CarStyle? browsableStyle;
+  final CarStyle? playableStyle;
+
+  /// An app icon (drawable name, e.g. `car_albums`) when there's no art.
+  final String? icon;
+
+  /// A heading over this row's block of rows.
+  final String? group;
+
+  CarNode copyWith({String? group}) => CarNode(id, title,
+      subtitle: subtitle,
+      art: art,
+      playable: playable,
+      browsable: browsable,
+      browsableStyle: browsableStyle,
+      playableStyle: playableStyle,
+      icon: icon,
+      group: group ?? this.group);
 }
 
 /// What Android Auto shows: four tabs over every signed-in server's visible
@@ -108,6 +148,7 @@ class CarLibrary {
   void forgetTracks() {
     _containerTracks.clear();
     _genres.clear();
+    _genreSizes.clear();
   }
 
   // -- genres ------------------------------------------------------------------
@@ -120,6 +161,19 @@ class CarLibrary {
   /// Genre name (lower case) → its title and where it is: each music
   /// library holding it, with that library's own genre id.
   final _genres = <String, (String, List<(Library, FilterValue)>)>{};
+
+  /// Albums per genre (lower-case name), summed over libraries.
+  final _genreSizes = <String, int>{};
+
+  Future<int> _albumCount(List<(Library, FilterValue)> where) async {
+    final counts = await Future.wait([
+      for (final (l, g) in where)
+        _on(l.serverId, (b) => b.genreAlbumCount(l, g))
+            .timeout(timeout)
+            .catchError((Object _) => 0),
+    ]);
+    return counts.fold<int>(0, (a, b) => a + b);
+  }
 
   static String _genreKey(String name) => name.trim().toLowerCase();
 
@@ -135,8 +189,19 @@ class CarLibrary {
       _genres[key] = (known?.$1 ?? g.title, [...?known?.$2, (l, g)]);
     }
     final keys = _genres.keys.toList()..sort();
+    // Each genre row styles its own page (Android Auto styles a list from
+    // the row that opened it): album tiles, or plain letter rows when big.
+    final sizes = await Future.wait([for (final k in keys) _albumCount(_genres[k]!.$2)]);
+    _genreSizes
+      ..clear()
+      ..addAll({for (var i = 0; i < keys.length; i++) keys[i]: sizes[i]});
     return [
-      for (final k in keys) CarNode('genre:${_genres[k]!.$1}', _genres[k]!.$1, browsable: true),
+      for (var i = 0; i < keys.length; i++)
+        CarNode('genre:${_genres[keys[i]]!.$1}', _genres[keys[i]]!.$1,
+            browsable: true,
+            icon: 'car_genres',
+            browsableStyle: sizes[i] > bigGenre ? CarStyle.list : CarStyle.grid,
+            playableStyle: CarStyle.list),
     ];
   }
 
@@ -173,14 +238,10 @@ class CarLibrary {
     final found = await _genre(name);
     if (found == null) return const [];
     final (title, where) = found;
-    final shuffle = CarNode('shufflegenre:$name', 'Shuffle $title', playable: true);
-    final counts = await Future.wait([
-      for (final (l, g) in where)
-        _on(l.serverId, (b) => b.genreAlbumCount(l, g))
-            .timeout(timeout)
-            .catchError((Object _) => 0),
-    ]);
-    if (counts.fold(0, (a, b) => a + b) > bigGenre) {
+    final shuffle = CarNode('shufflegenre:$name', 'Shuffle $title',
+        playable: true, icon: 'car_shuffle');
+    final size = _genreSizes[_genreKey(name)] ?? await _albumCount(where);
+    if (size > bigGenre) {
       return [
         shuffle,
         for (final letter in letters) CarNode('genreaz:$letter:$name', letter, browsable: true),
@@ -188,7 +249,8 @@ class CarLibrary {
     }
     return [
       shuffle,
-      ..._albumTiles(await _eachGenre(where, (b, l, g) => b.genreAlbums(l, g))),
+      for (final a in _albumTiles(await _eachGenre(where, (b, l, g) => b.genreAlbums(l, g))))
+        a.copyWith(group: 'Albums'),
     ];
   }
 
@@ -333,14 +395,20 @@ class CarLibrary {
       art: artOf(i),
       playable: isTrack || playable,
       browsable: !isTrack && !playable,
+      browsableStyle: i.kind == MediaKind.artist ? CarStyle.grid : null,
+      playableStyle: i.kind == MediaKind.artist ? CarStyle.list : null,
     );
   }
 
   static const _tabs = [
-    CarNode('tab:recent', 'Recent', browsable: true),
-    CarNode('tab:playlists', 'Playlists', browsable: true),
-    CarNode('tab:library', 'Library', browsable: true),
-    CarNode('tab:tracks', 'Tracks', browsable: true),
+    CarNode('tab:recent', 'Recent',
+        browsable: true, icon: 'car_recent', playableStyle: CarStyle.grid),
+    CarNode('tab:playlists', 'Playlists',
+        browsable: true, icon: 'car_playlists', browsableStyle: CarStyle.grid),
+    CarNode('tab:library', 'Library',
+        browsable: true, icon: 'car_library', browsableStyle: CarStyle.categoryList),
+    CarNode('tab:tracks', 'Tracks',
+        browsable: true, icon: 'car_tracks', browsableStyle: CarStyle.list),
   ];
 
   /// '#', then A–Z: the car's letter folders (a big library doesn't fit one
@@ -350,8 +418,12 @@ class CarLibrary {
     'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
   ];
 
+  /// Artists and albums under a letter show as tiles; tracks as rows.
   static List<CarNode> _letterFolders(String kind) => [
-        for (final l in letters) CarNode('az:$kind:$l', l, browsable: true),
+        for (final l in letters)
+          CarNode('az:$kind:$l', l,
+              browsable: true,
+              browsableStyle: kind == 'tracks' ? null : CarStyle.grid),
       ];
 
   /// Tracks of a list the car just showed, under the list's id, so a tap
@@ -377,7 +449,7 @@ class CarLibrary {
         final albums = await _eachMusicLibrary(
             (b, l) => b.recentMusic(l, limit: 20));
         return [
-          const CarNode('shuffle:all', 'Shuffle all', playable: true),
+          const CarNode('shuffle:all', 'Shuffle all', playable: true, icon: 'car_shuffle'),
           // One tap plays a recent album.
           for (final a in albums.take(_recentCap)) _node(a, playable: true),
         ];
@@ -386,8 +458,10 @@ class CarLibrary {
         return [for (final p in lists.take(listCap)) _node(p)]..sort(_byTitle);
       case 'tab:library':
         return const [
-          CarNode('lib:artists', 'Artists', browsable: true),
-          CarNode('lib:albums', 'Albums', browsable: true),
+          CarNode('lib:artists', 'Artists',
+              browsable: true, icon: 'car_artists', browsableStyle: CarStyle.list),
+          CarNode('lib:albums', 'Albums',
+              browsable: true, icon: 'car_albums', browsableStyle: CarStyle.list),
         ];
       case 'lib:artists':
         return _letterFolders('artists');
@@ -395,9 +469,12 @@ class CarLibrary {
         return _letterFolders('albums');
       case 'tab:tracks':
         return [
-          const CarNode('tracks:recent', 'Recently added', browsable: true),
-          const CarNode('tracks:top', 'Most played', browsable: true),
-          const CarNode('tracks:genres', 'Genres', browsable: true),
+          const CarNode('tracks:recent', 'Recently added',
+              browsable: true, icon: 'car_recently_added'),
+          const CarNode('tracks:top', 'Most played',
+              browsable: true, icon: 'car_most_played'),
+          const CarNode('tracks:genres', 'Genres',
+              browsable: true, icon: 'car_genres', browsableStyle: CarStyle.list),
           ..._letterFolders('tracks'),
         ];
       case 'tracks:recent':
@@ -459,7 +536,8 @@ class CarLibrary {
           final several = albums.length > 1 ||
               (albums.length == 1 && (albums.single.childCount ?? 2) > 1);
           return [
-            if (several) CarNode('shuffleartist:$serverId:$id', 'Shuffle', playable: true),
+            if (several) CarNode('shuffleartist:$serverId:$id', 'Shuffle',
+                  playable: true, icon: 'car_shuffle'),
             for (final a in albums.take(listCap)) _node(a),
           ];
         case 'album':
@@ -469,7 +547,8 @@ class CarLibrary {
           _rememberTracks('album:$serverId:$id', songs);
           return [
             if (songs.length > 1)
-              CarNode('shufflealbum:$serverId:$id', 'Shuffle', playable: true),
+              CarNode('shufflealbum:$serverId:$id', 'Shuffle',
+                  playable: true, icon: 'car_shuffle'),
             for (final t in tracks.take(listCap)) _node(t, container: 'album:$id')
           ];
         case 'playlist':
@@ -479,7 +558,7 @@ class CarLibrary {
           _rememberTracks('playlist:$serverId:$id',
               [for (final t in tracks) if (t.kind == MediaKind.track) t]);
           return [
-            CarNode('shuffle:$serverId:$id', 'Shuffle', playable: true),
+            CarNode('shuffle:$serverId:$id', 'Shuffle', playable: true, icon: 'car_shuffle'),
             for (final t in tracks.where((t) => t.kind == MediaKind.track).take(listCap))
               _node(t, container: 'playlist:$id'),
           ];

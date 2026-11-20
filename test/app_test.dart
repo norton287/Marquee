@@ -1672,7 +1672,11 @@ void main() {
           localArt: (remote) async => Uri.file('/cache/${remote.pathSegments.last}.jpg'));
       final albums = await local.getChildren('tab:albums');
       expect(albums.every((m) => m.artUri == null), isTrue);
-      final tracks = await local.getChildren(albums.first.id);
+      final rows = await local.getChildren(albums.first.id);
+      // No server link; the app's own icons (Shuffle) are no server link.
+      expect(rows.every((m) => m.artUri == null || m.artUri!.scheme == 'android.resource'),
+          isTrue);
+      final tracks = songsOf(rows);
       expect(tracks.every((m) => m.artUri == null), isTrue);
       await local.playFromMediaId(tracks.first.id);
       await settle();
@@ -2060,6 +2064,102 @@ void main() {
         ..restore(saved);
       expect(other.keptLists, 0);
       expect(big, isNotEmpty);
+    });
+
+    const browsableHint = 'android.media.browse.CONTENT_STYLE_BROWSABLE_HINT';
+    const playableHint = 'android.media.browse.CONTENT_STYLE_PLAYABLE_HINT';
+    const groupHint = 'android.media.browse.CONTENT_STYLE_GROUP_TITLE_HINT';
+    const icon = 'android.resource://app.marquee.marquee/drawable/';
+
+    test('car rows carry their styles and icons', () async {
+      final root = {for (final m in await handler.getChildren('root')) m.id: m};
+      expect(root['tab:recent']!.extras, {playableHint: 2});
+      expect('${root['tab:recent']!.artUri}', '${icon}car_recent');
+      expect(root['tab:playlists']!.extras, {browsableHint: 2});
+      expect(root['tab:library']!.extras, {browsableHint: 3});
+      expect('${root['tab:tracks']!.artUri}', '${icon}car_tracks');
+      final library = await handler.getChildren('tab:library');
+      expect('${library.first.artUri}', '${icon}car_artists');
+      expect('${library.last.artUri}', '${icon}car_albums');
+      // Artists/Albums hold letters: plain rows; a letter of artists: tiles.
+      expect(library.first.extras, {browsableHint: 1});
+      final letters = await handler.getChildren('lib:artists');
+      expect(letters.first.extras, {browsableHint: 2});
+      final tracks = {for (final m in await handler.getChildren('tab:tracks')) m.id: m};
+      expect('${tracks['tracks:recent']!.artUri}', '${icon}car_recently_added');
+      expect('${tracks['tracks:top']!.artUri}', '${icon}car_most_played');
+      expect('${tracks['tracks:genres']!.artUri}', '${icon}car_genres');
+      expect(tracks['az:tracks:A']!.artUri, isNull);
+      final recent = await handler.getChildren('tab:recent');
+      expect('${recent.first.artUri}', '${icon}car_shuffle'); // Shuffle all
+    });
+
+    test('a genre page heads its albums; art beats icons', () async {
+      final withArt = MarqueeAudioHandler(engine, car,
+          // Uri? like the app's own: a Future<Uri> breaks timeout's null fallback.
+          carArt: (remote, {required mode}) async =>
+              Uri.tryParse('content://art/${remote.hashCode}'));
+      final genres = await withArt.getChildren('tracks:genres');
+      expect('${genres.first.artUri}', '${icon}car_genres');
+      // Small genres: their albums as tiles, the Shuffle row as a list row.
+      expect(genres.first.extras, {browsableHint: 2, playableHint: 1});
+      final indie = await withArt.getChildren('genre:Indie');
+      expect('${indie.first.artUri}', '${icon}car_shuffle');
+      expect(indie.first.extras?[groupHint], isNull);
+      for (final a in indie.skip(1)) {
+        expect(a.artUri?.scheme, 'content');
+        expect(a.extras?[groupHint], 'Albums');
+      }
+      await withArt.dispose();
+    });
+
+    test('a big genre lists its letters as plain rows', () async {
+      final big = MarqueeAudioHandler(engine,
+          CarLibrary(() => {'demo': NamedGenresDemo({'g-indie': 'Indie'}, count: 101)},
+              (_) async => [(await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music)]));
+      final genres = await big.getChildren('tracks:genres');
+      expect(genres.single.extras, {browsableHint: 1, playableHint: 1});
+      await big.dispose();
+    });
+
+    test('remembered lists keep styles, icons and headings', () async {
+      final rows = [
+        as_.MediaItem(id: 'tab:recent', title: 'Recent', playable: false,
+            artUri: Uri.parse('${icon}car_recent'), extras: const {playableHint: 2}),
+        as_.MediaItem(id: 'album:s:1', title: 'A', playable: false,
+            artUri: Uri.parse('content://art/1'), extras: const {groupHint: 'Albums'}),
+        as_.MediaItem(id: 'track:s:2', title: 'B', playable: true,
+            artUri: Uri.parse('file:///private/x.jpg')),
+      ];
+      final json = MarqueeAudioHandler.rememberJsonForTest({'x': rows}, 'k');
+      final back = MarqueeAudioHandler(engine, car, rememberKey: () => 'k')..restore(json);
+      final again = await back.getChildren('x');
+      expect('${again[0].artUri}', '${icon}car_recent');
+      expect(again[0].extras, {playableHint: 2});
+      expect('${again[1].artUri}', 'content://art/1');
+      expect(again[1].extras, {groupHint: 'Albums'});
+      expect(again[2].artUri, isNull); // private files never leave the app
+      expect(again[2].extras, isNull);
+      await back.dispose();
+    });
+
+    test('a restored list without styles is redrawn once fresh', () async {
+      // Saved by the last build: artists of A with no styles.
+      final old = (await handler.getChildren('az:artists:A'))
+          .map((m) => as_.MediaItem(id: m.id, title: m.title, artist: m.artist,
+              playable: m.playable))
+          .toList();
+      expect(old, isNotEmpty);
+      final json = MarqueeAudioHandler.rememberJsonForTest({'az:artists:A': old}, 'k');
+      final calls = <String>[];
+      final back = MarqueeAudioHandler(engine, car, rememberKey: () => 'k',
+          notifyChanged: (id) async => calls.add(id), keepFreshFor: Duration.zero)
+        ..restore(json);
+      await back.getChildren('az:artists:A');
+      await settle();
+      await settle();
+      expect(calls, contains('az:artists:A'));
+      await back.dispose();
     });
 
     test('a long list is remembered in part (the saved lists stay small)', () {

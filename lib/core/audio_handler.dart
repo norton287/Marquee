@@ -164,9 +164,12 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
         m.id,
         m.title,
         m.artist,
-        // Only links the car can open; a private file isn't one.
-        m.artUri?.scheme == 'content' ? '${m.artUri}' : null,
+        // Only links the car can open (art, app icons); a private file isn't one.
+        m.artUri?.scheme == 'content' || m.artUri?.scheme == 'android.resource'
+            ? '${m.artUri}'
+            : null,
         m.playable ?? false,
+        m.extras,
       ];
 
   void _scheduleRemember() {
@@ -203,6 +206,10 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
               artist: raw[2] as String?,
               artUri: raw[3] == null ? null : Uri.parse(raw[3] as String),
               playable: raw[4] as bool,
+              // Saved before looks were kept: none (refreshed when shown).
+              extras: raw.length > 5 && raw[5] is Map
+                  ? (raw[5] as Map).cast<String, dynamic>()
+                  : null,
             ),
         ];
         if (list.isEmpty) continue;
@@ -264,7 +271,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       if (a[i].id != b[i].id ||
           a[i].title != b[i].title ||
           a[i].artist != b[i].artist ||
-          a[i].artUri != b[i].artUri) {
+          a[i].artUri != b[i].artUri ||
+          !mapEquals(a[i].extras, b[i].extras)) {
         return false;
       }
     }
@@ -294,13 +302,31 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
 
   // -- browsing --------------------------------------------------------------
 
-  static as_.MediaItem _fromNode(CarNode n, Uri? art) => as_.MediaItem(
-        id: n.id,
-        title: n.title,
-        artist: n.subtitle,
-        artUri: art,
-        playable: n.playable,
-      );
+  /// Android Auto's description extras for looks (content styles, headings).
+  static const browsableHint = 'android.media.browse.CONTENT_STYLE_BROWSABLE_HINT';
+  static const playableHint = 'android.media.browse.CONTENT_STYLE_PLAYABLE_HINT';
+  static const groupHint = 'android.media.browse.CONTENT_STYLE_GROUP_TITLE_HINT';
+
+  /// An app icon the car can load (no network, no token; kept in release
+  /// builds by res/raw/keep.xml).
+  static Uri iconUri(String name) =>
+      Uri.parse('android.resource://app.marquee.marquee/drawable/$name');
+
+  static as_.MediaItem _fromNode(CarNode n, Uri? art) {
+    final extras = <String, dynamic>{
+      if (n.browsableStyle != null) browsableHint: n.browsableStyle!.value,
+      if (n.playableStyle != null) playableHint: n.playableStyle!.value,
+      if (n.group != null) groupHint: n.group,
+    };
+    return as_.MediaItem(
+      id: n.id,
+      title: n.title,
+      artist: n.subtitle,
+      artUri: art ?? (n.icon == null ? null : iconUri(n.icon!)),
+      playable: n.playable,
+      extras: extras.isEmpty ? null : extras,
+    );
+  }
 
   Future<List<as_.MediaItem>> _withArt(List<CarNode> nodes) async {
     final fetch = carArt;
