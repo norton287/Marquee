@@ -725,15 +725,23 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
         artUri: art,
       );
 
-  /// Local art per track id, once fetched.
+  /// The playing song's art per track id, once fetched.
   final _art = <String, Uri>{};
   String? _artFor;
 
+  /// Prefers the car's own `content://` link (Android Auto's now-playing
+  /// screen can't open a private `file://` one and showed no art); the lock
+  /// screen and notification read either. Falls back to the private file.
   void _fetchArt(MediaItem t) {
     final remote = CarLibrary.artOf(t);
-    if (remote == null || localArt == null || _artFor == t.id) return;
+    final car = carArt;
+    if (remote == null || (localArt == null && car == null) || _artFor == t.id) return;
     _artFor = t.id;
-    localArt!(remote).then((file) {
+    final Future<Uri?> link = car != null
+        ? car(remote, mode: CarArtMode.wait)
+            .then((u) async => u ?? await localArt?.call(remote))
+        : localArt!(remote);
+    link.then((file) {
       if (file == null) return;
       _art[t.id] = file;
       if (engine.state.current?.id == t.id) _publish(engine.state);

@@ -1242,6 +1242,24 @@ void main() {
     expect(rows.map((r) => r.landscape), [true, true, false]);
   });
 
+
+  // A maximized window on a big screen fits the first 60 albums: nothing to
+  // scroll, so the next page (loaded on scroll) never came (Windows,
+  // 2026-11-20). Pages keep loading until the grid can scroll.
+  testWidgets('a grid that fits on screen keeps loading until it scrolls', (tester) async {
+    await _pump(tester, const Size(3840, 2160), overrides: [
+      backendsProvider.overrideWithValue(<String, MediaBackend>{'demo': ManyAlbumsLibraryDemo()}),
+    ]);
+    await tester.tap(find.text('Libraries').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Music').last);
+    await tester.pumpAndSettle();
+    final grid = find.byType(Scrollable).evaluate()
+        .map((e) => (e as StatefulElement).state as ScrollableState)
+        .firstWhere((s) => s.position.axis == Axis.vertical);
+    expect(grid.position.maxScrollExtent, greaterThan(0));
+  });
+
   testWidgets('TV library grid fits seven posters across', (tester) async {
     // A 1080p TV at the usual 2x density: 960x540 logical pixels.
     tester.view.devicePixelRatio = 2;
@@ -1687,6 +1705,23 @@ void main() {
       await handler.playFromSearch('');
       await settle();
       expect(engine.state.queue, isNotEmpty);
+    });
+
+    // Android Auto's now-playing screen showed no art: a private file:// link
+    // is unreadable to the car. The playing song gets the car's own art link.
+    test("the playing song's art is a link the car can open", () async {
+      final both = MarqueeAudioHandler(engine, car,
+          localArt: (remote) async => Uri.file('/cache/${remote.pathSegments.last}.jpg'),
+          carArt: (remote, {required mode}) async =>
+              Uri.tryParse('content://app.marquee.marquee.art/${remote.pathSegments.last}.jpg'));
+      final album = (await both.getChildren('tab:albums')).first;
+      final tracks = songsOf(await both.getChildren(album.id));
+      await both.playFromMediaId(tracks.first.id);
+      await settle();
+      expect(both.mediaItem.value?.id, tracks.first.id);
+      expect(both.mediaItem.value?.artUri?.scheme, 'content');
+      expect(both.mediaItem.value?.artUri?.host, 'app.marquee.marquee.art');
+      await both.dispose();
     });
 
     test('no server link (with its token) leaves the app; art is a local file',
@@ -6136,5 +6171,25 @@ class _CountingDemo extends DemoBackend {
       {String? search}) {
     valueCalls++;
     return super.filterValues(library, category, search: search);
+  }
+}
+
+
+/// A music library with 150 albums, paged like a real server.
+class ManyAlbumsLibraryDemo extends DemoBackend {
+  ManyAlbumsLibraryDemo() : super(demoServer);
+  @override
+  Future<Paged> libraryItems(Library library,
+      {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) async {
+    if (library.kind != LibraryKind.music) {
+      return super.libraryItems(library, start: start, limit: limit, query: query);
+    }
+    final all = [
+      for (var i = 0; i < 150; i++)
+        MediaItem(serverId: 'demo', id: 'pa$i', kind: query.view == LibraryView.artists
+            ? MediaKind.artist : MediaKind.album, title: 'Album ${i.toString().padLeft(3, '0')}',
+            parentTitle: 'Artist $i'),
+    ];
+    return Paged(all.skip(start).take(limit).toList(), all.length);
   }
 }

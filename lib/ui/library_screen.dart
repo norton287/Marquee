@@ -108,6 +108,15 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
         _total = page.items.isEmpty ? _items.length : page.total;
         _loading = false;
       });
+      // More pages load as the grid scrolls near its end; a grid that fits
+      // the screen (a maximized desktop window) can't scroll, so it would
+      // stop at the first page. Keep loading until it reaches past the end.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && gen == _generation && !_done && _scroll.hasClients &&
+            _scroll.position.extentAfter < 900) {
+          _loadMore();
+        }
+      });
     } catch (e) {
       if (!mounted || gen != _generation) return;
       setState(() {
