@@ -162,18 +162,25 @@ class CarLibrary {
   /// library holding it, with that library's own genre id.
   final _genres = <String, (String, List<(Library, FilterValue)>)>{};
 
-  /// Albums per genre (lower-case name), summed over libraries.
+  /// Albums per genre (lower-case name), summed over libraries; only counts
+  /// that were read.
   final _genreSizes = <String, int>{};
 
-  Future<int> _albumCount(List<(Library, FilterValue)> where) async {
+  /// Albums in a genre, or null when a library's count couldn't be read
+  /// (treated as big: letters never read hundreds of albums at once).
+  Future<int?> _albumCount(List<(Library, FilterValue)> where) async {
     final counts = await Future.wait([
       for (final (l, g) in where)
         _on(l.serverId, (b) => b.genreAlbumCount(l, g))
             .timeout(timeout)
-            .catchError((Object _) => 0),
+            .then<int?>((n) => n)
+            .catchError((Object _) => null),
     ]);
-    return counts.fold<int>(0, (a, b) => a + b);
+    if (counts.contains(null)) return null;
+    return counts.fold<int>(0, (a, b) => a + b!);
   }
+
+  static bool _isBig(int? albums) => albums == null || albums > bigGenre;
 
   static String _genreKey(String name) => name.trim().toLowerCase();
 
@@ -194,21 +201,41 @@ class CarLibrary {
     final sizes = await Future.wait([for (final k in keys) _albumCount(_genres[k]!.$2)]);
     _genreSizes
       ..clear()
-      ..addAll({for (var i = 0; i < keys.length; i++) keys[i]: sizes[i]});
+      ..addAll({
+        for (var i = 0; i < keys.length; i++)
+          if (sizes[i] != null) keys[i]: sizes[i]!,
+      });
     return [
       for (var i = 0; i < keys.length; i++)
         CarNode('genre:${_genres[keys[i]]!.$1}', _genres[keys[i]]!.$1,
             browsable: true,
             icon: 'car_genres',
-            browsableStyle: sizes[i] > bigGenre ? CarStyle.list : CarStyle.grid,
+            browsableStyle: _isBig(sizes[i]) ? CarStyle.list : CarStyle.grid,
             playableStyle: CarStyle.list),
     ];
   }
 
   /// Where genre [name] is; reads the genres when not known yet (a restart).
+  /// Libraries hidden (or out of the car's scope) since are left out.
   Future<(String, List<(Library, FilterValue)>)?> _genre(String name) async {
     if (!_genres.containsKey(_genreKey(name))) await _genreList();
-    return _genres[_genreKey(name)];
+    final found = _genres[_genreKey(name)];
+    if (found == null) return null;
+    final (servers, only) = await _scope();
+    final inScope = servers.toSet();
+    final visible = {
+      for (final id in {for (final (l, _) in found.$2) l.serverId}.where(inScope.contains))
+        id: {
+          for (final l in await visibleLibraries(id).catchError((Object _) => <Library>[]))
+            l.id
+        },
+    };
+    final where = [
+      for (final (l, g) in found.$2)
+        if ((visible[l.serverId]?.contains(l.id) ?? false) && (only == null || l.id == only))
+          (l, g),
+    ];
+    return where.isEmpty ? null : (found.$1, where);
   }
 
   /// [read] for each library holding a genre, each caught on its own.
@@ -241,10 +268,12 @@ class CarLibrary {
     final shuffle = CarNode('shufflegenre:$name', 'Shuffle $title',
         playable: true, icon: 'car_shuffle');
     final size = _genreSizes[_genreKey(name)] ?? await _albumCount(where);
-    if (size > bigGenre) {
+    if (_isBig(size)) {
       return [
         shuffle,
-        for (final letter in letters) CarNode('genreaz:$letter:$name', letter, browsable: true),
+        for (final letter in letters)
+          CarNode('genreaz:$letter:$name', letter,
+              browsable: true, browsableStyle: CarStyle.grid),
       ];
     }
     return [
@@ -673,11 +702,7 @@ class CarLibrary {
           return tracks.isEmpty
               ? none('no tracks')
               : ((tracks..shuffle()).take(shuffleCap).toList(), 0);
-        case 'shuffleartist':
-          final all = await resolve('artist:$serverId:$itemId', whyNot: whyNot);
-          if (all == null) return null;
-          return ([...all.$1]..shuffle(), 0);
-        case 'artist':
+        case 'artist' || 'shuffleartist':
           final albums =
               await on((b) => b.children(_ref(serverId, itemId, MediaKind.artist)));
           // All albums at once: one after another made "play <artist>" slow.
@@ -687,9 +712,10 @@ class CarLibrary {
                   .catchError((Object _) => <MediaItem>[]),
           ]);
           final tracks = [for (final p in parts) ...p];
-          return tracks.isEmpty
-              ? none('no tracks (or no album could be read)')
-              : (tracks.take(shuffleCap).toList(), 0);
+          if (tracks.isEmpty) return none('no tracks (or no album could be read)');
+          // Shuffle draws from every song, then keeps 200 (not the first 200).
+          if (kind == 'shuffleartist') tracks.shuffle();
+          return (tracks.take(shuffleCap).toList(), 0);
         case 'track':
           // A list the car just showed (Tracks: recent, most played, A–Z);
           // forgotten (many lists later, or a restart): build it again.

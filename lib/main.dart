@@ -206,12 +206,7 @@ Future<void> _startMusicSession(
         // restart a background service on resume. Stop closes it.
         androidStopForegroundOnPause: false,
         // Shows the car's search button (voice works either way).
-        // Rows by default; tabs and folders set tiles where art fills them.
-        androidBrowsableRootExtras: {
-          'android.media.browse.SEARCH_SUPPORTED': true,
-          MarqueeAudioHandler.browsableHint: 1,
-          MarqueeAudioHandler.playableHint: 1,
-        },
+        androidBrowsableRootExtras: MarqueeAudioHandler.rootExtras,
       ),
     );
     // What the car actually receives, for the car log: first, so nothing

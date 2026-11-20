@@ -307,6 +307,17 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   static const playableHint = 'android.media.browse.CONTENT_STYLE_PLAYABLE_HINT';
   static const groupHint = 'android.media.browse.CONTENT_STYLE_GROUP_TITLE_HINT';
 
+  /// The car's root extras (AudioServiceConfig.androidBrowsableRootExtras):
+  /// search button; rows by default (tabs and folders set tiles where art
+  /// fills them).
+  static const rootExtras = <String, dynamic>{
+    'android.media.browse.SEARCH_SUPPORTED': true,
+    // Older Android Auto versions only read the style hints with this.
+    'android.media.browse.CONTENT_STYLE_SUPPORTED': true,
+    browsableHint: 1,
+    playableHint: 1,
+  };
+
   /// An app icon the car can load (no network, no token; kept in release
   /// builds by res/raw/keep.xml).
   static Uri iconUri(String name) =>

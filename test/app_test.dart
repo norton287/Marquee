@@ -305,15 +305,38 @@ class ClosedReadsDemo extends DemoBackend {
 /// The demo's music genres under other names ([names]: demo genre id →
 /// title); [count] overrides the album count (a "big" genre).
 class NamedGenresDemo extends DemoBackend {
-  NamedGenresDemo(this.names, {this.count}) : super(demoServer);
+  NamedGenresDemo(this.names, {this.count, this.countFails = false}) : super(demoServer);
   final Map<String, String> names;
   final int? count;
+  final bool countFails;
   @override
   Future<List<FilterValue>> musicGenres(Library library) async =>
       [for (final e in names.entries) FilterValue(e.key, e.value)];
   @override
-  Future<int> genreAlbumCount(Library library, FilterValue genre) async =>
-      count ?? await super.genreAlbumCount(library, genre);
+  Future<int> genreAlbumCount(Library library, FilterValue genre) async {
+    if (countFails) throw StateError('count failed');
+    return count ?? await super.genreAlbumCount(library, genre);
+  }
+}
+
+/// One artist with [albums] albums of 8 songs each (ids `a<n>-t<k>`).
+class ManyAlbumsDemo extends DemoBackend {
+  ManyAlbumsDemo(this.albums) : super(demoServer);
+  final int albums;
+  @override
+  Future<List<MediaItem>> children(MediaItem parent) async => switch (parent.kind) {
+        MediaKind.artist => [
+            for (var a = 0; a < albums; a++)
+              MediaItem(serverId: 'demo', id: 'a$a', kind: MediaKind.album,
+                  title: 'Album $a', childCount: 8),
+          ],
+        MediaKind.album => [
+            for (var t = 0; t < 8; t++)
+              MediaItem(serverId: 'demo', id: '${parent.id}-t$t', kind: MediaKind.track,
+                  title: 'Song $t', parentId: parent.id),
+          ],
+        _ => super.children(parent),
+      };
 }
 
 /// A car list's song rows: an album's list starts with a Shuffle row.
@@ -2071,6 +2094,15 @@ void main() {
     const groupHint = 'android.media.browse.CONTENT_STYLE_GROUP_TITLE_HINT';
     const icon = 'android.resource://app.marquee.marquee/drawable/';
 
+    test('the car is told content styles are supported', () {
+      expect(MarqueeAudioHandler.rootExtras, {
+        'android.media.browse.SEARCH_SUPPORTED': true,
+        'android.media.browse.CONTENT_STYLE_SUPPORTED': true,
+        browsableHint: 1,
+        playableHint: 1,
+      });
+    });
+
     test('car rows carry their styles and icons', () async {
       final root = {for (final m in await handler.getChildren('root')) m.id: m};
       expect(root['tab:recent']!.extras, {playableHint: 2});
@@ -3095,6 +3127,52 @@ void main() {
       final genres = await car.children('tracks:genres');
       expect(genres.map((g) => g.title), ['Indie']);
       expect((await car.children('genre:Indie')).length, 4);
+    });
+
+    test("a big genre's letters show their albums as tiles", () async {
+      final car = CarLibrary(() => {'demo': NamedGenresDemo({'g-indie': 'Indie'}, count: 101)},
+          (_) async => [music]);
+      final rows = await car.children('genre:Indie');
+      expect(rows.skip(1).every((r) => r.browsableStyle == CarStyle.grid), isTrue);
+    });
+
+    test("an artist's Shuffle draws from all their songs, not the first 200", () async {
+      final car = CarLibrary(() => {'demo': ManyAlbumsDemo(30)}, (_) async => [music]);
+      final artist = (await car.children('tab:artists')).first;
+      final (queue, _) = (await car.resolve(
+          'shuffleartist:demo:${artist.id.substring('artist:demo:'.length)}'))!;
+      expect(queue, hasLength(CarLibrary.shuffleCap));
+      // 30 albums × 8 songs: albums 26–30 hold songs 201–240 in album order.
+      expect(queue.where((t) => int.parse(t.id.split('-').first.substring(1)) >= 25), isNotEmpty);
+    });
+
+    test('a genre leaves out a library hidden after Genres was read', () async {
+      var hiddenB = false;
+      final car = CarLibrary(
+          () => {
+                'a': NamedGenresDemo({'g-indie': 'Indie'}),
+                'b': NamedGenresDemo({'g-indie': 'Indie'}),
+              },
+          (id) async => [
+                if (!(id == 'b' && hiddenB))
+                  Library(serverId: id, id: music.id, title: 'Music', kind: LibraryKind.music),
+              ]);
+      await car.children('tracks:genres');
+      expect((await car.children('genre:Indie')).skip(1), hasLength(6));
+      hiddenB = true;
+      expect((await car.children('genre:Indie')).skip(1), hasLength(3));
+      final (queue, _) = (await car.resolve('shufflegenre:Indie'))!;
+      expect(queue, hasLength(24)); // only server a's 3 albums × 8
+    });
+
+    test("a genre whose album count can't be read opens to letters", () async {
+      final car = CarLibrary(
+          () => {'demo': NamedGenresDemo({'g-indie': 'Indie'}, countFails: true)},
+          (_) async => [music]);
+      final genres = await car.children('tracks:genres');
+      expect(genres.single.browsableStyle, CarStyle.list);
+      final rows = await car.children('genre:Indie');
+      expect(rows.skip(1).map((r) => r.title), CarLibrary.letters);
     });
 
     test('a tap on a Tracks list it no longer remembers rebuilds the list',
