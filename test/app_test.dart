@@ -2230,6 +2230,60 @@ void main() {
       await timed.dispose();
     });
 
+    test("the car's Shuffle button shuffles what's queued; the song plays on", () async {
+      final t = await handler.getChildren('az:tracks:T');
+      expect(t.length, greaterThan(3));
+      await handler.playFromMediaId(t[2].id);
+      await settle();
+      expect(handler.playbackState.value.controls.map((c) => c.label), contains('Shuffle'));
+      final opens = player.calls.where((c) => c.startsWith('open ')).length;
+      final before = handler.queue.value.map((m) => m.id).toSet();
+      await handler.customAction('shuffle');
+      await settle();
+      // Same song, still playing, not opened again; it leads the new order.
+      expect(handler.mediaItem.value?.id, t[2].id);
+      expect(handler.playbackState.value.playing, isTrue);
+      expect(handler.playbackState.value.queueIndex, 0);
+      expect(player.calls.where((c) => c.startsWith('open ')).length, opens);
+      final after = handler.queue.value.map((m) => m.id).toList();
+      expect(after.first, t[2].id);
+      expect(after.toSet(), before); // the same songs, ids as the car knows them
+      // Next plays the new second song.
+      final second = engine.state.queue[1].id;
+      await handler.skipToNext();
+      await settle();
+      expect(engine.state.current?.id, second);
+    });
+
+    test('Shuffle after Next keeps each song under its own id', () async {
+      final t = await handler.getChildren('az:tracks:T');
+      await handler.playFromMediaId(t[2].id);
+      await settle();
+      await handler.skipToNext();
+      await settle();
+      expect(handler.mediaItem.value?.id, t[3].id);
+      await handler.customAction('shuffle');
+      await settle();
+      // The song playing (t[3]) keeps its id; the tapped one (t[2]) its own.
+      expect(handler.mediaItem.value?.id, t[3].id);
+      final ids = handler.queue.value.map((m) => m.id).toList();
+      expect(ids.toSet(), hasLength(ids.length), reason: 'ids must be unique');
+      expect(ids.toSet(), {for (final r in t) r.id});
+      // Tapping the first song again (within 10 s) plays it: it isn't playing.
+      await handler.playFromMediaId(t[2].id);
+      await settle();
+      expect(handler.mediaItem.value?.id, t[2].id);
+    });
+
+    test('no Shuffle button for a single song', () async {
+      final t = await handler.getChildren('az:tracks:T');
+      // A song's id without a list (e.g. from voice) plays just that song.
+      await handler.playFromMediaId(t.first.id.split('@').first);
+      await settle();
+      expect(engine.state.queue, hasLength(1));
+      expect(handler.playbackState.value.controls.map((c) => c.label), isNot(contains('Shuffle')));
+    });
+
     test('the playing item has the id the car tapped (else "Could not load")',
         () async {
       final album = (await handler.getChildren('tab:albums')).first;

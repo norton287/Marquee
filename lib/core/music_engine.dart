@@ -239,7 +239,8 @@ class MusicEngine {
       _reportTimer = Timer.periodic(reportEvery, (_) {
         if (_state.playing) _report(PlayState.playing);
       });
-      _prefetchAfter(index);
+      // The track's place now (a Shuffle while it loaded moved it to 0).
+      _prefetchAfter(_state.index);
     } catch (e) {
       if (gen == _generation) await _failed(e);
     }
@@ -364,6 +365,21 @@ class MusicEngine {
     if (_state.queue.length < 2) return;
     final shuffled = [..._state.queue]..shuffle();
     await playQueue(shuffled, 0);
+  }
+
+  /// Shuffles the queue around the playing track: it moves to the front and
+  /// plays on, the rest follow in random order (the car's Shuffle button).
+  /// Nothing playing: like [shuffleQueue].
+  Future<void> shuffleRest() async {
+    final q = _state.queue;
+    final at = _state.index;
+    if (q.length < 2) return;
+    if (at < 0 || at >= q.length) return shuffleQueue();
+    final rest = [...q]..removeAt(at);
+    rest.shuffle();
+    _prefetch = null; // the next one changed
+    _emit(_state.copyWith(queue: [q[at], ...rest], index: 0, error: _state.error));
+    if (!_state.loading) _prefetchAfter(0);
   }
 
   Future<void> stop() async {

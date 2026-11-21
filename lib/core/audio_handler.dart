@@ -565,6 +565,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     // The same tap again right after it started (prepare + play + play…).
     if (mediaId == _tappedId &&
         identical(engine.state.queue, _tappedQueue) &&
+        engine.state.index == _tappedIndex && // still the song playing
+
         _startedAt != null &&
         DateTime.now().difference(_startedAt!) < const Duration(seconds: 10)) {
       log?.add('tap $mediaId (already started)');
@@ -808,6 +810,9 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
         as_.MediaControl.skipToNext,
         // Closes the notification after a drive (it stays while paused).
         as_.MediaControl.stop,
+        // The car's lists of songs A–Z can't hold a Shuffle row (Android
+        // Auto re-sorts them), so the now-playing screen has a button.
+        if (s.queue.length > 1) shuffleControl,
       ],
       androidCompactActionIndices: const [0, 1, 2],
       systemActions: const {as_.MediaAction.seek},
@@ -829,6 +834,33 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     );
     if (!_sameState(playbackState.value, next)) playbackState.add(next);
     _logState();
+  }
+
+  /// Shuffles what's queued around the playing song (user's pick 2026-11-21);
+  /// its icon is kept in release builds by res/raw/keep.xml (`car_*`).
+  static final shuffleControl = as_.MediaControl.custom(
+      androidIcon: 'drawable/car_action_shuffle', label: 'Shuffle', name: 'shuffle');
+
+  @override
+  Future<dynamic> customAction(String name, [Map<String, dynamic>? extras]) async {
+    log?.add('control $name');
+    if (name != 'shuffle') return;
+    final before = engine.state.queue;
+    final tapped = identical(before, _tappedQueue);
+    final at = _tappedIndex;
+    // The song the car tapped (it may not be the one playing any more).
+    final tappedSong = tapped && at != null && at >= 0 && at < before.length ? before[at] : null;
+    // Its new queue is set before its first await, and must be marked as
+    // the tapped one before the engine's state arrives here: the car keeps
+    // knowing the songs by the ids it tapped them under.
+    final shuffling = engine.shuffleRest();
+    final after = engine.state.queue;
+    if (tapped && !identical(after, before)) {
+      _tappedQueue = after;
+      // Wherever the tapped song went (its id is the tapped one).
+      _tappedIndex = tappedSong == null ? -1 : after.indexWhere((t) => identical(t, tappedSong));
+    }
+    await shuffling;
   }
 
   /// Whether [next] only says what the system already works out: Android
