@@ -221,29 +221,31 @@ class CarLibrary {
     } while (epoch != _genresEpoch);
   }
 
-  /// Reads every music library's genres (in scope), one row per name.
+  /// Reads every music library's genres (in scope), one row per name. Each
+  /// opens to two rows (Shuffle, Albums), so nothing needs counting here.
   Future<List<CarNode>> _genreList() async {
     await _genresNow();
-    // A copy: the counts below take a while, and forgetTracks() may clear the map.
     final genres = {..._genres};
-    final keys = genres.keys.toList()..sort();
-    // Each genre row styles its own page (Android Auto styles a list from
-    // the row that opened it): album tiles, or plain letter rows when big.
-    final sizes = await Future.wait([for (final k in keys) _albumCount(genres[k]!.$2)]);
-    _genreSizes
-      ..clear()
-      ..addAll({
-        for (var i = 0; i < keys.length; i++)
-          if (sizes[i] != null) keys[i]: sizes[i]!,
-      });
+    _genreSizes.clear(); // counted afresh as each genre opens
     return [
-      for (var i = 0; i < keys.length; i++)
-        CarNode('genre:${genres[keys[i]]!.$1}', genres[keys[i]]!.$1,
+      for (final k in genres.keys.toList()..sort())
+        CarNode('genre:${genres[k]!.$1}', genres[k]!.$1,
             browsable: true,
             icon: 'car_genres',
-            browsableStyle: _isBig(sizes[i]) ? CarStyle.list : CarStyle.grid,
+            browsableStyle: CarStyle.list,
             playableStyle: CarStyle.list),
     ];
+  }
+
+  /// Albums in a genre: counted once, then kept until [forgetTracks].
+  Future<int?> _genreSize(String name, List<(Library, FilterValue)> where) async {
+    final key = _genreKey(name);
+    final known = _genreSizes[key];
+    if (known != null) return known;
+    final epoch = _genresEpoch;
+    final n = await _albumCount(where);
+    if (n != null && epoch == _genresEpoch) _genreSizes[key] = n;
+    return n;
   }
 
   /// Where genre [name] is; reads the genres when not known yet (a restart:
@@ -293,26 +295,38 @@ class CarLibrary {
           _node(a),
       ];
 
+  /// A genre's page: just `Shuffle <genre>` and `Albums`. Android Auto
+  /// re-sorts a list that looks alphabetical by title (its letter index), so
+  /// a Shuffle row above A–Z albums or letters ended up under S (user's car,
+  /// 2026-11-21); two rows fit on screen in either order.
   Future<List<CarNode>> _genrePage(String name) async {
     final found = await _genre(name);
     if (found == null) return const [];
     final (title, where) = found;
-    final shuffle = CarNode('shufflegenre:$name', 'Shuffle $title',
-        playable: true, icon: 'car_shuffle');
-    final size = _genreSizes[_genreKey(name)] ?? await _albumCount(where);
-    if (_isBig(size)) {
+    final big = _isBig(await _genreSize(name, where));
+    return [
+      CarNode('shufflegenre:$name', 'Shuffle $title', playable: true, icon: 'car_shuffle'),
+      // Its page: album tiles, or plain letter rows when big.
+      CarNode('genrealbums:$name', 'Albums',
+          browsable: true,
+          icon: 'car_albums',
+          browsableStyle: big ? CarStyle.list : CarStyle.grid),
+    ];
+  }
+
+  /// A genre's albums: tiles, or `#`/A–Z folders when there are many.
+  Future<List<CarNode>> _genreAlbums(String name) async {
+    final found = await _genre(name);
+    if (found == null) return const [];
+    final where = found.$2;
+    if (_isBig(await _genreSize(name, where))) {
       return [
-        shuffle,
         for (final letter in letters)
           CarNode('genreaz:$letter:$name', letter,
               browsable: true, browsableStyle: CarStyle.grid),
       ];
     }
-    return [
-      shuffle,
-      for (final a in _albumTiles(await _eachGenre(where, (b, l, g) => b.genreAlbums(l, g))))
-        a.copyWith(group: 'Albums'),
-    ];
+    return _albumTiles(await _eachGenre(where, (b, l, g) => b.genreAlbums(l, g)));
   }
 
   Future<List<CarNode>> _genreLetter(String letter, String name) async {
@@ -556,6 +570,9 @@ class CarLibrary {
     // Genre names may hold ':' (and '/'): the name is the rest of the id.
     if (parentId.startsWith('genre:')) {
       return _genrePage(parentId.substring('genre:'.length));
+    }
+    if (parentId.startsWith('genrealbums:')) {
+      return _genreAlbums(parentId.substring('genrealbums:'.length));
     }
     if (parentId.startsWith('genreaz:')) {
       final rest = parentId.substring('genreaz:'.length);
