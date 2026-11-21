@@ -423,20 +423,23 @@ class DemoBackend extends MediaBackend {
           ? const []
           : [for (final e in _musicGenres.entries) FilterValue(e.key, e.value.$1)];
 
-  @override
-  Future<int> genreAlbumCount(Library library, FilterValue genre) async =>
-      library.kind != LibraryKind.music ? 0 : _albumsOf(genre).length;
+  List<MediaItem> _songsOf(FilterValue genre) =>
+      [for (final a in _albumsOf(genre)) ...?_tracks[a.id]];
 
   @override
-  Future<List<MediaItem>> genreAlbums(Library library, FilterValue genre,
-      {String? letter, int limit = 500}) async {
+  Future<int> genreTrackCount(Library library, FilterValue genre) async =>
+      library.kind != LibraryKind.music ? 0 : _songsOf(genre).length;
+
+  @override
+  Future<List<MediaItem>> genreSongs(Library library, FilterValue genre,
+      {String? artistLetter, int limit = 500}) async {
     if (library.kind != LibraryKind.music) return const [];
     return _liveAll([
-      for (final a in _albumsOf(genre))
-        if (letter == null || MediaBackend.underLetter(a.title, letter)) a
-    ]..sort((a, b) => a.title.compareTo(b.title)))
-        .take(limit)
-        .toList();
+      for (final t in _songsOf(genre))
+        if (artistLetter == null ||
+            MediaBackend.underLetter(t.grandparentTitle ?? '', artistLetter))
+          t
+    ].take(limit));
   }
 
   @override

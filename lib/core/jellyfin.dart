@@ -606,25 +606,42 @@ class JellyfinBackend extends MediaBackend {
   }
 
   @override
-  Future<int> genreAlbumCount(Library library, FilterValue genre) async {
+  Future<int> genreTrackCount(Library library, FilterValue genre) async {
     final r = await _dio.get<Map<String, dynamic>>('/Items', queryParameters: {
       'userId': _uid,
-      ..._genreScope(library, genre, 'MusicAlbum'),
+      ..._genreScope(library, genre, 'Audio'),
       'limit': 0,
     });
     return asInt(r.data?['TotalRecordCount']) ?? 0;
   }
 
+  /// No artist-name filter for songs: a letter reads the genre's songs by
+  /// artist a page at a time (up to 10,000) and keeps that letter's. Every
+  /// page is read: the server's artist order doesn't ignore "The".
   @override
-  Future<List<MediaItem>> genreAlbums(Library library, FilterValue genre,
-          {String? letter, int limit = 500}) =>
-      _list('/Items', {
-        ..._genreScope(library, genre, 'MusicAlbum'),
-        'sortBy': 'SortName',
-        'limit': limit,
-        if (letter == '#') 'nameLessThan': 'A',
-        if (letter != null && letter != '#') 'nameStartsWith': letter,
+  Future<List<MediaItem>> genreSongs(Library library, FilterValue genre,
+      {String? artistLetter, int limit = 500}) async {
+    const sort = 'AlbumArtist,Album,ParentIndexNumber,IndexNumber';
+    if (artistLetter == null) {
+      return _list('/Items', {..._genreScope(library, genre, 'Audio'), 'sortBy': sort, 'limit': limit});
+    }
+    const page = 1000;
+    final kept = <MediaItem>[];
+    for (var start = 0; start < 10000 && kept.length < limit; start += page) {
+      final songs = await _list('/Items', {
+        ..._genreScope(library, genre, 'Audio'),
+        'sortBy': sort,
+        'startIndex': start,
+        'limit': page,
       });
+      kept.addAll([
+        for (final t in songs)
+          if (MediaBackend.underLetter(t.grandparentTitle ?? '', artistLetter)) t
+      ]);
+      if (songs.length < page) break;
+    }
+    return kept.take(limit).toList();
+  }
 
   @override
   Future<List<MediaItem>> genreTracks(Library library, FilterValue genre,

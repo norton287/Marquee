@@ -47,8 +47,8 @@ class CarNode {
   /// A heading over this row's block of rows.
   final String? group;
 
-  CarNode copyWith({String? group}) => CarNode(id, title,
-      subtitle: subtitle,
+  CarNode copyWith({String? group, String? subtitle}) => CarNode(id, title,
+      subtitle: subtitle ?? this.subtitle,
       art: art,
       playable: playable,
       browsable: browsable,
@@ -156,25 +156,25 @@ class CarLibrary {
 
   // -- genres ------------------------------------------------------------------
 
-  /// A genre with more albums than this (summed over libraries) opens to
-  /// `#`/A–Z folders instead of tiles (user's pick 2026-11-20: Pop/Rock holds
-  /// 2,222 of their 2,994 albums).
-  static const bigGenre = 100;
+  /// A genre with more songs than this (summed over libraries) opens to
+  /// Shuffle + Songs → `#`/A–Z artist folders instead of its songs (only
+  /// Pop/Rock on the user's server, 3,753 songs; the next is rap, 286).
+  static const bigGenre = listCap;
 
   /// Genre name (lower case) → its title and where it is: each music
   /// library holding it, with that library's own genre id.
   final _genres = <String, (String, List<(Library, FilterValue)>)>{};
 
-  /// Albums per genre (lower-case name), summed over libraries; only counts
+  /// Songs per genre (lower-case name), summed over libraries; only counts
   /// that were read.
   final _genreSizes = <String, int>{};
 
-  /// Albums in a genre, or null when a library's count couldn't be read
-  /// (treated as big: letters never read hundreds of albums at once).
-  Future<int?> _albumCount(List<(Library, FilterValue)> where) async {
+  /// Songs in a genre, or null when a library's count couldn't be read
+  /// (treated as big: letters never read thousands of songs at once).
+  Future<int?> _songCount(List<(Library, FilterValue)> where) async {
     final counts = await Future.wait([
       for (final (l, g) in where)
-        _on(l.serverId, (b) => b.genreAlbumCount(l, g))
+        _on(l.serverId, (b) => b.genreTrackCount(l, g))
             .timeout(timeout)
             .then<int?>((n) => n)
             .catchError((Object _) => null),
@@ -183,7 +183,7 @@ class CarLibrary {
     return counts.fold<int>(0, (a, b) => a + b!);
   }
 
-  static bool _isBig(int? albums) => albums == null || albums > bigGenre;
+  static bool _isBig(int? songs) => songs == null || songs > bigGenre;
 
   static String _genreKey(String name) => name.trim().toLowerCase();
 
@@ -221,8 +221,8 @@ class CarLibrary {
     } while (epoch != _genresEpoch);
   }
 
-  /// Reads every music library's genres (in scope), one row per name. Each
-  /// opens to two rows (Shuffle, Albums), so nothing needs counting here.
+  /// Reads every music library's genres (in scope), one row per name; a
+  /// genre's songs are counted only when it opens.
   Future<List<CarNode>> _genreList() async {
     await _genresNow();
     final genres = {..._genres};
@@ -237,13 +237,14 @@ class CarLibrary {
     ];
   }
 
-  /// Albums in a genre: counted once, then kept until [forgetTracks].
+  /// Songs in a genre: counted once, kept until the next Genres read or
+  /// [forgetTracks].
   Future<int?> _genreSize(String name, List<(Library, FilterValue)> where) async {
     final key = _genreKey(name);
     final known = _genreSizes[key];
     if (known != null) return known;
     final epoch = _genresEpoch;
-    final n = await _albumCount(where);
+    final n = await _songCount(where);
     if (n != null && epoch == _genresEpoch) _genreSizes[key] = n;
     return n;
   }
@@ -284,56 +285,86 @@ class CarLibrary {
     return [for (final p in parts) ...p];
   }
 
-  static String _titleKey(MediaItem i) {
-    final t = i.title.toLowerCase().trim();
-    return t.startsWith('the ') ? t.substring(4) : t;
+  /// Sorts by an artist's name as the car's letters read it ("The" ignored).
+  static String _artistKey(MediaItem t) {
+    final a = (t.grandparentTitle ?? '').toLowerCase().trim();
+    return a.startsWith('the ') ? a.substring(4) : a;
   }
 
-  List<CarNode> _albumTiles(List<MediaItem> albums) => [
-        for (final a in (albums..sort((a, b) => _titleKey(a).compareTo(_titleKey(b))))
-            .take(listCap))
-          _node(a),
-      ];
+  /// A genre's songs as rows under artist headings: artists A–Z, each one's
+  /// songs by album, disc and track. Not by title, so Android Auto keeps the
+  /// order (and the Shuffle row on top); the album is the row's subtitle.
+  List<CarNode> _songsByArtist(String listId, List<MediaItem> songs) {
+    int byArtist(MediaItem a, MediaItem b) {
+      for (final c in [
+        _artistKey(a).compareTo(_artistKey(b)),
+        // "Beatles" and "The Beatles": each spelling's rows stay together
+        // (Android Auto needs a heading's rows next to each other).
+        (a.grandparentTitle ?? '').compareTo(b.grandparentTitle ?? ''),
+        (a.parentTitle ?? '').toLowerCase().compareTo((b.parentTitle ?? '').toLowerCase()),
+        (a.parentIndex ?? 0).compareTo(b.parentIndex ?? 0),
+        (a.index ?? 0).compareTo(b.index ?? 0),
+      ]) {
+        if (c != 0) return c;
+      }
+      return 0;
+    }
 
-  /// A genre's page: just `Shuffle <genre>` and `Albums`. Android Auto
-  /// re-sorts a list that looks alphabetical by title (its letter index), so
-  /// a Shuffle row above A–Z albums or letters ended up under S (user's car,
-  /// 2026-11-21); two rows fit on screen in either order.
+    final sorted = [for (final t in songs) if (t.kind == MediaKind.track) t]..sort(byArtist);
+    final shown = sorted.take(listCap).toList();
+    _rememberTracks(listId, shown);
+    return [
+      for (final t in shown)
+        _node(t, container: listId)
+            .copyWith(group: t.grandparentTitle ?? 'Unknown artist', subtitle: t.parentTitle ?? ''),
+    ];
+  }
+
+  /// A genre's page: `Shuffle <genre>`, then its songs by artist; a big one
+  /// has a Songs row instead (its `#`/A–Z artist folders). Android Auto
+  /// re-sorts a list that looks alphabetical by title, so letters, or A–Z
+  /// albums, under the Shuffle row moved it under S (user's car, 2026-11-21).
   Future<List<CarNode>> _genrePage(String name) async {
     final found = await _genre(name);
     if (found == null) return const [];
     final (title, where) = found;
-    final big = _isBig(await _genreSize(name, where));
+    final shuffle =
+        CarNode('shufflegenre:$name', 'Shuffle $title', playable: true, icon: 'car_shuffle');
+    if (_isBig(await _genreSize(name, where))) {
+      return [
+        shuffle,
+        CarNode('genresongs:$name', 'Songs',
+            browsable: true, icon: 'car_tracks', browsableStyle: CarStyle.list),
+      ];
+    }
+    return [shuffle, ...await _allSongs(name, where)];
+  }
+
+  /// All of a (small) genre's songs, by artist.
+  Future<List<CarNode>> _allSongs(String name, List<(Library, FilterValue)> where) async =>
+      _songsByArtist('genre:$name',
+          await _eachGenre(where, (b, l, g) => b.genreSongs(l, g, limit: listCap)));
+
+  /// A big genre's Songs: `#`/A–Z folders by artist. (Also answers the
+  /// Albums row of the day-old two-row page, `genrealbums:`.)
+  Future<List<CarNode>> _genreSongs(String name) async {
+    final found = await _genre(name);
+    if (found == null) return const [];
+    if (!_isBig(await _genreSize(name, found.$2))) return _allSongs(name, found.$2);
     return [
-      CarNode('shufflegenre:$name', 'Shuffle $title', playable: true, icon: 'car_shuffle'),
-      // Its page: album tiles, or plain letter rows when big.
-      CarNode('genrealbums:$name', 'Albums',
-          browsable: true,
-          icon: 'car_albums',
-          browsableStyle: big ? CarStyle.list : CarStyle.grid),
+      for (final letter in letters)
+        CarNode('genreaz:$letter:$name', letter, browsable: true, playableStyle: CarStyle.list),
     ];
   }
 
-  /// A genre's albums: tiles, or `#`/A–Z folders when there are many.
-  Future<List<CarNode>> _genreAlbums(String name) async {
-    final found = await _genre(name);
-    if (found == null) return const [];
-    final where = found.$2;
-    if (_isBig(await _genreSize(name, where))) {
-      return [
-        for (final letter in letters)
-          CarNode('genreaz:$letter:$name', letter,
-              browsable: true, browsableStyle: CarStyle.grid),
-      ];
-    }
-    return _albumTiles(await _eachGenre(where, (b, l, g) => b.genreAlbums(l, g)));
-  }
-
+  /// The songs of a genre's artists under [letter], by artist.
   Future<List<CarNode>> _genreLetter(String letter, String name) async {
     final found = await _genre(name);
     if (found == null || !letters.contains(letter)) return const [];
-    return _albumTiles(await _eachGenre(
-        found.$2, (b, l, g) => b.genreAlbums(l, g, letter: letter, limit: listCap)));
+    return _songsByArtist(
+        'genreaz:$letter:$name',
+        await _eachGenre(found.$2,
+            (b, l, g) => b.genreSongs(l, g, artistLetter: letter, limit: listCap)));
   }
 
   void _rememberTracks(String key, List<MediaItem> tracks) {
@@ -571,8 +602,11 @@ class CarLibrary {
     if (parentId.startsWith('genre:')) {
       return _genrePage(parentId.substring('genre:'.length));
     }
+    if (parentId.startsWith('genresongs:')) {
+      return _genreSongs(parentId.substring('genresongs:'.length));
+    }
     if (parentId.startsWith('genrealbums:')) {
-      return _genreAlbums(parentId.substring('genrealbums:'.length));
+      return _genreSongs(parentId.substring('genrealbums:'.length));
     }
     if (parentId.startsWith('genreaz:')) {
       final rest = parentId.substring('genreaz:'.length);
@@ -771,7 +805,10 @@ class CarLibrary {
           var shown = container == null ? null : _containerTracks[container];
           if (shown == null &&
               container != null &&
-              (container.startsWith('tracks:') || container.startsWith('az:'))) {
+              (container.startsWith('tracks:') ||
+                  container.startsWith('az:') ||
+                  container.startsWith('genre:') ||
+                  container.startsWith('genreaz:'))) {
             await children(container);
             shown = _containerTracks[container];
           }
@@ -779,7 +816,8 @@ class CarLibrary {
             final at = shown.indexWhere((t) => t.serverId == serverId && t.id == itemId);
             if (at >= 0) return (shown, at);
           }
-          if (container != null) {
+          if (container != null &&
+              (container.startsWith('album:') || container.startsWith('playlist:'))) {
             final c = container.split(':');
             final known = _containerTracks['${c.first}:$serverId:${c.sublist(1).join(':')}'];
             final tracks = known ?? await tracksOf(

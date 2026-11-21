@@ -554,9 +554,15 @@ class PlexBackend extends MediaBackend {
       _startingWith(library, kind, letter, limit);
 
   /// [musicStartingWith] with [extra] filters (a genre's A–Z folders).
+  ///
+  /// [byArtist]: songs whose *artist* is under [letter] (`artist.title<=`,
+  /// verified on the user's PMS 2026-11-21: "The Bangles" among B's songs).
   Future<List<MediaItem>> _startingWith(
       Library library, MusicList kind, String letter, int limit,
-      {Map<String, dynamic> extra = const {}}) async {
+      {Map<String, dynamic> extra = const {}, bool byArtist = false}) async {
+    final field = byArtist ? 'artist.title' : 'title';
+    final sort = byArtist ? 'artist.titleSort' : 'titleSort';
+    String nameOf(MediaItem i) => byArtist ? i.grandparentTitle ?? '' : i.title;
     final starts = letter == '#'
         ? _hashStarts
         : [letter, 'The $letter', ...MediaBackend.accentsOf(letter)];
@@ -566,7 +572,7 @@ class PlexBackend extends MediaBackend {
     void keep(Iterable<MediaItem> items) {
       for (final i in items) {
         if (kept.length < limit &&
-            MediaBackend.underLetter(i.title, letter) &&
+            MediaBackend.underLetter(nameOf(i), letter) &&
             seen.add(i.id)) {
           kept.add(i);
         }
@@ -576,8 +582,8 @@ class PlexBackend extends MediaBackend {
     for (var start = 0, page = 0; page < 4 && kept.length < limit; page++) {
       final c = await _get(path, {
         'type': _musicType(kind),
-        'sort': 'titleSort',
-        'title<': starts.join(','),
+        'sort': sort,
+        '$field<': starts.join(','),
         ...extra,
         'X-Plex-Container-Start': start,
         'X-Plex-Container-Size': limit,
@@ -590,7 +596,7 @@ class PlexBackend extends MediaBackend {
     if (letter == '#' && kept.length < limit) {
       keep(_items(await _get(path, {
         'type': _musicType(kind),
-        'sort': 'titleSort:desc',
+        'sort': '$sort:desc',
         ...extra,
         'X-Plex-Container-Start': 0,
         'X-Plex-Container-Size': 100,
@@ -629,9 +635,9 @@ class PlexBackend extends MediaBackend {
   }
 
   @override
-  Future<int> genreAlbumCount(Library library, FilterValue genre) async =>
+  Future<int> genreTrackCount(Library library, FilterValue genre) async =>
       asInt((await _get('/library/sections/${library.id}/all', {
-        'type': 9,
+        'type': 10,
         'artist.genre': genre.id,
         'X-Plex-Container-Start': 0,
         'X-Plex-Container-Size': 0,
@@ -639,15 +645,15 @@ class PlexBackend extends MediaBackend {
       0;
 
   @override
-  Future<List<MediaItem>> genreAlbums(Library library, FilterValue genre,
-          {String? letter, int limit = 500}) async =>
-      letter != null
-          ? _startingWith(library, MusicList.albums, letter, limit,
-              extra: {'artist.genre': genre.id})
+  Future<List<MediaItem>> genreSongs(Library library, FilterValue genre,
+          {String? artistLetter, int limit = 500}) async =>
+      artistLetter != null
+          ? _startingWith(library, MusicList.tracks, artistLetter, limit,
+              extra: {'artist.genre': genre.id}, byArtist: true)
           : _items(await _get('/library/sections/${library.id}/all', {
-              'type': 9,
+              'type': 10,
               'artist.genre': genre.id,
-              'sort': 'titleSort',
+              'sort': 'artist.titleSort',
               'X-Plex-Container-Start': 0,
               'X-Plex-Container-Size': limit,
             }));

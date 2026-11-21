@@ -113,13 +113,14 @@ abstract class MediaBackend {
   /// genres; Jellyfin: music genres). Empty: no Genres from this server.
   Future<List<FilterValue>> musicGenres(Library library) async => const [];
 
-  /// How many albums [genre] holds in [library] (decides tiles vs A–Z).
-  Future<int> genreAlbumCount(Library library, FilterValue genre) async => 0;
+  /// How many songs [genre] holds in [library] (decides songs vs A–Z).
+  Future<int> genreTrackCount(Library library, FilterValue genre) async => 0;
 
-  /// [genre]'s albums in [library], by title; [letter] keeps one A–Z folder
-  /// (the [musicStartingWith] rules).
-  Future<List<MediaItem>> genreAlbums(Library library, FilterValue genre,
-          {String? letter, int limit = 500}) async =>
+  /// [genre]'s songs in [library], at most [limit] (car: a genre's songs,
+  /// grouped by artist there). [artistLetter] keeps the songs of artists
+  /// under one A–Z folder (the [musicStartingWith] rules on the artist).
+  Future<List<MediaItem>> genreSongs(Library library, FilterValue genre,
+          {String? artistLetter, int limit = 500}) async =>
       const [];
 
   /// Up to [limit] random songs of [genre] in [library] (car: "Shuffle" of a genre).
