@@ -2346,6 +2346,8 @@ void main() {
       final library = await handler.getChildren('tab:library');
       expect('${library.first.artUri}', '${icon}car_artists');
       expect('${library[1].artUri}', '${icon}car_albums');
+      expect('${library[2].artUri}', '${icon}car_tracks');
+      expect(library[2].extras, {browsableHint: 1});
       // Artists/Albums hold letters: plain rows; a letter of artists: tiles.
       expect(library.first.extras, {browsableHint: 1});
       final letters = await handler.getChildren('lib:artists');
@@ -3260,7 +3262,13 @@ void main() {
         () async {
       final car = make();
       final lib = await car.children('tab:library');
-      expect(lib.map((n) => n.title), ['Artists', 'Albums']);
+      expect(lib.map((n) => n.title), ['Artists', 'Albums', 'Tracks']);
+      // Tracks: the same # A–Z song folders as the Tracks tab (a tap plays the letter).
+      final songLetters = await car.children(lib[2].id);
+      expect(songLetters.map((n) => n.id), [for (final l in CarLibrary.letters) 'az:tracks:$l']);
+      final t = await car.children('az:tracks:T');
+      final (tq, ti) = (await car.resolve(t[2].id))!;
+      expect((tq.length, ti), (t.length, 2));
       final letters = await car.children(lib[1].id);
       expect(letters.map((n) => n.title), ['#', for (var c = 65; c <= 90; c++) String.fromCharCode(c)]);
       expect(letters.every((n) => n.browsable), isTrue);

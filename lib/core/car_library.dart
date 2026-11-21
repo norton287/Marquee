@@ -568,11 +568,16 @@ class CarLibrary {
               browsable: true, icon: 'car_artists', browsableStyle: CarStyle.list),
           CarNode('lib:albums', 'Albums',
               browsable: true, icon: 'car_albums', browsableStyle: CarStyle.list),
+          // The Tracks tab's # A–Z song folders, here too (user's ask 2026-11-21).
+          CarNode('lib:tracks', 'Tracks',
+              browsable: true, icon: 'car_tracks', browsableStyle: CarStyle.list),
         ];
       case 'lib:artists':
         return _letterFolders('artists');
       case 'lib:albums':
         return _letterFolders('albums');
+      case 'lib:tracks':
+        return _letterFolders('tracks');
       case 'tab:tracks':
         return [
           const CarNode('tracks:recent', 'Recently added',
