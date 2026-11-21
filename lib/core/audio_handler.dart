@@ -83,13 +83,18 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       this.log,
       this.remember,
       this.rememberKey,
-      this.rememberAfter = const Duration(seconds: 2)}) {
+      this.rememberAfter = const Duration(seconds: 2),
+      DateTime Function()? clock})
+      : _now = clock ?? DateTime.now {
     _sub = engine.states.listen(_publish);
     _publish(engine.state);
   }
 
   final MusicEngine engine;
   final CarLibrary library;
+
+  /// The time a play state is stamped with (a fake clock in tests).
+  final DateTime Function() _now;
 
   /// Tells the car a list changed (`AudioService.notifyChildrenChanged` in
   /// the app; recorded in tests).
@@ -795,7 +800,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
         shown?.artUri != was?.artUri) {
       mediaItem.add(shown);
     }
-    playbackState.add(as_.PlaybackState(
+    final next = as_.PlaybackState(
+      updateTime: _now(),
       controls: [
         as_.MediaControl.skipToPrevious,
         if (s.playing) as_.MediaControl.pause else as_.MediaControl.play,
@@ -820,8 +826,31 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       // The car shows any error message, even while music plays, so it only
       // gets one when nothing can play; the app says why a track was skipped.
       errorMessage: _tapError ?? (s.failed && !s.playing ? s.error : null),
-    ));
+    );
+    if (!_sameState(playbackState.value, next)) playbackState.add(next);
     _logState();
+  }
+
+  /// Whether [next] only says what the system already works out: Android
+  /// moves a playing position on from the last state's time by itself, and
+  /// Android Auto's queue screen jumps back to the playing song on every new
+  /// state (one per position tick made it impossible to scroll, 2026-11-21).
+  /// So a state goes out only when something changed, or the position is
+  /// more than 2 s from where the last one would have it (a seek).
+  static bool _sameState(as_.PlaybackState was, as_.PlaybackState next) {
+    if (was.processingState != next.processingState ||
+        was.playing != next.playing ||
+        was.queueIndex != next.queueIndex ||
+        was.errorMessage != next.errorMessage ||
+        was.speed != next.speed ||
+        !listEquals(was.controls, next.controls)) {
+      return false;
+    }
+    final moving = was.playing && was.processingState == as_.AudioProcessingState.ready;
+    final expected = moving
+        ? was.updatePosition + next.updateTime.difference(was.updateTime) * was.speed
+        : was.updatePosition;
+    return (next.updatePosition - expected).abs() < const Duration(seconds: 2);
   }
 
   Future<void> dispose() async {

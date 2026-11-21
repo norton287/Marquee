@@ -2193,6 +2193,43 @@ void main() {
       expect(notified, contains(folder));
     });
 
+    // Android Auto's queue screen jumps back to the playing song on every
+    // new play state: one each second (each position tick) made the queue
+    // impossible to scroll (user, 2026-11-21).
+    test('position ticks alone send no new play state; real changes do', () async {
+      var now = DateTime(2026, 11, 21, 12);
+      final timed = MarqueeAudioHandler(engine, car, clock: () => now);
+      final album = (await timed.getChildren('tab:albums')).first;
+      await timed.playFromMediaId(album.id);
+      await settle();
+      expect(timed.playbackState.value.playing, isTrue);
+      final sent = <as_.PlaybackState>[];
+      final sub = timed.playbackState.skip(1).listen(sent.add);
+      for (var s = 1; s <= 20; s++) {
+        now = now.add(const Duration(seconds: 1));
+        player.at(Duration(seconds: s));
+        await settle(); // the engine's states arrive asynchronously
+      }
+      expect(sent, isEmpty, reason: 'the system moves the position on by itself');
+      // A seek is a real change.
+      now = now.add(const Duration(seconds: 1));
+      player.at(const Duration(minutes: 2));
+      await settle();
+      expect(sent, hasLength(1));
+      expect(sent.last.updatePosition, const Duration(minutes: 2));
+      // So is a pause; while paused, ticks change nothing either.
+      await timed.pause();
+      await settle();
+      expect(sent.last.playing, isFalse);
+      final paused = sent.length;
+      now = now.add(const Duration(seconds: 1));
+      player.at(const Duration(minutes: 2));
+      await settle();
+      expect(sent, hasLength(paused));
+      await sub.cancel();
+      await timed.dispose();
+    });
+
     test('the playing item has the id the car tapped (else "Could not load")',
         () async {
       final album = (await handler.getChildren('tab:albums')).first;
