@@ -414,9 +414,13 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   }
 
   /// Without links only this app can open (now playing art is a private
-  /// file; Android Auto and the system run elsewhere).
+  /// file; Android Auto and the system run elsewhere), and without app icons
+  /// (a Shuffle row's): as now-playing art audio_service would try to
+  /// download `android.resource://` and log an error each time.
   static as_.MediaItem _shareable(as_.MediaItem m) =>
-      m.artUri?.scheme == 'file' ? m.copyWith(artUri: null) : m;
+      m.artUri?.scheme == 'file' || m.artUri?.scheme == 'android.resource'
+          ? m.copyWith(artUri: null)
+          : m;
 
   /// The car asking what an item is (e.g. the one playing).
   @override
@@ -523,7 +527,9 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     _tappedQueue = tapped == null ? null : queue.$1;
     _tappedId = tapped;
     _tappedIndex = queue.$2;
-    final at = tapped?.indexOf('@') ?? -1;
+    // Only a song's id says which list it's in (`track:<s>:<id>@<list>`); a
+    // genre's name may hold '@' too (`shufflegenre:Hip@Hop`).
+    final at = tapped != null && tapped.startsWith('track:') ? tapped.indexOf('@') : -1;
     _tappedList = at < 0 ? null : tapped!.substring(at + 1);
     await engine.playQueue(queue.$1, queue.$2);
   }

@@ -309,11 +309,19 @@ class NamedGenresDemo extends DemoBackend {
   final Map<String, String> names;
   final int? count;
   final bool countFails;
+
+  /// How often the genres were read, and which genres' albums were counted.
+  int genreReads = 0;
+  final counted = <String>[];
   @override
-  Future<List<FilterValue>> musicGenres(Library library) async =>
-      [for (final e in names.entries) FilterValue(e.key, e.value)];
+  Future<List<FilterValue>> musicGenres(Library library) async {
+    genreReads++;
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    return [for (final e in names.entries) FilterValue(e.key, e.value)];
+  }
   @override
   Future<int> genreAlbumCount(Library library, FilterValue genre) async {
+    counted.add(genre.title);
     if (countFails) throw StateError('count failed');
     return count ?? await super.genreAlbumCount(library, genre);
   }
@@ -2316,6 +2324,34 @@ void main() {
       await withArt.dispose();
     });
 
+    test('a tapped Shuffle row never shows its icon as now-playing art', () async {
+      // audio_service would try to download android.resource:// art (an
+      // error and a stack trace in the log on every Shuffle tap).
+      final arts = <Uri?>[];
+      final sub = handler.mediaItem.listen((m) => arts.add(m?.artUri));
+      final indie = await handler.getChildren('genre:Indie');
+      expect('${indie.first.artUri}', '${icon}car_shuffle');
+      await handler.playFromMediaId(indie.first.id);
+      await settle();
+      expect(arts.where((a) => a?.scheme == 'android.resource'), isEmpty);
+      expect((await handler.getMediaItem(indie.first.id))?.artUri, isNull);
+      await sub.cancel();
+    });
+
+    test("an '@' in a genre name isn't read as the list a song came from", () async {
+      final at = MarqueeAudioHandler(engine,
+          CarLibrary(() => {'demo': NamedGenresDemo({'g-indie': 'Hip@Hop'})},
+              (_) async => [(await demo.libraries()).firstWhere((l) => l.kind == LibraryKind.music)]));
+      await at.getChildren('genre:Hip@Hop');
+      await at.playFromMediaId('shufflegenre:Hip@Hop');
+      await settle();
+      expect(at.mediaItem.value?.id, 'shufflegenre:Hip@Hop');
+      final rest = at.queue.value.skip(1).map((m) => m.id).toList();
+      expect(rest, isNotEmpty);
+      expect(rest.every((id) => RegExp(r'^track:[^@]+$').hasMatch(id)), isTrue, reason: '$rest');
+      await at.dispose();
+    });
+
     test('a big genre lists its letters as plain rows', () async {
       final big = MarqueeAudioHandler(engine,
           CarLibrary(() => {'demo': NamedGenresDemo({'g-indie': 'Indie'}, count: 101)},
@@ -3334,6 +3370,57 @@ void main() {
       expect((await car.children('genre:Indie')).skip(1), hasLength(3));
       final (queue, _) = (await car.resolve('shufflegenre:Indie'))!;
       expect(queue, hasLength(24)); // only server a's 3 albums × 8
+    });
+
+    test('after a restart a genre opens without counting every genre', () async {
+      final demo = NamedGenresDemo(
+          {'g-indie': 'Indie', 'g-folk': 'Folk', 'g-electronic': 'Electronic'});
+      final car = CarLibrary(() => {'demo': demo}, (_) async => [music]);
+      expect(await car.children('genre:Indie'), hasLength(4));
+      expect(demo.counted, ['Indie']);
+    });
+
+    test('genre reads running at once are shared', () async {
+      final demo = NamedGenresDemo({'g-indie': 'Indie', 'g-folk': 'Folk'});
+      final car = CarLibrary(() => {'demo': demo}, (_) async => [music]);
+      await Future.wait([
+        car.children('genre:Indie'),
+        car.children('genre:Folk'),
+        car.resolve('shufflegenre:Indie'),
+        car.children('tracks:genres'),
+      ]);
+      expect(demo.genreReads, 1);
+      // A later Genres list reads them fresh.
+      await car.children('tracks:genres');
+      expect(demo.genreReads, 2);
+    });
+
+    test('a genre read running when the car library changes is dropped', () async {
+      final old = NamedGenresDemo({'g-indie': 'Old'});
+      var server = old;
+      final car = CarLibrary(() => {'demo': server}, (_) async => [music]);
+      final running = car.children('tracks:genres');
+      // The old server is answering (its read takes 5 ms) when it changes.
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      expect(old.genreReads, 1);
+      server = NamedGenresDemo({'g-indie': 'New'});
+      car.forgetTracks();
+      // A genre asked meanwhile is read again under the new scope.
+      expect(await car.children('genre:New'), hasLength(4));
+      await running;
+      // The old read must not have left "Old" behind.
+      expect(await car.children('genre:Old'), isEmpty);
+      expect((await car.children('genre:New')), hasLength(4));
+    });
+
+    test("an artist's albums sit under an Albums heading", () async {
+      final car = make();
+      final artist = (await car.children('tab:artists')).first;
+      final rows = await car.children(artist.id);
+      expect(rows.first.id, startsWith('shuffleartist:'));
+      expect(rows.first.group, isNull);
+      expect(rows.skip(1), isNotEmpty);
+      expect(rows.skip(1).every((r) => r.group == 'Albums'), isTrue);
     });
 
     test("a genre whose album count can't be read opens to letters", () async {
@@ -5732,6 +5819,27 @@ void main() {
     expect(uris.last.queryParameters,
         allOf(containsPair('type', '10'), containsPair('artist.genre', '35408'),
             containsPair('sort', 'random'), containsPair('X-Plex-Container-Size', '200')));
+  });
+
+  test('Plex genre ids from older servers\' keys', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'http://h'))
+      ..interceptors.add(InterceptorsWrapper(onRequest: (o, h) {
+        h.resolve(Response(requestOptions: o, statusCode: 200, data: jsonDecode(jsonEncode(
+            {'MediaContainer': {'Directory': [
+              {'key': '35408', 'title': 'Blues'},
+              {'key': '/library/sections/7/all?genre=36814', 'title': 'Pop/Rock'},
+              {'key': '/library/sections/7/all?type=8&artist.genre=4', 'title': 'Jazz'},
+              {'key': '/library/sections/7/genre/12', 'title': 'Folk'},
+              {'key': '', 'title': 'Empty'},
+            ]}}))));
+      }));
+    final plex = PlexBackend(
+        const ServerConfig(id: 'p', kind: ServerKind.plex, name: 'P', baseUrl: 'http://h', token: 't'),
+        dio: dio);
+    const music = Library(serverId: 'p', id: '7', title: 'Music', kind: LibraryKind.music);
+    final genres = await plex.musicGenres(music);
+    expect(genres.map((g) => (g.id, g.title)),
+        [('35408', 'Blues'), ('36814', 'Pop/Rock'), ('4', 'Jazz'), ('12', 'Folk')]);
   });
 
   test('Jellyfin genre reads', () async {

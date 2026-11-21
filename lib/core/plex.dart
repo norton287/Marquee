@@ -608,9 +608,24 @@ class PlexBackend extends MediaBackend {
     final c = await _get('/library/sections/${library.id}/genre', {'type': 8});
     return [
       for (final d in (c['Directory'] as List? ?? const []).cast<Map<String, dynamic>>())
-        if (d['key'] != null && d['title'] != null)
-          FilterValue('${d['key']}'.split('/').last, '${d['title']}'),
+        if (_tagId('${d['key'] ?? ''}') case final id? when d['title'] != null)
+          FilterValue(id, '${d['title']}'),
     ];
+  }
+
+  /// A tag's id from its directory `key`: the bare id (PMS 1.43), a link
+  /// whose query holds it (`…/all?genre=36814`, older servers) or a path
+  /// ending in it.
+  static String? _tagId(String key) {
+    final uri = Uri.tryParse(key);
+    if (uri == null || key.isEmpty) return null;
+    for (final e in uri.queryParameters.entries) {
+      if ((e.key == 'genre' || e.key.endsWith('.genre')) && e.value.isNotEmpty) {
+        return e.value;
+      }
+    }
+    final last = uri.pathSegments.where((p) => p.isNotEmpty).lastOrNull;
+    return last == null || last == 'all' ? null : last;
   }
 
   @override

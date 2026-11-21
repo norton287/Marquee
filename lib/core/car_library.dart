@@ -149,6 +149,9 @@ class CarLibrary {
     _containerTracks.clear();
     _genres.clear();
     _genreSizes.clear();
+    // A read still running asked the old scope: let it finish unheard.
+    _readingGenres = null;
+    _genresEpoch++;
   }
 
   // -- genres ------------------------------------------------------------------
@@ -184,21 +187,49 @@ class CarLibrary {
 
   static String _genreKey(String name) => name.trim().toLowerCase();
 
+  /// The genres being read now, shared by everything asking meanwhile (the
+  /// car asks each new list twice, and a restart's taps all need them).
+  Future<void>? _readingGenres;
+
+  /// Reads where every genre is (in scope) into [_genres]; no counting.
+  Future<void> _readGenres() => _readingGenres ??= () async {
+        final epoch = _genresEpoch;
+        try {
+          final found = await _eachMusicLibrary<(Library, FilterValue)>(
+              (b, l) async => [for (final g in await b.musicGenres(l)) (l, g)]);
+          if (epoch != _genresEpoch) return;
+          _genres.clear();
+          for (final (l, g) in found) {
+            final key = _genreKey(g.title);
+            if (key.isEmpty) continue;
+            final known = _genres[key];
+            _genres[key] = (known?.$1 ?? g.title, [...?known?.$2, (l, g)]);
+          }
+        } finally {
+          if (epoch == _genresEpoch) _readingGenres = null;
+        }
+      }();
+  var _genresEpoch = 0;
+
+  /// [_readGenres], again if the car's library changed meanwhile (that read
+  /// was dropped, leaving nothing).
+  Future<void> _genresNow() async {
+    int epoch;
+    do {
+      epoch = _genresEpoch;
+      await _readGenres();
+    } while (epoch != _genresEpoch);
+  }
+
   /// Reads every music library's genres (in scope), one row per name.
   Future<List<CarNode>> _genreList() async {
-    final found = await _eachMusicLibrary<(Library, FilterValue)>(
-        (b, l) async => [for (final g in await b.musicGenres(l)) (l, g)]);
-    _genres.clear();
-    for (final (l, g) in found) {
-      final key = _genreKey(g.title);
-      if (key.isEmpty) continue;
-      final known = _genres[key];
-      _genres[key] = (known?.$1 ?? g.title, [...?known?.$2, (l, g)]);
-    }
-    final keys = _genres.keys.toList()..sort();
+    await _genresNow();
+    // A copy: the counts below take a while, and forgetTracks() may clear the map.
+    final genres = {..._genres};
+    final keys = genres.keys.toList()..sort();
     // Each genre row styles its own page (Android Auto styles a list from
     // the row that opened it): album tiles, or plain letter rows when big.
-    final sizes = await Future.wait([for (final k in keys) _albumCount(_genres[k]!.$2)]);
+    final sizes = await Future.wait([for (final k in keys) _albumCount(genres[k]!.$2)]);
     _genreSizes
       ..clear()
       ..addAll({
@@ -207,7 +238,7 @@ class CarLibrary {
       });
     return [
       for (var i = 0; i < keys.length; i++)
-        CarNode('genre:${_genres[keys[i]]!.$1}', _genres[keys[i]]!.$1,
+        CarNode('genre:${genres[keys[i]]!.$1}', genres[keys[i]]!.$1,
             browsable: true,
             icon: 'car_genres',
             browsableStyle: _isBig(sizes[i]) ? CarStyle.list : CarStyle.grid,
@@ -215,10 +246,11 @@ class CarLibrary {
     ];
   }
 
-  /// Where genre [name] is; reads the genres when not known yet (a restart).
+  /// Where genre [name] is; reads the genres when not known yet (a restart:
+  /// only where they are, not every genre's album count).
   /// Libraries hidden (or out of the car's scope) since are left out.
   Future<(String, List<(Library, FilterValue)>)?> _genre(String name) async {
-    if (!_genres.containsKey(_genreKey(name))) await _genreList();
+    if (!_genres.containsKey(_genreKey(name))) await _genresNow();
     final found = _genres[_genreKey(name)];
     if (found == null) return null;
     final (servers, only) = await _scope();
@@ -567,7 +599,7 @@ class CarLibrary {
           return [
             if (several) CarNode('shuffleartist:$serverId:$id', 'Shuffle',
                   playable: true, icon: 'car_shuffle'),
-            for (final a in albums.take(listCap)) _node(a),
+            for (final a in albums.take(listCap)) _node(a).copyWith(group: 'Albums'),
           ];
         case 'album':
           final tracks =
