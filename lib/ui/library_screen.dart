@@ -844,7 +844,7 @@ class _SongList extends StatelessWidget {
             song.parentTitle,
           ].whereType<String>().where((t) => t.isNotEmpty).join(' · ');
           final length = song.duration;
-          return ListTile(
+          final row = ListTile(
             autofocus: autofocusFirst && i == 0,
             leading: ClipRRect(
               borderRadius: BorderRadius.circular(4),
@@ -862,7 +862,9 @@ class _SongList extends StatelessWidget {
                 ? null
                 : Text(_length(length), style: const TextStyle(color: Palette.muted)),
             onTap: () => onPlay(song),
+            onLongPress: () => openItem(context, song),
           );
+          return Row(children: [Expanded(child: row), SongDetailsButton(song: song)]);
         },
       ),
     );

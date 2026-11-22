@@ -1104,3 +1104,18 @@ class RemoteTextField extends StatelessWidget {
     );
   }
 }
+
+/// ⓘ at the end of a song row: opens the song's own page (details, Play,
+/// Playlists, Manage) — e.g. to add one song of an album to a playlist, where
+/// the album's own Playlists button adds them all. Right from the row on TV.
+class SongDetailsButton extends StatelessWidget {
+  const SongDetailsButton({super.key, required this.song});
+  final MediaItem song;
+
+  @override
+  Widget build(BuildContext context) => IconButton(
+        tooltip: 'Song details',
+        icon: const Icon(Icons.info_outline, color: Palette.muted),
+        onPressed: () => openItem(context, song),
+      );
+}

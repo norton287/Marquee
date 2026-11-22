@@ -772,8 +772,16 @@ class _TrackTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return Row(children: [
+      Expanded(child: _row(context)),
+      SongDetailsButton(song: track),
+    ]);
+  }
+
+  Widget _row(BuildContext context) {
     return Pressable(
       onTap: () => playItem(context, track, queue: queue),
+      onLongPress: () => openItem(context, track),
       grow: 1,
       builder: (context, focused, hovered) => AnimatedContainer(
         duration: const Duration(milliseconds: 140),

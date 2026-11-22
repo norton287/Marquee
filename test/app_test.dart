@@ -1381,6 +1381,74 @@ void main() {
       expect(find.textContaining('null'), findsNothing);
     });
 
+    // An album's Playlists button adds the whole album; ⓘ opens one song's
+    // own page, whose Playlists button adds just that song (user, 2026-11-21).
+    testWidgets("TV: Right from an album's song reaches ⓘ; OK opens that song", (tester) async {
+      tester.view.devicePixelRatio = 2;
+      await openMusic(tester, size: const Size(1920, 1080), tv: true);
+      tester.view.devicePixelRatio = 2;
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Tidal').first);
+      await tester.pumpAndSettle();
+      Focus.of(tester.element(find.text('Track 3'))).requestFocus();
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+      final focused = FocusManager.instance.primaryFocus?.context;
+      expect(focused?.findAncestorWidgetOfExactType<Tooltip>()?.message, 'Song details');
+      // Left goes back to the row.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pumpAndSettle();
+      // The song's own page: its title, Play, and its own Playlists button.
+      expect(find.text('Track 3'), findsWidgets);
+      expect(find.text('Track 1'), findsNothing); // not the album page any more
+      expect(find.byTooltip('Playlists'), findsOneWidget);
+      // The remote lands on the page (its Play button), and Right reaches Playlists.
+      final onPage = FocusManager.instance.primaryFocus?.context;
+      expect(onPage, isNotNull);
+      expect(find.descendant(of: find.byWidget(onPage!.widget), matching: find.text('Play')).evaluate().isNotEmpty ||
+          onPage.findAncestorWidgetOfExactType<FilledButton>() != null, isTrue, reason: '${onPage.widget}');
+      for (var i = 0; i < 6 && FocusManager.instance.primaryFocus?.context
+              ?.findAncestorWidgetOfExactType<Tooltip>()?.message != 'Playlists'; i++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.pumpAndSettle();
+      }
+      expect(FocusManager.instance.primaryFocus?.context
+          ?.findAncestorWidgetOfExactType<Tooltip>()?.message, 'Playlists');
+    });
+
+    testWidgets("a long press on an album's song opens its page; the row still plays", (tester) async {
+      final c = await openMusic(tester);
+      await tester.tap(find.text('Tidal').first);
+      await tester.pumpAndSettle();
+      await tester.longPress(find.text('Track 2'));
+      await tester.pumpAndSettle();
+      // Track 2's own page: the album's other songs aren't listed.
+      expect(find.text('Track 1'), findsNothing);
+      expect(find.text('Track 2'), findsWidgets);
+      expect(find.byTooltip('Playlists'), findsOneWidget);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Track 2'));
+      await tester.pumpAndSettle();
+      expect(c.read(musicProvider).current?.title, 'Track 2');
+    });
+
+    testWidgets('Tracks rows have ⓘ too', (tester) async {
+      await openMusic(tester);
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Song details'), findsWidgets);
+      await tester.tap(find.byTooltip('Song details').first);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Playlists'), findsOneWidget);
+      expect(find.byTooltip('Song details'), findsNothing); // the song's page
+    });
+
     testWidgets('TV: Tracks rows take focus and Down moves row to row', (tester) async {
       tester.view.devicePixelRatio = 2;
       await openMusic(tester, size: const Size(1920, 1080), tv: true);
