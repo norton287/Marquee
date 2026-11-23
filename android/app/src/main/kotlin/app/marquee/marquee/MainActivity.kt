@@ -1,5 +1,7 @@
 package app.marquee.marquee
 
+import android.content.Intent
+import android.os.Bundle
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
 import com.ryanheise.audioservice.AudioServicePlugin
@@ -17,7 +19,24 @@ class MainActivity : AudioServiceActivity() {
     // watch must talk to it (MarqueeApplication attaches only the first).
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        if (!MarqueeApplication.isTv(this)) CarWatch.attach(this, flutterEngine)
+        if (!MarqueeApplication.isTv(this)) {
+            CarWatch.attach(this, flutterEngine)
+            VoiceSearch.attach(flutterEngine)
+        }
+    }
+
+    // "Hey Google, play … on Marquee": opened (or brought back) with a
+    // MEDIA_PLAY_FROM_SEARCH intent. Not again when Android recreates the
+    // activity from saved state.
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (savedInstanceState == null && !MarqueeApplication.isTv(this)) VoiceSearch.handle(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (!MarqueeApplication.isTv(this)) VoiceSearch.handle(intent)
     }
 
     override fun onDestroy() {

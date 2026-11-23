@@ -12,6 +12,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
 import 'core/audio_handler.dart';
+import 'core/voice_search.dart';
 import 'core/backend.dart';
 import 'core/car_library.dart';
 import 'core/car_log.dart';
@@ -213,6 +214,9 @@ Future<void> _startMusicSession(
     // after it can keep the diagnostics from starting.
     await watchCarSession(container.read(carLogProvider),
         errors: AudioService.asyncError);
+    // "Hey Google, play … on Marquee" on the phone arrives as an intent to
+    // MainActivity; in the car the Assistant asks the session directly.
+    unawaited(listenForVoiceSearch(handler.playFromSearch));
     // A car that asked for the menu before Dart was ready may have an empty
     // one (never throws); and servers, libraries or the profile changing
     // changes every list.

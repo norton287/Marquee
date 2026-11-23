@@ -14,7 +14,11 @@ import com.ryanheise.audioservice.AudioServicePlugin
 class MarqueeApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        if (!isTv(this)) CarWatch.attach(this, AudioServicePlugin.getFlutterEngine(this))
+        if (!isTv(this)) {
+            val engine = AudioServicePlugin.getFlutterEngine(this)
+            CarWatch.attach(this, engine)
+            VoiceSearch.attach(engine)
+        }
     }
 
     companion object {

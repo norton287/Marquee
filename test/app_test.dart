@@ -26,6 +26,7 @@ import 'package:marquee/core/phone_input.dart';
 import 'package:marquee/core/plex.dart';
 import 'package:marquee/core/providers.dart';
 import 'package:marquee/core/storage.dart';
+import 'package:marquee/core/voice_search.dart';
 import 'package:marquee/ui/add_server_screen.dart';
 import 'package:marquee/ui/libraries_screen.dart';
 import 'package:marquee/ui/manage.dart';
@@ -2755,6 +2756,73 @@ void main() {
       // Says so, rather than going quiet.
       expect(log.entries.map((e) => e.message),
           ['session watch: starting', contains('session watch unavailable')]);
+    });
+
+    // "Hey Google, play … on Marquee" on the phone opens MainActivity with a
+    // MEDIA_PLAY_FROM_SEARCH intent; the native side keeps the words until
+    // Dart asks ('take') and pushes later ones ('play').
+    testWidgets('a voice search from the Assistant reaches the music handler',
+        (tester) async {
+      const channel = MethodChannel('app.marquee.marquee/voice');
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'take') return 'blue hour';
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final heard = <String>[];
+      await listenForVoiceSearch((q) async => heard.add(q));
+      expect(heard, ['blue hour']);
+      // A second request while the app is open.
+      await messenger.handlePlatformMessage(
+          channel.name,
+          const StandardMethodCodec()
+              .encodeMethodCall(const MethodCall('play', 'night ferry')),
+          (_) {});
+      expect(heard, ['blue hour', 'night ferry']);
+    });
+
+    testWidgets('no pending voice search, or no native side, plays nothing',
+        (tester) async {
+      const channel = MethodChannel('app.marquee.marquee/voice');
+      final messenger = tester.binding.defaultBinaryMessenger;
+      final heard = <String>[];
+      messenger.setMockMethodCallHandler(channel, (call) async => null);
+      await listenForVoiceSearch((q) async => heard.add(q));
+      messenger.setMockMethodCallHandler(
+          channel, (call) async => throw MissingPluginException());
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      await listenForVoiceSearch((q) async => heard.add(q));
+      expect(heard, isEmpty);
+    });
+
+    // An engine started by the service (car or system binding after a stop)
+    // isn't attached until MainActivity opens: 'take' fails then, and Dart
+    // must still play what the native side pushes later.
+    testWidgets('voice search still plays after the first ask went unanswered',
+        (tester) async {
+      const channel = MethodChannel('app.marquee.marquee/voice');
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(
+          channel, (call) async => throw MissingPluginException());
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final heard = <String>[];
+      await listenForVoiceSearch((q) async {
+        heard.add(q);
+        if (q == 'boom') throw StateError('search failed');
+      });
+      ByteData? reply;
+      Future<void> push(String q) => messenger.handlePlatformMessage(
+          channel.name,
+          const StandardMethodCodec().encodeMethodCall(MethodCall('play', q)),
+          (r) => reply = r);
+      await push('copper sky');
+      expect(heard, ['copper sky']);
+      // Answered, so the native side knows Dart is listening.
+      expect(const StandardMethodCodec().decodeEnvelope(reply!), isNull);
+      // A failing search is the handler's to log; it never escapes.
+      await push('boom');
+      expect(heard, ['copper sky', 'boom']);
     });
 
     test('connection errors keep no host, address or cookie', () {
