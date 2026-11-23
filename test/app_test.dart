@@ -420,6 +420,35 @@ class LibrariesFailOnceDemo extends DemoBackend {
 }
 
 /// Counts every music call, to prove a server isn't contacted.
+/// A second server whose genre songs (and counts) hang while [hang].
+class HangingGenresDemo extends DemoBackend {
+  HangingGenresDemo() : super(demoServer);
+  bool hang = false;
+  @override
+  Future<int> genreTrackCount(Library library, FilterValue genre) =>
+      hang ? Completer<int>().future : super.genreTrackCount(library, genre);
+  @override
+  Future<List<MediaItem>> genreSongs(Library library, FilterValue genre,
+          {String? artistLetter, int limit = 500}) =>
+      hang
+          ? Completer<List<MediaItem>>().future
+          : super.genreSongs(library, genre, artistLetter: artistLetter, limit: limit);
+}
+
+/// A second server whose music lists hang while [hang] (counted in [calls]).
+class HangingDemo extends DemoBackend {
+  HangingDemo() : super(demoServer);
+  bool hang = true;
+  int calls = 0;
+  @override
+  Future<Paged> libraryItems(Library library,
+      {int start = 0, int limit = 60, LibraryQuery query = const LibraryQuery()}) {
+    calls++;
+    if (hang) return Completer<Paged>().future;
+    return super.libraryItems(library, start: start, limit: limit, query: query);
+  }
+}
+
 class CountingDemo extends DemoBackend {
   CountingDemo() : super(demoServer);
   int calls = 0;
@@ -2078,6 +2107,84 @@ void main() {
       await kept.dispose();
     });
 
+    // A drive's log (2026-11-23): Artists → F took 12.4 s with two servers,
+    // and a server that misses the 12 s limit used to leave its part out
+    // without a word, the rest kept as if complete.
+    test("a list missing a server that didn't answer is logged and read again",
+        () async {
+      final near = CountingDemo();
+      final far = HangingDemo();
+      final servers = <String, MediaBackend>{'demo': near, 'far': far};
+      final music = (await near.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+      final log = CarLog();
+      final h = MarqueeAudioHandler(
+          engine,
+          CarLibrary(() => servers, (_) async => [music],
+              timeout: const Duration(milliseconds: 100)),
+          notifyChanged: (id) async => notified.add(id),
+          log: log,
+          keepFreshFor: const Duration(hours: 1),
+          partialFreshFor: Duration.zero);
+      final partial = await h.getChildren('tab:albums');
+      expect(partial, isNotEmpty); // the near server's albums
+      expect(log.entries.map((e) => e.message),
+          contains(allOf(startsWith('list tab:albums: far '), contains('no answer'))));
+      // Next look: answered from memory, but read again (not trusted for an hour).
+      far.hang = false;
+      final calls = far.calls;
+      await h.getChildren('tab:albums');
+      await settle();
+      expect(far.calls, greaterThan(calls));
+      final complete = await h.getChildren('tab:albums');
+      expect(complete.length, greaterThan(partial.length));
+      // Complete now: trusted for keepFreshFor again.
+      final after = far.calls;
+      await h.getChildren('tab:albums');
+      await settle();
+      expect(far.calls, after);
+      await h.dispose();
+    });
+
+    test("a partial list isn't read again before partialFreshFor", () async {
+      final near = CountingDemo();
+      final far = HangingDemo();
+      final music = (await near.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+      final h = MarqueeAudioHandler(
+          engine,
+          CarLibrary(() => {'demo': near, 'far': far}, (_) async => [music],
+              timeout: const Duration(milliseconds: 100)),
+          keepFreshFor: const Duration(hours: 1),
+          partialFreshFor: const Duration(hours: 1));
+      await h.getChildren('tab:albums');
+      final calls = far.calls;
+      // A server that's down for good isn't asked on every look.
+      await h.getChildren('tab:albums');
+      await h.getChildren('tab:albums');
+      await settle();
+      expect(far.calls, calls);
+      await h.dispose();
+    });
+
+    test("a genre page missing a server's songs is logged", () async {
+      final near = demo;
+      final far = HangingGenresDemo();
+      final music = (await near.libraries()).firstWhere((l) => l.kind == LibraryKind.music);
+      final log = CarLog();
+      final h = MarqueeAudioHandler(
+          engine,
+          CarLibrary(() => {'demo': near, 'far': far},
+              (id) async => [Library(serverId: id, id: music.id, title: music.title, kind: music.kind)],
+              timeout: const Duration(milliseconds: 100)),
+          log: log);
+      await h.getChildren('tracks:genres');
+      far.hang = true;
+      final indie = await h.getChildren('genre:Indie');
+      expect(indie, isNotEmpty);
+      expect(log.entries.map((e) => e.message),
+          contains(startsWith('list genre:Indie: far ')));
+      await h.dispose();
+    });
+
     test("an empty list isn't kept (it may have been a dead spot)", () async {
       var down = true;
       final flaky = MarqueeAudioHandler(
@@ -2503,7 +2610,8 @@ void main() {
         expect(m.playable, isTrue);
       }
       expect(songs.first.extras?[groupHint], 'Hollow Pine');
-      expect(songs.first.artist, 'Rooms');
+      expect(songs.first.displaySubtitle, 'Rooms'); // the album, under the title
+      expect(songs.first.artist, 'Hollow Pine'); // what now playing shows
       await withArt.dispose();
     });
 
@@ -2519,6 +2627,31 @@ void main() {
       expect(arts.where((a) => a?.scheme == 'android.resource'), isEmpty);
       expect((await handler.getMediaItem(indie.first.id))?.artUri, isNull);
       await sub.cancel();
+    });
+
+    // A drive's log (2026-11-23): tapping "Blind" by The Qemists on a genre
+    // page briefly showed "by Decades of Destruction", its album (the row's
+    // second line), until the song itself was published.
+    test("a genre song row shows its album but is published with its artist",
+        () async {
+      final shown = <as_.MediaItem?>[];
+      final indie = await handler.getChildren('genre:Indie');
+      final row = indie.firstWhere((m) => m.id.startsWith('track:'));
+      final album = row.displaySubtitle;
+      expect(album, isNotNull); // the album, on the row's second line
+      expect(row.displayTitle, row.title); // without it Android ignores the line
+      expect(row.artist, isNot(album));
+      expect(row.artist, row.extras?[MarqueeAudioHandler.groupHint]); // the heading's artist
+      final sub = handler.mediaItem.listen(shown.add);
+      await handler.playFromMediaId(row.id);
+      await settle();
+      await sub.cancel();
+      final published = shown.whereType<as_.MediaItem>().toList();
+      expect(published, isNotEmpty);
+      expect(published.map((m) => m.artist), everyElement(row.artist));
+      expect(published.map((m) => m.displaySubtitle), everyElement(isNull));
+      expect(published.map((m) => m.displayTitle), everyElement(isNull));
+      expect((await handler.getMediaItem(row.id))?.displaySubtitle, isNull);
     });
 
     test("an '@' in a genre name isn't read as the list a song came from", () async {
@@ -2561,6 +2694,8 @@ void main() {
             artUri: Uri.parse('content://art/1'), extras: const {groupHint: 'Albums'}),
         as_.MediaItem(id: 'track:s:2', title: 'B', playable: true,
             artUri: Uri.parse('file:///private/x.jpg')),
+        as_.MediaItem(id: 'track:s:3@genre:Rock', title: 'C', playable: true,
+            artist: 'The Qemists', displaySubtitle: 'Decades of Destruction'),
       ];
       final json = MarqueeAudioHandler.rememberJsonForTest({'x': rows}, 'k');
       final back = MarqueeAudioHandler(engine, car, rememberKey: () => 'k')..restore(json);
@@ -2571,6 +2706,11 @@ void main() {
       expect(again[1].extras, {groupHint: 'Albums'});
       expect(again[2].artUri, isNull); // private files never leave the app
       expect(again[2].extras, isNull);
+      expect(again[3].artist, 'The Qemists'); // a genre song: artist and album
+      expect(again[3].displaySubtitle, 'Decades of Destruction');
+      expect(again[3].displayTitle, 'C');
+      expect(again[2].displayTitle, isNull);
+      expect(again[2].displaySubtitle, isNull);
       await back.dispose();
     });
 

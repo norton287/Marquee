@@ -79,6 +79,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       this.carArt,
       this.artDeadline = const Duration(seconds: 2),
       this.keepFreshFor = const Duration(minutes: 1),
+      this.partialFreshFor = const Duration(seconds: 15),
       this.answerWithin = const Duration(seconds: 8),
       this.log,
       this.remember,
@@ -116,6 +117,11 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
 
   /// A kept car list is refreshed in the background at most this often.
   final Duration keepFreshFor;
+
+  /// The same for a list missing a server's part (it timed out or failed):
+  /// read again sooner, but not on every look (a server down for good would
+  /// be asked, and its address re-checked, each time).
+  final Duration partialFreshFor;
 
   /// A first load that takes longer answers empty (a car that waits too
   /// long says "Could not browse selection") and fills the list in when it
@@ -175,6 +181,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
             : null,
         m.playable ?? false,
         m.extras,
+        m.displaySubtitle,
       ];
 
   void _scheduleRemember() {
@@ -215,6 +222,9 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
               extras: raw.length > 5 && raw[5] is Map
                   ? (raw[5] as Map).cast<String, dynamic>()
                   : null,
+              // A genre song row's album (saved since 2026-11-23).
+              displayTitle: raw.length > 6 && raw[6] != null ? raw[1] as String : null,
+              displaySubtitle: raw.length > 6 ? raw[6] as String? : null,
             ),
         ];
         if (list.isEmpty) continue;
@@ -257,16 +267,20 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// The most recently used lists kept (a long drive opens many albums).
   static const _keepAtMost = 150;
 
-  void _keep(String id, List<as_.MediaItem> list, int epoch) {
+  void _keep(String id, List<as_.MediaItem> list, int epoch,
+      {bool partial = false}) {
     if (list.isEmpty || epoch != _epoch) return;
     _kept.remove(id);
     _kept[id] = list;
     _keptAt[id] = DateTime.now();
+    // Missing a server's part: shown, and read again after partialFreshFor.
+    partial ? _partial.add(id) : _partial.remove(id);
     _scheduleRemember();
     while (_kept.length > _keepAtMost) {
       final oldest = _kept.keys.first;
       _kept.remove(oldest);
       _keptAt.remove(oldest);
+      _partial.remove(oldest);
     }
   }
 
@@ -276,6 +290,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       if (a[i].id != b[i].id ||
           a[i].title != b[i].title ||
           a[i].artist != b[i].artist ||
+          a[i].displayTitle != b[i].displayTitle ||
+          a[i].displaySubtitle != b[i].displaySubtitle ||
           a[i].artUri != b[i].artUri ||
           !mapEquals(a[i].extras, b[i].extras)) {
         return false;
@@ -284,16 +300,27 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     return true;
   }
 
-  Future<List<as_.MediaItem>> _load(String parentId) async =>
-      _withArt(await library.children(parentId));
+  /// Kept lists that miss a server's part (it timed out or failed).
+  final _partial = <String>{};
+
+  /// A list, and whether a server's part is missing from it (logged).
+  Future<(List<as_.MediaItem>, bool)> _load(String parentId) async {
+    final (nodes, misses) = await library.childrenNoting(parentId);
+    for (final m in misses) {
+      log?.add('list $parentId: $m');
+    }
+    return (await _withArt(nodes), misses.isNotEmpty);
+  }
 
   Future<void> _refresh(String id) => _refreshing[id] ??= () async {
         final epoch = _epoch;
         try {
-          final fresh = await _load(id);
+          final (fresh, partial) = await _load(id);
           final old = _kept[id];
           if (fresh.isEmpty || epoch != _epoch) return;
-          _keep(id, fresh, epoch);
+          // Missing a server's part replaces a complete list too: while that
+          // server is out, its rows wouldn't play anyway.
+          _keep(id, fresh, epoch, partial: partial);
           if (old == null || !_same(old, fresh)) await _notify(id);
         } catch (_) {
           // Keep showing what was there.
@@ -337,7 +364,12 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
     return as_.MediaItem(
       id: n.id,
       title: n.title,
-      artist: n.subtitle,
+      // A row whose second line isn't its artist (a genre's songs: the
+      // album) shows it as display text; the artist stays the artist.
+      artist: n.artist ?? n.subtitle,
+      // Android uses the display texts only when a display title is set.
+      displayTitle: n.artist == null ? null : n.title,
+      displaySubtitle: n.artist == null ? null : n.subtitle,
       artUri: art ?? (n.icon == null ? null : iconUri(n.icon!)),
       playable: n.playable,
       extras: extras.isEmpty ? null : extras,
@@ -386,7 +418,8 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       _kept
         ..remove(parentMediaId)
         ..[parentMediaId] = kept;
-      if (DateTime.now().difference(_keptAt[parentMediaId]!) >= keepFreshFor) {
+      final freshFor = _partial.contains(parentMediaId) ? partialFreshFor : keepFreshFor;
+      if (DateTime.now().difference(_keptAt[parentMediaId]!) >= freshFor) {
         unawaited(_refresh(parentMediaId));
       }
       return kept;
@@ -396,14 +429,15 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       final epoch = _epoch;
       final load = _load(parentMediaId);
       try {
-        final fresh = await load.timeout(answerWithin);
-        _keep(parentMediaId, fresh, epoch);
+        final (fresh, partial) = await load.timeout(answerWithin);
+        _keep(parentMediaId, fresh, epoch, partial: partial);
         return fresh;
       } on TimeoutException {
         note('slow: answered empty, fills in later');
-        unawaited(load.then((fresh) async {
+        unawaited(load.then((loaded) async {
+          final (fresh, partial) = loaded;
           if (fresh.isEmpty || epoch != _epoch) return;
-          _keep(parentMediaId, fresh, epoch);
+          _keep(parentMediaId, fresh, epoch, partial: partial);
           await _notify(parentMediaId);
         }, onError: (Object _) {}));
         return const <as_.MediaItem>[];
@@ -422,10 +456,15 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// file; Android Auto and the system run elsewhere), and without app icons
   /// (a Shuffle row's): as now-playing art audio_service would try to
   /// download `android.resource://` and log an error each time.
-  static as_.MediaItem _shareable(as_.MediaItem m) =>
-      m.artUri?.scheme == 'file' || m.artUri?.scheme == 'android.resource'
-          ? m.copyWith(artUri: null)
-          : m;
+  ///
+  /// And as itself, not as a row: a row's display text (a genre song's
+  /// album) would show as now playing's artist line.
+  static as_.MediaItem _shareable(as_.MediaItem m) {
+    final noArt = m.artUri?.scheme == 'file' || m.artUri?.scheme == 'android.resource';
+    if (!noArt && m.displayTitle == null && m.displaySubtitle == null) return m;
+    return m.copyWith(
+        artUri: noArt ? null : m.artUri, displayTitle: null, displaySubtitle: null);
+  }
 
   /// The car asking what an item is (e.g. the one playing).
   @override
@@ -480,6 +519,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
       _epoch++;
       _kept.clear();
       _keptAt.clear();
+      _partial.clear();
       library.forgetTracks();
       _rememberNow(); // at once: the old lists mustn't come back after a restart
     } else {

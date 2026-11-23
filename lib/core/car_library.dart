@@ -22,6 +22,7 @@ enum CarStyle {
 class CarNode {
   const CarNode(this.id, this.title,
       {this.subtitle,
+      this.artist,
       this.art,
       this.playable = false,
       this.browsable = false,
@@ -32,6 +33,10 @@ class CarNode {
   final String id;
   final String title;
   final String? subtitle;
+
+  /// Who's on it, when [subtitle] says something else (a genre's song rows
+  /// show the album there): what the car shows once it plays.
+  final String? artist;
   final Uri? art;
   final bool playable;
   final bool browsable;
@@ -47,8 +52,9 @@ class CarNode {
   /// A heading over this row's block of rows.
   final String? group;
 
-  CarNode copyWith({String? group, String? subtitle}) => CarNode(id, title,
+  CarNode copyWith({String? group, String? subtitle, String? artist}) => CarNode(id, title,
       subtitle: subtitle ?? this.subtitle,
+      artist: artist ?? this.artist,
       art: art,
       playable: playable,
       browsable: browsable,
@@ -177,7 +183,10 @@ class CarLibrary {
         _on(l.serverId, (b) => b.genreTrackCount(l, g))
             .timeout(timeout)
             .then<int?>((n) => n)
-            .catchError((Object _) => null),
+            .catchError((Object e) {
+          _missed(l.serverId, 'song count failed: ${e is TimeoutException ? 'no answer in ${timeout.inMilliseconds / 1000} s' : e}');
+          return null;
+        }),
     ]);
     if (counts.contains(null)) return null;
     return counts.fold<int>(0, (a, b) => a + b!);
@@ -278,9 +287,13 @@ class CarLibrary {
       Future<List<T>> Function(MediaBackend b, Library l, FilterValue g) read) async {
     final parts = await Future.wait([
       for (final (l, g) in where)
-        _on(l.serverId, (b) => read(b, l, g))
-            .timeout(timeout)
-            .catchError((Object _) => <T>[]),
+        _on(l.serverId, (b) => read(b, l, g)).timeout(timeout, onTimeout: () {
+          _missed(l.serverId, 'no answer in ${timeout.inMilliseconds / 1000} s');
+          return <T>[];
+        }).catchError((Object e) {
+          _missed(l.serverId, 'failed: $e');
+          return <T>[];
+        }),
     ]);
     return [for (final p in parts) ...p];
   }
@@ -316,7 +329,10 @@ class CarLibrary {
     return [
       for (final t in shown)
         _node(t, container: listId)
-            .copyWith(group: t.grandparentTitle ?? 'Unknown artist', subtitle: t.parentTitle ?? ''),
+            .copyWith(
+                group: t.grandparentTitle ?? 'Unknown artist',
+                subtitle: t.parentTitle ?? '',
+                artist: t.grandparentTitle ?? 'Unknown artist'),
     ];
   }
 
@@ -383,17 +399,39 @@ class CarLibrary {
   // -- reading across servers --------------------------------------------------
 
   /// [read] for every server, each one caught on its own: an offline server
-  /// only leaves its own music out.
+  /// only leaves its own music out (and says so to [childrenNoting]).
   Future<List<T>> _each<T>(
       Future<List<T>> Function(String serverId, MediaBackend b) read,
       {Iterable<String>? servers}) async {
     final parts = await Future.wait([
       for (final id in [...(servers ?? (await _scope()).$1)])
-        _on(id, (b) => read(id, b))
-            .timeout(timeout, onTimeout: () => <T>[])
-            .catchError((Object _) => <T>[]),
+        _on(id, (b) => read(id, b)).timeout(timeout, onTimeout: () {
+          _missed(id, 'no answer in ${timeout.inMilliseconds / 1000} s');
+          return <T>[];
+        }).catchError((Object e) {
+          _missed(id, 'failed: $e');
+          return <T>[];
+        }),
     ]);
     return [for (final p in parts) ...p];
+  }
+
+  static final _missesKey = Object();
+
+  /// Notes, for the list [childrenNoting] is reading, that server [id]'s
+  /// part is missing (timed out or failed). Elsewhere it goes nowhere.
+  static void _missed(String id, String why) =>
+      (Zone.current[_missesKey] as List<String>?)?.add('$id $why');
+
+  /// [children], and which servers' parts are missing from it ("`server`
+  /// no answer in 12.0 s", "`server` failed: …"): such a list is incomplete,
+  /// not the whole answer. A part shared with a read started elsewhere (e.g.
+  /// genres) isn't counted.
+  Future<(List<CarNode>, List<String>)> childrenNoting(String parentId) async {
+    final misses = <String>[];
+    final nodes = await runZoned(() => children(parentId),
+        zoneValues: {_missesKey: misses});
+    return (nodes, misses);
   }
 
   /// [read] at server [id]'s current address: every read of a server goes
@@ -461,8 +499,10 @@ class CarLibrary {
         // A lost connection goes up to [_each] to reconnect; anything else
         // only drops this library.
         for (final l in libs)
-          read(b, l).catchError((Object _) => <T>[],
-              test: (e) => !isConnectionError(e)),
+          read(b, l).catchError((Object e) {
+            _missed(id, 'library "${l.title}" failed: $e');
+            return <T>[];
+          }, test: (e) => !isConnectionError(e)),
       ]);
       return [for (final p in parts) ...p];
     });
