@@ -33,6 +33,7 @@ import 'package:marquee/ui/manage.dart';
 import 'package:marquee/ui/music.dart';
 import 'package:marquee/ui/phone_input.dart';
 import 'package:marquee/ui/player/player_widgets.dart';
+import 'package:marquee/ui/player/up_next.dart';
 import 'package:marquee/ui/shell.dart';
 import 'package:marquee/ui/widgets.dart';
 
@@ -1619,6 +1620,34 @@ void main() {
     await tester.pumpAndSettle();
     expect(container.read(settingsProvider).carMusicLibrary, isNull);
     expect(find.text('Music in the car'), findsNothing);
+  });
+
+  // The TV, 2026-11-24: music videos (no credits marker) jumped to the next
+  // one about 10 s before they ended: "Up next" came 25 s from the end with a
+  // fixed 12 s countdown. Without credits the countdown is the time left.
+  group('Up next timing', () {
+    const total = Duration(minutes: 4);
+    test('without a credits marker it counts down to the real end', () {
+      final t = UpNextTiming.of(total, null);
+      expect(t.from, total - const Duration(seconds: 25));
+      expect(t.toEnd, isTrue);
+      expect(t.secondsLeft(total, total - const Duration(seconds: 25)), 25);
+      expect(t.secondsLeft(total, total - const Duration(milliseconds: 9200)), 10); // rounds up
+      expect(t.secondsLeft(total, total), 0);
+      expect(t.secondsLeft(total, total + const Duration(seconds: 1)), 0);
+    });
+
+    test('with credits it starts at the credits and keeps its own countdown', () {
+      final t = UpNextTiming.of(total, const Duration(minutes: 3, seconds: 20));
+      expect(t.from, const Duration(minutes: 3, seconds: 20));
+      expect(t.toEnd, isFalse);
+    });
+
+    test('credits in the first half are not an ending: counts to the end', () {
+      final t = UpNextTiming.of(total, const Duration(minutes: 1));
+      expect(t.toEnd, isTrue);
+      expect(t.from, total - const Duration(seconds: 25));
+    });
   });
 
   test('skip lengths default to 10/30, round-trip, and reject odd values',

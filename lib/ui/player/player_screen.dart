@@ -18,6 +18,7 @@ import '../nav.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'player_widgets.dart';
+import 'up_next.dart';
 
 bool get _isAndroid =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
@@ -110,6 +111,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Marker? _intro;
   final _skippedIntros = <Marker>{};
   bool _upNext = false;
+  // The countdown is the time left (no credits marker): the end plays next.
+  bool _upNextToEnd = false;
   bool _upNextDismissed = false;
   int _countdown = 0;
 
@@ -461,30 +464,35 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     final total = _duration;
     if (_next == null || total == Duration.zero) return;
-    final trigger = credits != null && credits.start > total * 0.5
-        ? credits.start
-        : total - const Duration(seconds: 25);
+    final timing = UpNextTiming.of(total, credits?.start);
+    final trigger = timing.from;
     if (_upNext) {
       // Seeking back out of the ending withdraws the offer and its countdown.
       if (p < trigger - const Duration(seconds: 1)) {
         _countdownTimer?.cancel();
         setState(() => _upNext = false);
+      } else if (_upNextToEnd && ref.read(settingsProvider).autoPlayNext) {
+        final left = timing.secondsLeft(total, p);
+        if (left != _countdown) setState(() => _countdown = left);
       }
     } else if (!_upNextDismissed &&
         p >= trigger &&
         total - p > const Duration(seconds: 2)) {
-      _startUpNext();
+      _startUpNext(toEnd: timing.toEnd, left: timing.secondsLeft(total, p));
     }
   }
 
-  void _startUpNext() {
+  /// [toEnd]: no credits to skip, so the countdown shows the [left] seconds
+  /// of the video and its real end ([_onCompleted]) plays the next one.
+  void _startUpNext({bool toEnd = false, int left = 0}) {
     final auto = ref.read(settingsProvider).autoPlayNext;
     setState(() {
       _upNext = true;
-      _countdown = auto ? 12 : 0;
+      _upNextToEnd = toEnd;
+      _countdown = !auto ? 0 : toEnd ? left : 12;
     });
     _countdownTimer?.cancel();
-    if (!auto) return;
+    if (!auto || toEnd) return;
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted || !_upNext) return t.cancel();
       if (!_playing) return; // Paused: hold the countdown.
@@ -510,7 +518,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // Reopening a stream (quality or track change) ends the old one, which
     // also reports "completed". Only the real end of the file counts.
     final remaining = _duration - _position.value;
-    if (_duration == Duration.zero || remaining > const Duration(seconds: 5)) {
+    // Counting down to the end (no credits): that end is the one, even if the
+    // file's stated length runs past its real content (a reopen sets
+    // _loading, caught above).
+    final awaited = _upNext && _upNextToEnd;
+    if (!awaited &&
+        (_duration == Duration.zero || remaining > const Duration(seconds: 5))) {
       return;
     }
     if (_next != null && ref.read(settingsProvider).autoPlayNext) {
