@@ -112,7 +112,7 @@ var _carArtCopies = 0;
 Future<Uri?> _carArt(Uri remote, {required CarArtMode mode}) async {
   final name = carArtName(remote.toString());
   final link = Uri(
-      scheme: 'content', host: 'app.marquee.marquee.art', pathSegments: [name]);
+      scheme: 'content', host: 'app.spindlecrank.marquee.art', pathSegments: [name]);
   final known = _carArtDir;
   if (known != null && File('$known/$name').existsSync()) return link;
   if (mode == CarArtMode.cachedOnly) return null;

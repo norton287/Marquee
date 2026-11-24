@@ -9,7 +9,7 @@ import java.io.File
 import java.io.FileNotFoundException
 
 /**
- * Album art for Android Auto's lists: `content://app.marquee.marquee.art/<file>`.
+ * Album art for Android Auto's lists: `content://app.spindlecrank.marquee.art/<file>`.
  *
  * The car can't load server links (and Plex links carry the account token),
  * so the app copies list artwork into `<cache>/car_art` under unguessable

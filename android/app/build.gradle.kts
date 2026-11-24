@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -15,8 +17,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "app.marquee.marquee"
+        // The app's identity on devices and Google Play (permanent once uploaded).
+        // The Kotlin namespace and channel names keep app.marquee.marquee.
+        applicationId = "app.spindlecrank.marquee"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -29,11 +32,30 @@ android {
         versionName = flutter.versionName
     }
 
+    // Google Play's upload key: android/key.properties (git-ignored) names a
+    // keystore outside the repo. Only a Play build uses it (MARQUEE_PLAY=1,
+    // see build-release.sh --play); sideloaded APKs stay on the debug key so
+    // each one still installs over the last.
+    val uploadKey = rootProject.file("key.properties")
+    val forPlay = System.getenv("MARQUEE_PLAY") == "1"
+    signingConfigs {
+        if (forPlay && uploadKey.exists()) {
+            create("upload") {
+                val p = Properties().apply { uploadKey.inputStream().use { load(it) } }
+                storeFile = file(p.getProperty("storeFile"))
+                storePassword = p.getProperty("storePassword")
+                keyAlias = p.getProperty("keyAlias")
+                keyPassword = p.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            if (forPlay && !uploadKey.exists()) {
+                throw GradleException("MARQUEE_PLAY=1 needs android/key.properties (the Play upload key)")
+            }
+            signingConfig = signingConfigs.getByName(if (forPlay) "upload" else "debug")
             // Names CarWatch.kt finds by reflection (see the file).
             proguardFiles("proguard-rules.pro")
         }

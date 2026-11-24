@@ -1958,14 +1958,14 @@ void main() {
       final both = MarqueeAudioHandler(engine, car,
           localArt: (remote) async => Uri.file('/cache/${remote.pathSegments.last}.jpg'),
           carArt: (remote, {required mode}) async =>
-              Uri.tryParse('content://app.marquee.marquee.art/${remote.pathSegments.last}.jpg'));
+              Uri.tryParse('content://app.spindlecrank.marquee.art/${remote.pathSegments.last}.jpg'));
       final album = (await both.getChildren('tab:albums')).first;
       final tracks = songsOf(await both.getChildren(album.id));
       await both.playFromMediaId(tracks.first.id);
       await settle();
       expect(both.mediaItem.value?.id, tracks.first.id);
       expect(both.mediaItem.value?.artUri?.scheme, 'content');
-      expect(both.mediaItem.value?.artUri?.host, 'app.marquee.marquee.art');
+      expect(both.mediaItem.value?.artUri?.host, 'app.spindlecrank.marquee.art');
       await both.dispose();
     });
 
@@ -2013,7 +2013,7 @@ void main() {
           carArt: (remote, {required mode}) async {
             modes.add(mode);
             return mode == CarArtMode.wait
-                ? Uri.parse('content://app.marquee.marquee.art/${remote.pathSegments.last}.jpg')
+                ? Uri.parse('content://app.spindlecrank.marquee.art/${remote.pathSegments.last}.jpg')
                 : null;
           });
       final albums = await withArt.getChildren('tab:albums');
@@ -2555,7 +2555,7 @@ void main() {
     const browsableHint = 'android.media.browse.CONTENT_STYLE_BROWSABLE_HINT';
     const playableHint = 'android.media.browse.CONTENT_STYLE_PLAYABLE_HINT';
     const groupHint = 'android.media.browse.CONTENT_STYLE_GROUP_TITLE_HINT';
-    const icon = 'android.resource://app.marquee.marquee/drawable/';
+    const icon = 'android.resource://app.spindlecrank.marquee/drawable/';
 
     test('the car is told content styles are supported', () {
       expect(MarqueeAudioHandler.rootExtras, {
