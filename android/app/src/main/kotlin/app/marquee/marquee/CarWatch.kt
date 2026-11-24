@@ -9,7 +9,7 @@ import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.Looper
-import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 
 /**
@@ -24,7 +24,7 @@ object CarWatch {
 
     private val main = Handler(Looper.getMainLooper())
     private var channel: MethodChannel? = null
-    private var engine: FlutterEngine? = null
+    private var messenger: BinaryMessenger? = null
     private var controller: MediaController? = null
     private var browser: MediaBrowser? = null
     private var lastItem: String? = null
@@ -32,15 +32,16 @@ object CarWatch {
     private var lastQueue: String? = null
 
     /**
-     * Talks to [engine]'s Dart from now on. audio_service throws its engine
+     * Talks to that engine's Dart from now on. audio_service throws its engine
      * away when the service ends and makes a new one on the next start (the
-     * process may live on), so every engine is attached, newest wins.
+     * process may live on), so every engine is attached (engine_hook's plugin,
+     * from MarqueeApplication), newest wins.
      */
-    fun attach(context: Context, engine: FlutterEngine) {
-        if (this.engine === engine) return
-        this.engine = engine
+    fun attach(context: Context, messenger: BinaryMessenger) {
+        if (this.messenger === messenger) return
+        this.messenger = messenger
         val app = context.applicationContext
-        channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL).apply {
+        channel = MethodChannel(messenger, CHANNEL).apply {
             setMethodCallHandler { call, result ->
                 if (call.method == "start") {
                     try {

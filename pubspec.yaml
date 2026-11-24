@@ -10,6 +10,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  # In this repo: hands every Flutter engine (incl. audio_service's
+  # windowless ones) to the Android app's car-log watch and voice channel.
+  engine_hook:
+    path: packages/engine_hook
   flutter_riverpod: ^3.5.0
   go_router: ^18.1.4
   dio: ^5.11.1

@@ -1,0 +1,21 @@
+name: engine_hook
+description: >-
+  Tells Marquee's Android app about every Flutter engine, including the ones
+  audio_service starts for the music service with no app window.
+publish_to: none
+version: 1.0.0
+
+environment:
+  sdk: ^3.12.0
+  flutter: '>=3.44.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: app.marquee.engine_hook
+        pluginClass: EngineHookPlugin

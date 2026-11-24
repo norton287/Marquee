@@ -2,6 +2,7 @@ package app.marquee.marquee
 
 import android.app.Application
 import android.content.Context
+import app.marquee.engine_hook.EngineHookPlugin
 import com.ryanheise.audioservice.AudioServicePlugin
 
 /**
@@ -10,15 +11,20 @@ import com.ryanheise.audioservice.AudioServicePlugin
  * empty menu until Dart is running, and nothing else would start it, so the
  * engine (and main()) is started here. Phones and tablets only: a TV has no
  * background music.
+ *
+ * Every Flutter engine (this first one, audio_service's later ones started by
+ * the service with no window, the activity's) gets the car-log watch and the
+ * voice channel through engine_hook's plugin, which Flutter registers on each.
  */
 class MarqueeApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        if (!isTv(this)) {
-            val engine = AudioServicePlugin.getFlutterEngine(this)
-            CarWatch.attach(this, engine)
-            VoiceSearch.attach(engine)
+        if (isTv(this)) return
+        EngineHookPlugin.onEngine = { context, messenger ->
+            CarWatch.attach(context, messenger)
+            VoiceSearch.attach(messenger)
         }
+        AudioServicePlugin.getFlutterEngine(this)
     }
 
     companion object {

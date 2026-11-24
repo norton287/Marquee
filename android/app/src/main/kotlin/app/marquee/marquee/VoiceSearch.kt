@@ -3,7 +3,7 @@ package app.marquee.marquee
 import android.app.SearchManager
 import android.content.Intent
 import android.provider.MediaStore
-import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 
 /**
@@ -13,26 +13,24 @@ import io.flutter.plugin.common.MethodChannel
  * to Dart (lib/core/voice_search.dart), which plays them like a car's voice
  * request.
  *
- * Dart may not be listening yet (cold start), or may have asked before this
- * engine was attached (an engine the music service started after a stop is
- * only attached once MainActivity opens). So the newest request waits: Dart
+ * Dart may not be listening yet (cold start). So the newest request waits: Dart
  * asks for it ('take'), and until Dart has answered once, each request is
  * also pushed ('play'); an answered push means Dart is listening.
  */
 object VoiceSearch {
     private const val CHANNEL = "app.marquee.marquee/voice"
 
-    private var engine: FlutterEngine? = null
+    private var messenger: BinaryMessenger? = null
     private var channel: MethodChannel? = null
     private var listening = false
     private var waiting: String? = null
 
-    /** Talks to [engine]'s Dart from now on (newest engine wins). */
-    fun attach(engine: FlutterEngine) {
-        if (this.engine === engine) return
-        this.engine = engine
+    /** Talks to that engine's Dart from now on (newest engine wins). */
+    fun attach(messenger: BinaryMessenger) {
+        if (this.messenger === messenger) return
+        this.messenger = messenger
         listening = false
-        channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL).apply {
+        channel = MethodChannel(messenger, CHANNEL).apply {
             setMethodCallHandler { call, result ->
                 if (call.method == "take") {
                     listening = true
