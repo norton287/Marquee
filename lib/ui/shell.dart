@@ -39,6 +39,9 @@ class _AppShellState extends State<AppShell> {
   /// Parent of everything in the side rail, to tell rail focus from page focus.
   final _navArea = FocusNode(
       debugLabel: 'side nav', canRequestFocus: false, skipTraversal: true);
+  /// Parent of the mini player, which sits below the page's focus scope.
+  final _miniArea = FocusNode(
+      debugLabel: 'mini player', canRequestFocus: false, skipTraversal: true);
   final _navItems = [
     for (final d in _destinations) FocusNode(debugLabel: 'nav ${d.label}'),
   ];
@@ -47,9 +50,14 @@ class _AppShellState extends State<AppShell> {
   /// pressing right goes back to the same card.
   final _lastInTab = <int, FocusNode>{};
 
+  /// Where focus was in the page when the user moved down to the mini
+  /// player, so pressing up goes back to it.
+  FocusNode? _beforeMini;
+
   @override
   void dispose() {
     _navArea.dispose();
+    _miniArea.dispose();
     for (final n in _navItems) {
       n.dispose();
     }
@@ -61,6 +69,23 @@ class _AppShellState extends State<AppShell> {
 
   bool _inNav(FocusNode node) =>
       node == _navArea || node.ancestors.contains(_navArea);
+
+  bool _inMini(FocusNode node) =>
+      node == _miniArea || node.ancestors.contains(_miniArea);
+
+  /// The mini player's bar itself (OK opens Now playing), or null while
+  /// nothing is queued. Descendants list children before their parent, so
+  /// take the focusable control that isn't inside another one.
+  FocusNode? get _miniFirst {
+    for (final n in _miniArea.traversalDescendants) {
+      if (!n.canRequestFocus) continue;
+      final outer = n.ancestors
+          .takeWhile((a) => a != _miniArea)
+          .any((a) => a.canRequestFocus && !a.skipTraversal);
+      if (!outer) return n;
+    }
+    return null;
+  }
 
   /// Arrow keys with a remote. Each page lives in its own route focus scope
   /// that stops at its edges, so the default traversal can never leave the
@@ -81,7 +106,41 @@ class _AppShellState extends State<AppShell> {
       node.focusInDirection(dir);
       return;
     }
+    if (_inMini(node)) {
+      if (dir == TraversalDirection.up) {
+        final back = _beforeMini;
+        if (back != null && back.context != null && back.canRequestFocus) {
+          back.requestFocus();
+          return;
+        }
+      }
+      node.focusInDirection(dir);
+      return;
+    }
     if (node.focusInDirection(dir)) return;
+    // Only step out at the page's own edge: an open menu (MenuAnchor draws in
+    // an overlay but sits under the page) has its own scope that stops at its
+    // ends, and leaving it would strand the menu open behind the focus.
+    // The page's route scope is the one with no other scope between it and
+    // its Navigator.
+    final ctx = node.context;
+    final nav = ctx == null ? null : Navigator.maybeOf(ctx)?.focusNode;
+    final scope = node.nearestScope;
+    if (nav == null || scope == null) return;
+    final atPageEdge = scope.ancestors
+        .takeWhile((a) => a != nav)
+        .every((a) => a is! FocusScopeNode);
+    if (!atPageEdge) return;
+    if (dir == TraversalDirection.down) {
+      // Nothing further down in the page: the mini player is below it,
+      // outside the page's focus scope, so step into it ourselves.
+      final mini = _miniFirst;
+      if (mini != null) {
+        _beforeMini = node;
+        mini.requestFocus();
+      }
+      return;
+    }
     if (dir == TraversalDirection.left) {
       _lastInTab[shell.currentIndex] = node;
       _navItems[shell.currentIndex].requestFocus();
@@ -94,7 +153,10 @@ class _AppShellState extends State<AppShell> {
     final body = Column(
       children: [
         Expanded(child: shell),
-        const MiniPlayer(),
+        Focus(
+          focusNode: _miniArea,
+          child: FocusTraversalGroup(child: const MiniPlayer()),
+        ),
       ],
     );
     if (!l.sideNav) {

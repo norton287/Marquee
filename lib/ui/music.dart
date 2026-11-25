@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../core/models.dart';
 import '../core/music_engine.dart';
@@ -121,11 +122,46 @@ class MusicController extends Notifier<MusicState> {
 
   /// Pauses music while a video plays and keeps anything (headset button,
   /// lock screen, car) from starting it until the video closes.
-  void holdForVideo(bool hold) => _engine.holdForVideo(hold);
+  void holdForVideo(bool hold) {
+    _engine.holdForVideo(hold);
+    // While held, music never switched the screen lock off (the video owned
+    // it). A video that never started never took the lock either, so it
+    // won't release it on close: apply music's own wish now (TV only).
+    if (!hold && ref.read(tvProvider) && !state.playing) {
+      _keepScreenOn(false);
+    }
+  }
 }
 
 final musicProvider =
     NotifierProvider<MusicController, MusicState>(MusicController.new);
+
+/// Keeps the screen on (or lets it sleep). Swappable for tests.
+Future<void> Function(bool on) keepScreenOn =
+    (on) => WakelockPlus.toggle(enable: on);
+
+/// Whether music should hold the screen on: only on a TV, and only while it
+/// plays. A TV has no media session, so its screen saver starts after the
+/// idle time even with music playing (video holds the screen through
+/// media_kit_video). Phones keep their normal screen timeout.
+final musicKeepsScreenOnProvider = Provider<bool>((ref) =>
+    ref.watch(tvProvider) && ref.watch(musicProvider.select((s) => s.playing)));
+
+/// Applies [musicKeepsScreenOnProvider] whenever it changes (from the app
+/// root, which lives as long as the app).
+void watchMusicScreen(WidgetRef ref) {
+  ref.listen<bool>(musicKeepsScreenOnProvider, (was, on) {
+    if (was == on) return;
+    // While a video holds music the video's own lock owns the screen (and
+    // turns it off when the video closes): never switch it off under it.
+    if (!on && ref.read(musicEngineProvider).held) return;
+    _keepScreenOn(on);
+  });
+}
+
+void _keepScreenOn(bool on) => keepScreenOn(on).catchError((Object e) {
+      debugPrint('keep screen on ($on) failed: $e');
+    });
 
 /// Whether the music queue plays anything from [serverIds]: after a Plex
 /// profile switch those streams still carry the old profile's token.
@@ -145,6 +181,8 @@ class MiniPlayer extends ConsumerWidget {
     return Material(
       color: Palette.surfaceHigh,
       child: InkWell(
+        // The theme's faint focus tint is hard to see on a TV across the room.
+        focusColor: Palette.accent.withValues(alpha: 0.28),
         onTap: () => showPanel<void>(context,
             builder: (_) => const NowPlayingPanel()),
         child: Column(

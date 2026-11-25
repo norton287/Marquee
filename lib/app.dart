@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/providers.dart';
+import 'ui/music.dart';
 import 'ui/nav.dart';
 import 'ui/theme.dart';
 
@@ -14,6 +15,7 @@ class MarqueeApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(routerProvider);
+    watchMusicScreen(ref);
     final tv = ref.watch(tvProvider);
     final trueBlack = ref.watch(settingsProvider.select((s) => s.trueBlack));
     return MaterialApp.router(

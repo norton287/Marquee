@@ -34,6 +34,9 @@ dependencies:
   qr_flutter: ^4.1.0
   audio_service: ^0.18.19
   audio_session: ^0.2.4
+  # Keeps the TV's screen saver off while music plays (video gets it from
+  # media_kit_video, which already depends on it; user's OK 2026-11-25).
+  wakelock_plus: ^1.8.2
 
 dev_dependencies:
   flutter_test:

@@ -121,6 +121,9 @@ class MusicEngine {
   /// While a video plays, nothing (a headset button, the car, a track that
   /// was still loading) may start the music under it.
   bool _held = false;
+
+  /// Whether a video holds music (see [holdForVideo]).
+  bool get held => _held;
   void holdForVideo(bool hold) {
     _held = hold;
     if (hold) pause();

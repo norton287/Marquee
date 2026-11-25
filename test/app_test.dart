@@ -1504,6 +1504,142 @@ void main() {
       expect(second, isNotNull);
       expect(second, greaterThan(first!));
     });
+
+    for (final tv in [true, false]) {
+      testWidgets('music keeps the screen on while it plays: ${tv ? 'TV' : 'not on a phone or desktop'}',
+          (tester) async {
+        final calls = <bool>[];
+        final old = keepScreenOn;
+        keepScreenOn = (on) async => calls.add(on);
+        addTearDown(() => keepScreenOn = old);
+        final c = await openMusic(tester, size: const Size(1920, 1080), tv: tv);
+        await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(ListTile).first);
+        await tester.pumpAndSettle();
+        expect(c.read(musicProvider).playing, isTrue);
+        expect(calls, tv ? [true] : isEmpty);
+        c.read(musicProvider.notifier).pause();
+        await tester.pumpAndSettle();
+        expect(calls, tv ? [true, false] : isEmpty);
+        c.read(musicProvider.notifier).toggle();
+        await tester.pumpAndSettle();
+        expect(calls, tv ? [true, false, true] : isEmpty);
+        await c.read(musicProvider.notifier).stop();
+        await tester.pumpAndSettle();
+        expect(calls, tv ? [true, false, true, false] : isEmpty);
+      });
+    }
+
+    testWidgets("TV: music held for a video never lets the video's screen sleep",
+        (tester) async {
+      final calls = <bool>[];
+      final old = keepScreenOn;
+      keepScreenOn = (on) async => calls.add(on);
+      addTearDown(() => keepScreenOn = old);
+      final c = await openMusic(tester, size: const Size(1920, 1080), tv: true);
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(ListTile).first);
+      await tester.pumpAndSettle();
+      expect(calls, [true]);
+      // A video opens (it holds the screen itself): music pausing then must
+      // not turn the screen lock off under it.
+      c.read(musicProvider.notifier).holdForVideo(true);
+      await tester.pumpAndSettle();
+      expect(c.read(musicProvider).playing, isFalse);
+      expect(calls, [true]);
+      // The video closes (it may never have taken the lock if it failed to
+      // start): music's own wish applies again — paused, so the screen may sleep.
+      c.read(musicProvider.notifier).holdForVideo(false);
+      await tester.pumpAndSettle();
+      expect(calls, [true, false]);
+      c.read(musicProvider.notifier).toggle();
+      await tester.pumpAndSettle();
+      c.read(musicProvider.notifier).pause();
+      await tester.pumpAndSettle();
+      expect(calls, [true, false, true, false]);
+    });
+
+    testWidgets('TV: Down past the last item of an open menu stays in the menu',
+        (tester) async {
+      tester.view.devicePixelRatio = 2;
+      final c = await openMusic(tester, size: const Size(1920, 1080), tv: true);
+      tester.view.devicePixelRatio = 2;
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(ListTile).first);
+      await tester.pumpAndSettle();
+      expect(c.read(musicProvider).current, isNotNull);
+      // Open the Sort menu with the remote, then press Down past its end.
+      Focus.of(tester.element(find.descendant(
+              of: find.byType(ActionChip), matching: find.text('Title'))))
+          .requestFocus();
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pumpAndSettle();
+      bool inMenu() =>
+          FocusManager.instance.primaryFocus?.context
+              ?.findAncestorWidgetOfExactType<MenuItemButton>() !=
+          null;
+      expect(inMenu(), isTrue);
+      for (var i = 0; i < 12; i++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pumpAndSettle();
+      }
+      expect(inMenu(), isTrue);
+      expect(
+          FocusManager.instance.primaryFocus?.context
+              ?.findAncestorWidgetOfExactType<MiniPlayer>(),
+          isNull);
+    });
+
+    testWidgets('TV: Down from the page reaches the mini player, Up comes back',
+        (tester) async {
+      tester.view.devicePixelRatio = 2;
+      final c = await openMusic(tester, size: const Size(1920, 1080), tv: true);
+      tester.view.devicePixelRatio = 2;
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(ListTile).first);
+      await tester.pumpAndSettle();
+      expect(c.read(musicProvider).current, isNotNull);
+      expect(find.byType(MiniPlayer), findsOneWidget);
+
+      // Back to the (one-row) album grid, focus its chip, then press Down.
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Albums'));
+      await tester.pumpAndSettle();
+      Focus.of(tester.element(find.text('Albums').last)).requestFocus();
+      await tester.pumpAndSettle();
+      bool inMini() =>
+          FocusManager.instance.primaryFocus?.context
+              ?.findAncestorWidgetOfExactType<MiniPlayer>() !=
+          null;
+      FocusNode? lastInPage;
+      for (var i = 0; i < 10 && !inMini(); i++) {
+        lastInPage = FocusManager.instance.primaryFocus;
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pumpAndSettle();
+      }
+      expect(inMini(), isTrue);
+
+      // Up goes back to where the page was left.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pumpAndSettle();
+      expect(FocusManager.instance.primaryFocus, same(lastInPage));
+
+      // Down again, OK opens Now playing with Play/Pause focused.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(inMini(), isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pumpAndSettle();
+      expect(find.byType(NowPlayingPanel), findsOneWidget);
+      final focused = FocusManager.instance.primaryFocus?.context;
+      expect(focused?.findAncestorWidgetOfExactType<NowPlayingPanel>(), isNotNull);
+    });
   });
 
   testWidgets('TV library grid fits seven posters across', (tester) async {
