@@ -1,7 +1,7 @@
 name: marquee
 description: A fast, native-feeling client for Plex and Jellyfin on phone, tablet, desktop and TV.
 publish_to: none
-version: 1.0.0+2
+version: 1.0.0+3
 
 environment:
   sdk: ^3.12.0
