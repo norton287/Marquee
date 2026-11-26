@@ -353,7 +353,7 @@ class MarqueeAudioHandler extends as_.BaseAudioHandler {
   /// An app icon the car can load (no network, no token; kept in release
   /// builds by res/raw/keep.xml).
   static Uri iconUri(String name) =>
-      Uri.parse('android.resource://app.spindlecrank.marquee/drawable/$name');
+      Uri.parse('android.resource://com.spindlecrank.marquee/drawable/$name');
 
   static as_.MediaItem _fromNode(CarNode n, Uri? art) {
     final extras = <String, dynamic>{

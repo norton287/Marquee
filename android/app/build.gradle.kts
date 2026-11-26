@@ -19,7 +19,7 @@ android {
     defaultConfig {
         // The app's identity on devices and Google Play (permanent once uploaded).
         // The Kotlin namespace and channel names keep app.marquee.marquee.
-        applicationId = "app.spindlecrank.marquee"
+        applicationId = "com.spindlecrank.marquee"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
