@@ -1640,6 +1640,111 @@ void main() {
       final focused = FocusManager.instance.primaryFocus?.context;
       expect(focused?.findAncestorWidgetOfExactType<NowPlayingPanel>(), isNotNull);
     });
+
+    testWidgets(
+        'TV: arrows from the mini player and the rail never reach a page '
+        'hidden under the open one', (tester) async {
+      // On the TV (2026-11-25): from the mini bar on a library page, the cursor
+      // vanished — Right/Down/Up went to cards of the Libraries page hidden
+      // under it (Flutter keeps covered routes focusable).
+      tester.view.devicePixelRatio = 2;
+      final c = await openMusic(tester, size: const Size(1920, 1080), tv: true);
+      tester.view.devicePixelRatio = 2;
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Tracks'));
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select); // first row is focused
+      await tester.pumpAndSettle();
+      expect(c.read(musicProvider).current, isNotNull);
+
+      FocusNode focused() => FocusManager.instance.primaryFocus!;
+      bool inMini() =>
+          focused().context?.findAncestorWidgetOfExactType<MiniPlayer>() != null;
+      // Wherever focus goes, it is on the page on top (or the shell around
+      // it) and on the screen.
+      void visible(String step) {
+        final ctx = focused().context!;
+        expect(ModalRoute.of(ctx)!.isCurrent, isTrue,
+            reason: '$step: focus is on a covered page (${focused()})');
+        // Other tabs' pages are offstage but still focusable.
+        expect(ctx.findAncestorWidgetOfExactType<Offstage>()?.offstage ?? false,
+            isFalse,
+            reason: '$step: focus is on another tab (${focused()})');
+        final box = ctx.findRenderObject()! as RenderBox;
+        final r = box.localToGlobal(Offset.zero) & box.size;
+        expect(r.top >= 0 && r.bottom <= 540, isTrue,
+            reason: '$step: focus is off screen at $r');
+      }
+
+      Future<void> press(LogicalKeyboardKey k, String step) async {
+        await tester.sendKeyEvent(k);
+        await tester.pumpAndSettle();
+        visible(step);
+      }
+
+      FocusNode? lastInPage;
+      for (var i = 0; i < 80 && !inMini(); i++) {
+        lastInPage = focused();
+        await press(LogicalKeyboardKey.arrowDown, 'down the list');
+      }
+      expect(inMini(), isTrue);
+      final mini = focused();
+
+      // Right and Down have nowhere to go: the bar keeps focus.
+      await press(LogicalKeyboardKey.arrowRight, 'mini right');
+      expect(focused(), same(mini));
+      await press(LogicalKeyboardKey.arrowDown, 'mini down');
+      expect(focused(), same(mini));
+
+      // Left goes to the selected rail item (Libraries), not the nearest one.
+      await press(LogicalKeyboardKey.arrowLeft, 'mini left');
+      expect(focused().debugLabel, 'nav Libraries');
+
+      // Up and down the rail stay in the rail, past both of its ends.
+      for (var i = 0; i < 7; i++) {
+        await press(LogicalKeyboardKey.arrowDown, 'rail down $i');
+      }
+      expect(focused().debugLabel, 'nav Settings');
+      for (var i = 0; i < 7; i++) {
+        await press(LogicalKeyboardKey.arrowUp, 'rail up $i');
+      }
+      expect(focused().debugLabel, 'nav Home');
+
+      // Right goes back where the rail was entered from: the mini bar; Up
+      // from there to the row the page was left at.
+      await press(LogicalKeyboardKey.arrowDown, 'rail to Libraries');
+      expect(focused().debugLabel, 'nav Libraries');
+      await press(LogicalKeyboardKey.arrowRight, 'rail right');
+      expect(focused(), same(mini));
+      await press(LogicalKeyboardKey.arrowUp, 'mini up');
+      expect(focused(), same(lastInPage));
+
+      // Back while on the mini bar closes the library page the bar was
+      // entered from: Up then goes to the Libraries page now on top.
+      await press(LogicalKeyboardKey.arrowDown, 'down to mini again');
+      expect(inMini(), isTrue);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ChoiceChip, 'Tracks'), findsNothing);
+      await press(LogicalKeyboardKey.arrowUp, 'mini up after Back');
+      expect(inMini(), isFalse);
+      expect(focused().context?.findAncestorWidgetOfExactType<LibrariesScreen>(),
+          isNotNull);
+
+      // Music stopped while the bar has focus: the bar goes away and Flutter
+      // hands focus back to the page (the scope's last focused node).
+      for (var i = 0; i < 40 && !inMini(); i++) {
+        await press(LogicalKeyboardKey.arrowDown, 'down to mini once more');
+      }
+      expect(inMini(), isTrue);
+      await c.read(musicProvider.notifier).stop();
+      await tester.pumpAndSettle();
+      expect(find.byType(MiniPlayer), findsOneWidget); // empty now
+      expect(inMini(), isFalse);
+      visible('after stop');
+      expect(focused().context?.findAncestorWidgetOfExactType<LibrariesScreen>(),
+          isNotNull);
+    });
   });
 
   testWidgets('TV library grid fits seven posters across', (tester) async {

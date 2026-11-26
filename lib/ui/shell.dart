@@ -73,48 +73,121 @@ class _AppShellState extends State<AppShell> {
   bool _inMini(FocusNode node) =>
       node == _miniArea || node.ancestors.contains(_miniArea);
 
+  /// The focusable controls in [area] that aren't inside another one (an
+  /// InkWell holding buttons counts once). Descendants list children before
+  /// their parent.
+  static List<FocusNode> _stops(FocusNode area) => [
+        for (final n in area.traversalDescendants)
+          if (n.canRequestFocus &&
+              !n.ancestors
+                  .takeWhile((a) => a != area)
+                  .any((a) => a.canRequestFocus && !a.skipTraversal))
+            n,
+      ];
+
   /// The mini player's bar itself (OK opens Now playing), or null while
-  /// nothing is queued. Descendants list children before their parent, so
-  /// take the focusable control that isn't inside another one.
+  /// nothing is queued.
   FocusNode? get _miniFirst {
-    for (final n in _miniArea.traversalDescendants) {
-      if (!n.canRequestFocus) continue;
-      final outer = n.ancestors
-          .takeWhile((a) => a != _miniArea)
-          .any((a) => a.canRequestFocus && !a.skipTraversal);
-      if (!outer) return n;
+    final stops = _stops(_miniArea);
+    return stops.isEmpty ? null : stops.first;
+  }
+
+  /// Up/Down in the rail: the next rail item above or below, staying put at
+  /// either end.
+  void _moveInRail(FocusNode node, TraversalDirection dir) {
+    double top(FocusNode n) => n.rect.top;
+    final stops = _stops(_navArea)..sort((a, b) => top(a).compareTo(top(b)));
+    final at = stops.indexWhere((n) => n == node || node.ancestors.contains(n));
+    if (at < 0) return;
+    final to = at + (dir == TraversalDirection.down ? 1 : -1);
+    if (to >= 0 && to < stops.length) stops[to].requestFocus();
+  }
+
+  /// The route scope of the page on top of the current tab.
+  FocusScopeNode? get _topPage {
+    final nav = shell.route.branches[shell.currentIndex].navigatorKey
+        .currentState;
+    if (nav == null) return null;
+    for (final c in nav.focusNode.children) {
+      final ctx = c.context;
+      if (c is FocusScopeNode &&
+          ctx != null &&
+          (ModalRoute.of(ctx)?.isCurrent ?? false)) {
+        return c;
+      }
     }
     return null;
+  }
+
+  /// Whether [n] can take focus where the user can see it: the mini player,
+  /// or the page on top of the current tab (not one covered by it).
+  bool _usable(FocusNode? n) {
+    if (n == null || n.context == null || !n.canRequestFocus) return false;
+    if (_inMini(n)) return true;
+    final page = _topPage;
+    return page != null && n.ancestors.contains(page);
+  }
+
+  /// Focus [preferred] if it is still usable, else the page on top: where it
+  /// was focused last, or its first control.
+  void _focusPage([FocusNode? preferred]) {
+    if (_usable(preferred)) {
+      preferred!.requestFocus();
+      return;
+    }
+    final page = _topPage;
+    if (page == null) return;
+    FocusNode n = page;
+    while (n is FocusScopeNode && n.focusedChild != null) {
+      n = n.focusedChild!;
+    }
+    if (n is FocusScopeNode || !n.canRequestFocus) {
+      for (final d in page.traversalDescendants) {
+        if (d.canRequestFocus && !d.skipTraversal) {
+          d.requestFocus();
+          return;
+        }
+      }
+    }
+    n.requestFocus();
   }
 
   /// Arrow keys with a remote. Each page lives in its own route focus scope
   /// that stops at its edges, so the default traversal can never leave the
   /// page for the rail. Run the default first; when it finds nothing to the
   /// left, step into the rail ourselves.
+  ///
+  /// The rail and the mini player sit outside every page's scope, so the
+  /// default search from them sees every page of every tab — including the
+  /// ones covered by the page on top (Flutter keeps covered routes
+  /// focusable) — and the cursor vanished onto those (TV, 2026-11-25). From
+  /// them every key goes to a chosen target instead. (They stay plain nodes,
+  /// not scopes, so Tab on a desktop keeps reaching them.)
   void _onDirection(DirectionalFocusIntent intent) {
     final node = FocusManager.instance.primaryFocus;
     if (node == null) return;
     final dir = intent.direction;
     if (_inNav(node)) {
-      if (dir == TraversalDirection.right) {
-        final back = _lastInTab[shell.currentIndex];
-        if (back != null && back.context != null && back.canRequestFocus) {
-          back.requestFocus();
-          return;
-        }
+      switch (dir) {
+        case TraversalDirection.right:
+          _focusPage(_lastInTab[shell.currentIndex]);
+        case TraversalDirection.up:
+        case TraversalDirection.down:
+          _moveInRail(node, dir);
+        case TraversalDirection.left:
+          break;
       }
-      node.focusInDirection(dir);
       return;
     }
     if (_inMini(node)) {
       if (dir == TraversalDirection.up) {
-        final back = _beforeMini;
-        if (back != null && back.context != null && back.canRequestFocus) {
-          back.requestFocus();
-          return;
-        }
+        _focusPage(_beforeMini);
+      } else if (dir == TraversalDirection.left) {
+        // Right from the rail comes back here.
+        _lastInTab[shell.currentIndex] = node;
+        _navItems[shell.currentIndex].requestFocus();
       }
-      node.focusInDirection(dir);
+      // Right / Down: the bar is the only stop (Now playing has its buttons).
       return;
     }
     if (node.focusInDirection(dir)) return;
