@@ -22,6 +22,22 @@ class UpNextTiming {
           ? UpNextTiming(from: creditsStart, toEnd: false)
           : UpNextTiming(from: total - lead, toEnd: true);
 
+  /// How long the position must stand still near the end ([stalledAtEnd]).
+  static const endStall = Duration(seconds: 3);
+
+  /// Counting down to the end waits for the player's end of file, which a
+  /// stream that stops just short of its stated length never reports: the
+  /// position stands still and the countdown hung at 1 (the user's TV,
+  /// 2026-11-27). Standing still for [stillFor] ≥ [endStall] while playing,
+  /// within 2 s of the end, counts as the end. Not for the credits
+  /// countdown, which runs on its own timer. An unknown length (zero while a
+  /// reopened stream loads) is never the end.
+  bool stalledAtEnd(Duration total, Duration position, Duration stillFor) =>
+      toEnd &&
+      total > Duration.zero &&
+      total - position <= const Duration(seconds: 2) &&
+      stillFor >= endStall;
+
   /// Whole seconds left at [position], rounded up (never below 0).
   int secondsLeft(Duration total, Duration position) {
     final ms = (total - position).inMilliseconds;

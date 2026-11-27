@@ -492,7 +492,31 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _countdown = !auto ? 0 : toEnd ? left : 12;
     });
     _countdownTimer?.cancel();
-    if (!auto || toEnd) return;
+    if (!auto) return;
+    if (toEnd) {
+      // The real end ([_onCompleted]) plays the next one; this only watches
+      // for a stream that stops short of its stated length and never reports
+      // its end ([UpNextTiming.stalledAtEnd]).
+      var lastAt = _position.value;
+      var stillSince = DateTime.now();
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+        if (!mounted || !_upNext) return t.cancel();
+        final p = _position.value;
+        final now = DateTime.now();
+        if (p != lastAt || !_playing || _loading || _source == null) {
+          // Moving, paused by the user, or reopening: not stalled.
+          lastAt = p;
+          stillSince = now;
+          return;
+        }
+        const toTheEnd = UpNextTiming(from: Duration.zero, toEnd: true);
+        if (toTheEnd.stalledAtEnd(_duration, p, now.difference(stillSince))) {
+          t.cancel();
+          _playNext();
+        }
+      });
+      return;
+    }
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted || !_upNext) return t.cancel();
       if (!_playing) return; // Paused: hold the countdown.

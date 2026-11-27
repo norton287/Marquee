@@ -1889,6 +1889,32 @@ void main() {
       expect(t.toEnd, isTrue);
       expect(t.from, total - const Duration(seconds: 25));
     });
+
+    // The TV, 2026-11-27: the countdown stopped at 1 and hung. Counting down
+    // to the end waits for the player's "end of file", which never comes when
+    // the stream stops just short of its stated length; the position then
+    // stands still. Standing still while playing in the last 2 s is the end.
+    test('a stream that stops just short of its end counts as ended', () {
+      final t = UpNextTiming.of(total, null);
+      final nearEnd = total - const Duration(milliseconds: 600);
+      expect(t.stalledAtEnd(total, nearEnd, const Duration(seconds: 3)), isTrue);
+      // Not yet: briefly still (a frame or two of buffering).
+      expect(t.stalledAtEnd(total, nearEnd, const Duration(seconds: 2)), isFalse);
+      // Not near the end: buffering mid-countdown waits.
+      expect(
+          t.stalledAtEnd(total, total - const Duration(seconds: 8),
+              const Duration(seconds: 10)),
+          isFalse);
+      // Reopening (quality / track change) clears the length until the new
+      // stream loads: an unknown length is never "the end" (review).
+      expect(
+          t.stalledAtEnd(Duration.zero, const Duration(seconds: 200),
+              const Duration(seconds: 5)),
+          isFalse);
+      // With credits the countdown is a timer of its own: never applies.
+      final credits = UpNextTiming.of(total, const Duration(minutes: 3, seconds: 20));
+      expect(credits.stalledAtEnd(total, nearEnd, const Duration(seconds: 9)), isFalse);
+    });
   });
 
   test('skip lengths default to 10/30, round-trip, and reject odd values',
